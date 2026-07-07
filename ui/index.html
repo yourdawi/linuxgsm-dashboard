@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LinuxGSM Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Background Glow FX -->
+    <div class="glow-bg">
+        <div class="glow-orb orb-1"></div>
+        <div class="glow-orb orb-2"></div>
+    </div>
+
+    <!-- Login Container -->
+    <div id="login-container" class="login-wrapper">
+        <div class="login-card">
+            <div class="login-logo">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                    <line x1="8" y1="21" x2="16" y2="21"></line>
+                    <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+                <h2 data-i18n="login-title">LinuxGSM WebAdmin</h2>
+                <p data-i18n="login-subtitle">Melde dich an, um deine Gameserver zu verwalten.</p>
+            </div>
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="username" data-i18n="username-label">Benutzername</label>
+                    <input type="text" id="username" required autocomplete="username" placeholder="admin" data-i18n-placeholder="username-placeholder">
+                </div>
+                <div class="form-group">
+                    <label for="password" data-i18n="password-label">Passwort</label>
+                    <input type="password" id="password" required autocomplete="current-password" placeholder="Enter password" data-i18n-placeholder="password-placeholder">
+                </div>
+                <div id="login-error" class="error-message"></div>
+                <button type="submit" class="btn btn-primary btn-block" data-i18n="btn-login">Anmelden</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- App Container -->
+    <div id="app-container" class="app-wrapper hidden">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                    <line x1="8" y1="21" x2="16" y2="21"></line>
+                    <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+                <span>LGSM Admin</span>
+            </div>
+            
+            <nav class="sidebar-menu">
+                <a href="#dashboard" class="menu-item active" data-view="dashboard">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>
+                    <span data-i18n="menu-dashboard">Dashboard</span>
+                </a>
+                <a href="#installer" class="menu-item" data-view="installer">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+                    <span data-i18n="menu-installer">Spiele-Installer</span>
+                </a>
+                <a href="#monitor" class="menu-item" data-view="monitor">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+                    <span data-i18n="menu-overview">Übersicht</span>
+                </a>
+                <a href="#console" class="menu-item" data-view="console">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                    <span data-i18n="menu-console">Live-Konsole</span>
+                </a>
+                <a href="#settings" class="menu-item" data-view="settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                    <span data-i18n="menu-settings">Einstellungen</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="footer-controls">
+                    <button id="btn-theme-toggle" class="btn-theme-toggle" title="Theme wechseln">
+                        <svg id="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="18.36" x2="5.64" y2="19.78"></line><line x1="18.36" y1="4.22" x2="19.78" y2="5.64"></line></svg>
+                        <svg id="theme-icon-moon" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+                    </button>
+                    <button id="btn-lang-toggle" class="btn-lang-toggle" title="Sprache / Language">
+                        <span id="lang-toggle-text">EN</span>
+                    </button>
+                </div>
+                <div class="user-info">
+                    <span class="user-name">Administrator</span>
+                    <button id="btn-logout" class="btn-logout" title="Abmelden">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- View: Dashboard -->
+            <section id="view-dashboard" class="app-view">
+                <header class="view-header">
+                    <div>
+                        <h1 data-i18n="dash-title">Server Dashboard</h1>
+                        <p data-i18n="dash-subtitle">Verwalte deine aktiven LinuxGSM Game Server Instanzen.</p>
+                    </div>
+                    <div class="stats-overview">
+                        <div class="stat-bubble">
+                            <span class="stat-label" data-i18n="btn-all">Gesamt</span>
+                            <span class="stat-value" id="stats-total">0</span>
+                        </div>
+                        <div class="stat-bubble">
+                            <span class="stat-label" data-i18n="btn-online">Online</span>
+                            <span class="stat-value text-success" id="stats-running">0</span>
+                        </div>
+                        <div class="stat-bubble">
+                            <span class="stat-label" data-i18n="btn-offline">Offline</span>
+                            <span class="stat-value text-muted" id="stats-stopped">0</span>
+                        </div>
+                    </div>
+                </header>
+
+                <div class="filter-bar">
+                    <div class="search-box">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                        <input type="text" id="search-servers" placeholder="Server filtern..." data-i18n-placeholder="dash-search-placeholder">
+                    </div>
+                    <button id="btn-refresh-dashboard" class="btn btn-secondary">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                        <span data-i18n="btn-refresh">Aktualisieren</span>
+                    </button>
+                </div>
+
+                <!-- Servers Grid -->
+                <div class="servers-grid" id="servers-container">
+                    <!-- Cards are dynamically rendered here -->
+                </div>
+            </section>
+
+            <!-- View: Game Installer -->
+            <section id="view-installer" class="app-view hidden">
+                <header class="view-header">
+                    <div>
+                        <h1 data-i18n="inst-title">Spiele-Installer</h1>
+                        <p data-i18n="inst-subtitle">Installiere einen neuen LinuxGSM Server. Es wird automatisch ein neuer Systembenutzer angelegt.</p>
+                    </div>
+                    <div class="header-actions">
+                        <button id="btn-sync-games" class="btn btn-secondary flex-row gap-2">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                            <span id="sync-games-text" data-i18n="inst-btn-sync">Spieleliste aktualisieren</span>
+                        </button>
+                    </div>
+                </header>
+                
+                <!-- Syncing progress bar overlay -->
+                <div id="games-sync-progress-bar" class="sync-progress-bar hidden">
+                    <div class="sync-progress-fill" id="games-sync-progress-fill" style="width: 0%"></div>
+                    <div class="sync-progress-text" id="games-sync-progress-text">Synchronisiere...</div>
+                </div>
+
+                <div class="installer-layout">
+                    <!-- Left: Selector -->
+                    <div class="installer-games">
+                        <div class="search-box mb-4">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                            <input type="text" id="search-games" placeholder="Spiele durchsuchen..." data-i18n-placeholder="inst-search-placeholder">
+                        </div>
+                        
+                        <div class="games-grid" id="games-container">
+                            <!-- Populated in app.js -->
+                        </div>
+                    </div>
+
+                    <!-- Right: Install Configuration Form -->
+                    <div class="installer-form-card glass-panel hidden" id="install-form-container">
+                        <div class="selected-game-header">
+                            <h3 id="install-game-title">Spielname</h3>
+                            <span class="badge" id="install-game-cmd">vhserver</span>
+                        </div>
+                        <form id="install-form">
+                            <input type="hidden" id="install-game-id">
+                            <div class="form-group">
+                                <label for="install-username" data-i18n="inst-user-label">System-Benutzername</label>
+                                <input type="text" id="install-username" required placeholder="z.B. valheimserver" data-i18n-placeholder="inst-user-placeholder" pattern="[a-z0-9_]{3,16}">
+                                <small class="text-muted" data-i18n="inst-user-help">Erlaubt sind Kleinbuchstaben, Zahlen und Unterstriche (3-16 Zeichen). Der Benutzer wird auf dem Server angelegt.</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="install-password" data-i18n="inst-pass-label">Passwort für Benutzer</label>
+                                <input type="password" id="install-password" placeholder="Frei lassen für zufälliges Passwort" data-i18n-placeholder="inst-pass-placeholder">
+                                <small class="text-muted" data-i18n="inst-pass-help">Passwort für den SSH/System-Login des Benutzers. Wird für LinuxGSM selbst nicht benötigt.</small>
+                            </div>
+                            <div class="warning-panel">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                                <span data-i18n="inst-warning-text">Die Installation lädt SteamCMD und alle Spieldateien herunter. Dies kann je nach Spiel und Internetleitung 5-30 Minuten dauern.</span>
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-block" data-i18n="inst-btn-install">Installation starten</button>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <!-- View: System Monitor -->
+            <section id="view-monitor" class="app-view hidden">
+                <header class="view-header">
+                    <div>
+                        <h1 data-i18n="overview-title">Übersicht &amp; Monitoring</h1>
+                        <p data-i18n="overview-subtitle">Ressourcen-Auslastung des Host-Systems und der einzelnen Gameserver-Instanzen.</p>
+                    </div>
+                </header>
+
+                <div class="metrics-grid">
+                    <!-- CPU Gauge -->
+                    <div class="metric-card glass-panel">
+                        <h3 data-i18n="overview-cpu">CPU Auslastung</h3>
+                        <div class="gauge-container">
+                            <svg viewBox="0 0 36 36" class="circular-chart">
+                                <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                <path id="cpu-gauge" class="circle" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                <text x="18" y="20.35" class="percentage" id="cpu-val">0%</text>
+                            </svg>
+                        </div>
+                        <div class="metric-details" id="cpu-details">Kerne: --</div>
+                    </div>
+
+                    <!-- RAM Gauge -->
+                    <div class="metric-card glass-panel">
+                        <h3 data-i18n="overview-ram">Memory (RAM)</h3>
+                        <div class="gauge-container">
+                            <svg viewBox="0 0 36 36" class="circular-chart">
+                                <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                <path id="ram-gauge" class="circle" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                <text x="18" y="20.35" class="percentage" id="ram-val">0%</text>
+                            </svg>
+                        </div>
+                        <div class="metric-details" id="ram-details">Genutzt: -- / --</div>
+                    </div>
+
+                    <!-- Disk Gauge -->
+                    <div class="metric-card glass-panel">
+                        <h3 data-i18n="overview-disk">Festplatte</h3>
+                        <div class="gauge-container">
+                            <svg viewBox="0 0 36 36" class="circular-chart">
+                                <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                <path id="disk-gauge" class="circle" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                <text x="18" y="20.35" class="percentage" id="disk-val">0%</text>
+                            </svg>
+                        </div>
+                        <div class="metric-details" id="disk-details">Speicherplatz: -- / --</div>
+                    </div>
+                </div>
+
+                <!-- History Chart Area -->
+                <div class="glass-panel mt-6">
+                    <div class="chart-header">
+                        <h3 data-i18n="overview-history">Ressourcenverlauf (Letzte 5 Minuten)</h3>
+                    </div>
+                    <div class="chart-container-canvas">
+                        <canvas id="sys-history-chart" height="200"></canvas>
+                    </div>
+                </div>
+
+                <!-- Server Resource Table -->
+                <div class="glass-panel mt-6">
+                    <div class="table-header">
+                        <h3 data-i18n="overview-table">Ressourcennutzung pro Server</h3>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th data-i18n="overview-col-server">Server</th>
+                                    <th data-i18n="overview-col-user">Benutzer</th>
+                                    <th data-i18n="overview-col-status">Status</th>
+                                    <th data-i18n="overview-col-cpu">CPU Auslastung</th>
+                                    <th data-i18n="overview-col-ram">RAM Auslastung</th>
+                                    <th data-i18n="overview-col-pids">Prozesse (PIDs)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="monitor-server-table">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- View: Live Console -->
+            <section id="view-console" class="app-view hidden">
+                <header class="view-header">
+                    <div>
+                        <h1 data-i18n="console-title">Live Console & Logs</h1>
+                        <p data-i18n="console-subtitle">View the tmux live screen or log files of your game server.</p>
+                    </div>
+                    <div class="form-group flex-row mb-0 gap-3">
+                        <select id="console-server-select" class="form-control select-server-dropdown">
+                            <option value="" data-i18n="console-select-default">-- Select a server --</option>
+                        </select>
+                    </div>
+                </header>
+
+                <div class="console-layout">
+                    <div class="console-controls glass-panel">
+                        <div class="console-status-indicator">
+                            <span class="status-dot status-offline" id="console-status-dot"></span>
+                            <span id="console-status-text" data-i18n="console-no-server-selected">No server selected</span>
+                        </div>
+                        <div class="console-btn-group">
+                            <button id="console-btn-start" class="btn btn-success" disabled>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg> <span data-i18n="btn-start">Starten</span>
+                            </button>
+                            <button id="console-btn-stop" class="btn btn-danger" disabled>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg> <span data-i18n="btn-stop">Stoppen</span>
+                            </button>
+                            <button id="console-btn-restart" class="btn btn-warning" disabled>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg> <span data-i18n="btn-restart">Neustart</span>
+                            </button>
+                            <div class="divider-y"></div>
+                            <button id="console-btn-config" class="btn btn-secondary" disabled>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg> <span data-i18n="btn-configs">Config</span>
+                            </button>
+                            <div class="divider-y"></div>
+                            <button id="console-btn-details" class="btn btn-secondary" disabled>
+                                <span data-i18n="btn-details">Details</span>
+                            </button>
+                            <button id="console-btn-backup" class="btn btn-secondary" disabled>
+                                <span data-i18n="btn-backup">Backup</span>
+                            </button>
+                            <button id="console-btn-validate" class="btn btn-secondary" disabled>
+                                <span data-i18n="btn-validate">Validieren</span>
+                            </button>
+                        </div>
+
+                        <div class="console-mode-toggle">
+                            <button id="console-mode-tmux" class="btn-toggle active" data-i18n="console-mode-tmux">Tmux Live-View</button>
+                            <button id="console-mode-log" class="btn-toggle" data-i18n="console-mode-log">Console Log File</button>
+                        </div>
+                    </div>
+
+                    <!-- Screen / Terminal -->
+                    <div class="terminal-card glass-panel">
+                        <div class="terminal-header">
+                            <span class="terminal-title" id="terminal-title-text" data-i18n="console-no-server-connected">No server connected</span>
+                            <div class="terminal-actions">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="terminal-autoscroll" checked>
+                                    <span data-i18n="modal-stream-autoscroll">Auto-Scroll</span>
+                                </label>
+                                <button id="terminal-clear" class="btn-icon" title="Löschen" data-i18n-title="btn-clear">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="terminal-body" id="terminal-output">
+                            <div class="terminal-row text-muted" data-i18n="console-empty-prompt">Select a server above to load the console.</div>
+                        </div>
+                        <!-- Console Input Bar -->
+                        <div class="terminal-input-bar">
+                            <span class="terminal-prompt">$</span>
+                            <form id="console-input-form" style="flex:1; display:flex; gap:0.5rem;">
+                                <input type="text" id="console-input-field" placeholder="Send command to server console..." data-i18n-placeholder="console-input-placeholder" disabled autocomplete="off">
+                                <button type="submit" class="btn btn-primary btn-sm" id="console-input-submit" disabled data-i18n="btn-send">Send</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- View: Settings -->
+            <section id="view-settings" class="app-view hidden">
+                <header class="view-header">
+                    <div>
+                        <h1 data-i18n="menu-settings">Einstellungen</h1>
+                        <p data-i18n="settings-subtitle">Konfiguriere das LinuxGSM Dashboard.</p>
+                    </div>
+                </header>
+
+                <div class="settings-layout">
+                    <div class="settings-card glass-panel">
+                        <h3 data-i18n="settings-pass-card">Dashboard-Zugangsdaten</h3>
+                        <p class="text-muted" data-i18n="settings-pass-card-desc">Ändere das Passwort für das Web-Dashboard.</p>
+                        <form id="settings-password-form" class="mt-4">
+                            <div class="form-group">
+                                <label for="settings-old-password" data-i18n="settings-old-pass-label">Current Password</label>
+                                <input type="password" id="settings-old-password" required autocomplete="current-password">
+                            </div>
+                            <div class="form-group">
+                                <label for="settings-new-password" data-i18n="settings-new-pass-label">New Password</label>
+                                <input type="password" id="settings-new-password" required autocomplete="new-password">
+                            </div>
+                            <div class="form-group">
+                                <label for="settings-new-password-confirm" data-i18n="settings-confirm-pass-label">Confirm New Password</label>
+                                <input type="password" id="settings-new-password-confirm" required autocomplete="new-password">
+                            </div>
+                            <div id="settings-password-message" class="info-message"></div>
+                            <button type="submit" class="btn btn-primary" data-i18n="settings-btn-save">Update Password</button>
+                        </form>
+                    </div>
+
+                    <div class="settings-card glass-panel">
+                        <h3 data-i18n="settings-info-card">System-Informationen</h3>
+                        <div class="info-list mt-4">
+                            <div class="info-item">
+                                <span class="info-label" data-i18n="settings-info-version">Dashboard Version</span>
+                                <span class="info-value">1.0.0 (Lightweight Edition)</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label" data-i18n="settings-info-os">Operating System</span>
+                                <span class="info-value" id="settings-os">Lädt...</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label" data-i18n="settings-info-pid">Prozess-ID (PID)</span>
+                                <span class="info-value" id="settings-pid">Lädt...</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label" data-i18n="settings-info-mode">Dashboard Mode</span>
+                                <span class="info-value highlight" id="settings-mode">Lädt...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Autostart & Cronjob templates -->
+                    <div class="settings-card glass-panel" style="grid-column: 1 / -1; margin-top: 1.5rem;">
+                        <h3 data-i18n="settings-tools-card">Server-specific Tools</h3>
+                        <p class="text-muted" data-i18n="settings-tools-card-desc">Select one of your active servers to show copy-paste templates for systemd and cronjobs.</p>
+                        
+                        <div class="form-group mt-4" style="max-width: 400px;">
+                            <label for="settings-server-select" data-i18n="settings-tools-select-label">Server auswählen</label>
+                            <select id="settings-server-select" class="form-control">
+                                <option value="" data-i18n="settings-tools-select-default">-- Select server --</option>
+                            </select>
+                        </div>
+                        
+                        <div id="settings-tools-area" class="hidden mt-4">
+                            <div class="tools-split" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+                                <!-- systemd Card -->
+                                <div class="tool-subcard">
+                                    <h4 style="margin-bottom:0.5rem; text-transform:none;" data-i18n="settings-tools-systemd-title">Systemd-Dienst (Autostart bei Boot)</h4>
+                                    <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="settings-tools-systemd-desc">Erstelle eine Datei unter <code>/etc/systemd/system/lgsm-[server].service</code> als root und füge folgenden Inhalt ein:</p>
+                                    <pre class="code-block-template" id="template-systemd" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:1rem; border-radius:8px; font-family:var(--font-mono); font-size:0.8rem; overflow-x:auto; user-select:all; line-height:1.4;">Lädt...</pre>
+                                </div>
+                                <!-- Cronjob Card -->
+                                <div class="tool-subcard">
+                                    <h4 data-i18n="settings-tools-cron-title">Cronjobs (Geplante Wartungsaufgaben)</h4>
+                                    <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="settings-tools-cron-desc">Füge diese Zeilen in die Crontab des Serverbenutzers (oder über <code>crontab -e</code> als root) ein:</p>
+                                    <pre class="code-block-template" id="template-cron" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:1rem; border-radius:8px; font-family:var(--font-mono); font-size:0.8rem; overflow-x:auto; user-select:all; line-height:1.4;">Lädt...</pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modal: Terminal Log Stream for Actions -->
+    <div id="modal-stream" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3 id="modal-stream-title">Aktion wird ausgeführt...</h3>
+                <span class="badge badge-pulse animate-pulse" id="modal-stream-status" data-i18n="modal-stream-running">Laufend</span>
+            </div>
+            <div class="modal-body terminal-body" id="modal-stream-output">
+                <!-- Executing process log is streamed here -->
+            </div>
+            <div class="modal-footer">
+                <label class="checkbox-label mr-auto">
+                    <input type="checkbox" id="modal-stream-autoscroll" checked>
+                    <span data-i18n="modal-stream-autoscroll">Auto-Scroll</span>
+                </label>
+                <button id="modal-stream-close" class="btn btn-secondary" disabled data-i18n="modal-stream-close">Schließen</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Config File Editor -->
+    <div id="modal-config" class="modal-overlay hidden">
+        <div class="modal-card config-modal">
+            <div class="modal-header">
+                <div>
+                    <h3 id="modal-config-title" data-i18n="modal-config-title">Konfigurations-Editor</h3>
+                    <p class="text-muted mb-0" id="modal-config-subtitle">arkserver</p>
+                </div>
+                <button id="modal-config-close-x" class="btn-icon modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body config-editor-layout">
+                <!-- Config Files List (Left) -->
+                <div class="config-files-sidebar">
+                    <h4 data-i18n="modal-config-files">Dateien</h4>
+                    <ul class="config-files-list" id="config-files-list">
+                        <!-- Populated dynamically -->
+                    </ul>
+                </div>
+                <!-- Editor Pane (Right) -->
+                <div class="config-editor-pane">
+                    <div class="editor-header">
+                        <span class="editor-filename" id="editor-active-file" data-i18n="modal-config-no-file">Keine Datei ausgewählt</span>
+                        <div class="console-mode-toggle" id="config-mode-toggle" style="display: none; margin-left: 1.5rem; margin-right: auto; padding: 2px;">
+                            <button class="btn-toggle active" id="btn-config-form" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" data-i18n="modal-config-tab-form">Formular</button>
+                            <button class="btn-toggle" id="btn-config-raw" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" data-i18n="modal-config-tab-raw">Text</button>
+                        </div>
+                        <div class="editor-actions">
+                            <button id="btn-config-save" class="btn btn-primary btn-sm" disabled data-i18n="modal-config-btn-save">
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                    <div class="editor-textarea-wrapper" id="editor-text-wrapper">
+                        <!-- Custom styled Editor Textarea -->
+                        <div class="editor-lines" id="editor-lines">1</div>
+                        <textarea id="editor-textarea" class="editor-textarea" spellcheck="false" disabled placeholder="Wähle eine Konfigurationsdatei aus der Liste links aus, um sie zu bearbeiten." data-i18n-placeholder="modal-config-placeholder"></textarea>
+                    </div>
+                    <div class="editor-form-wrapper hidden" id="editor-form-wrapper" style="flex: 1; padding: 1.5rem; overflow-y: auto; background: #030306;">
+                        <div id="config-form-builder" style="display: flex; flex-direction: column; gap: 1rem; max-width: 750px;">
+                            <div class="text-muted" data-i18n="modal-config-select-prompt">Wähle eine Konfigurationsdatei aus der Liste links aus.</div>
+                        </div>
+                    </div>
+                    <div class="editor-footer">
+                        <small class="text-muted" data-i18n="modal-config-default-warning">Hinweis: LinuxGSM überschreibt _default.cfg bei Updates. Editiere stattdessen die datei.cfg oder common.cfg.</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Port Checker -->
+    <div id="modal-portcheck" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width: 500px;">
+            <div class="modal-header">
+                <div>
+                    <h3 id="modal-portcheck-title" data-i18n="modal-portcheck-title">Port Erreichbarkeit prüfen</h3>
+                    <p class="text-muted mb-0" id="modal-portcheck-subtitle">arkserver</p>
+                </div>
+                <button id="modal-portcheck-close-x" class="btn-icon modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 1.5rem;">
+                <div id="portcheck-loading" class="flex flex-col items-center justify-center py-6 hidden">
+                    <div class="loader mb-3"></div>
+                    <p class="text-muted" data-i18n="modal-portcheck-scanning">Prüfe Erreichbarkeit von außen...</p>
+                </div>
+                <div id="portcheck-results" class="hidden" style="display: flex; flex-direction: column; gap: 1rem;">
+                    <div class="flex justify-between items-center bg-dark-card p-3 rounded" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; border-radius: 4px; padding: 0.75rem;">
+                        <span class="text-muted" data-i18n="modal-portcheck-public-ip">Öffentliche IP-Adresse:</span>
+                        <strong id="portcheck-ip" class="text-primary">127.0.0.1</strong>
+                    </div>
+                    <table class="metrics-table" style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--text-muted);">
+                                <th style="text-align: left; padding: 0.5rem;" data-i18n="modal-portcheck-th-port">Port</th>
+                                <th style="text-align: left; padding: 0.5rem;" data-i18n="modal-portcheck-th-proto">Protokoll</th>
+                                <th style="text-align: right; padding: 0.5rem;" data-i18n="modal-portcheck-th-status">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="portcheck-table-body">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                    <div class="alert alert-info mt-3" style="font-size: 0.75rem; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.2); color: #93c5fd; padding: 0.75rem; border-radius: 4px;" data-i18n="modal-portcheck-help-note">
+                        Hinweis: Wenn ein Port als geschlossen angezeigt wird, stelle sicher, dass der Server läuft und die Ports in deinem Router (Port-Freigabe) sowie in der Firewall freigegeben sind.
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="justify-content: flex-end; padding: 1rem 1.5rem; display: flex;">
+                <button id="modal-portcheck-close" class="btn btn-secondary" data-i18n="modal-portcheck-close-btn">Schließen</button>
+            </div>
+        </div>
+    </div>
+    <!-- Modal: Delete Server Confirm -->
+    <div id="modal-delete" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width: 450px;">
+            <div class="modal-header" style="border-bottom: 1px solid rgba(239, 68, 68, 0.2);">
+                <div>
+                    <h3 id="modal-delete-title" class="text-danger" data-i18n="modal-delete-title">Gameserver löschen</h3>
+                    <p class="text-muted mb-0" id="modal-delete-subtitle">arkserver</p>
+                </div>
+                <button id="modal-delete-close-x" class="btn-icon modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 1.5rem;">
+                <div class="alert alert-danger" style="font-size: 0.8rem; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: #fca5a5; padding: 0.75rem; border-radius: 4px; margin-bottom: 1rem;" data-i18n="modal-delete-warning">
+                    WARNUNG: Diese Aktion kann nicht rückgängig gemacht werden! Dadurch werden alle Spieldateien, Konfigurationen und (falls exklusiv genutzt) der gesamte Systembenutzer dauerhaft vom Server gelöscht.
+                </div>
+                <div class="flex flex-col gap-2" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                    <label style="font-size: 0.8rem; color: var(--text-muted);" data-i18n="modal-delete-prompt-label">Bitte gebe den Namen des Servers ein, um das Löschen zu bestätigen:</label>
+                    <input type="text" id="delete-confirm-input" class="form-input" style="border-color: rgba(239, 68, 68, 0.3);" placeholder="arkserver">
+                </div>
+            </div>
+            <div class="modal-footer" style="justify-content: space-between; padding: 1rem 1.5rem; display: flex; align-items: center;">
+                <button id="modal-delete-close" class="btn btn-secondary" data-i18n="modal-delete-cancel-btn">Abbrechen</button>
+                <button id="btn-delete-confirm-submit" class="btn btn-danger" disabled data-i18n="modal-delete-submit-btn">Server unwiderruflich löschen</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

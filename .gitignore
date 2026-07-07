@@ -1,0 +1,14 @@
+# Local Configuration & Credentials
+/config/config.json
+
+# Crawler Cache & Downloaded Icons
+/config/games_cache.json
+/config/icons/
+
+# Compiled Binaries
+/lgsm-dashboard
+/lgsm-dashboard.exe
+*.exe
+
+# System & Application Logs
+*.log
