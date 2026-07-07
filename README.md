@@ -1,2 +1,121 @@
-# linuxgsm-dashboard
-A lightweight and secure web dashboard for LinuxGSM game server management
+# LinuxGSM Web Dashboard
+
+A secure, lightweight, and modern single-binary web dashboard designed to manage game servers running under LinuxGSM (Linux Game Server Manager). It is designed to consume minimal system resources (~10-15MB RAM) so that host memory is dedicated solely to running your games.
+
+---
+
+<img width="100%" alt="dashboard" src="https://github.com/user-attachments/assets/a82c1587-5b43-411a-9ff4-321e041764b9" />
+
+---
+
+## 📸 Screenshots
+
+<details>
+  <summary>➔ Click here to expand detailed screenshots</summary>
+  <br>
+
+  ### 🛡️ Interactive Server Console & RCON Input
+  <p align="center">
+    <img width="80%" alt="console" src="https://github.com/user-attachments/assets/1b96721a-b8f6-4214-840b-ac0c441c1e9b" />
+  </p>
+
+  ### ⚙️ Configuration File Editor (Form & Raw View)
+  <p align="center">
+    <img width="80%" alt="configeditor" src="https://github.com/user-attachments/assets/00dd7558-8b9a-4e32-a75d-559b409a847c" />
+  </p>
+
+  ### ➕ Game Installer & Scraper
+  <p align="center">
+    <img width="80%" alt="gameinstaller" src="https://github.com/user-attachments/assets/478d3ac0-24df-4f61-b35b-104a4320f3f3" />
+  </p>
+
+  ### 🖥️ Server Overview
+  <p align="center">
+    <img width="60%" alt="serveroverview" src="https://github.com/user-attachments/assets/39fc2c08-57d2-40d4-8b30-b607ce5e17cc" />
+  </p>
+</details>
+
+---
+
+## ✨ Features
+
+- 🖥️ **Resource-Efficient Backend (Go):** Compiled static binary using only ~10-15MB RAM with embedded web assets for zero-dependency deployment.
+- 🛡️ **Interactive Server Console:** Real-time visual tmux pane updates paired with a **command input bar** to send RCON/console commands directly to the game server process (uses secure `tmux send-keys` escaping).
+- 👥 **Multi-Instance Scanning & Shebang Verification:** Scans system user home directories for all executable scripts and verifies their shebang and header comments to auto-detect any number of LinuxGSM instances (e.g. `gmodserver-1`, `gmodserver-2`) under a single user.
+- ⚙️ **Config File Editor:** Safe configuration editing within `/home/<user>/lgsm/config-lgsm/<script>/*.cfg` with path-traversal protection (hardened against folder prefix traversal attacks). Features a parsed **Form View** and a **Raw View** with bidirectional syncing.
+- 🔒 **Security Hardened Input Validation:** Every incoming API query (actions, installer scripts, username fields) is filtered against strict backend whitelist patterns before execution, blocking all potential shell command injection vectors.
+- 📊 **Host & Process resource tracking:** Real-time CPU, RAM, and Disk host gauges, custom canvas historical graphs, and user process metrics mapping.
+- ➕ **Game Installer & Scraper:** Dynamically crawls all supported LinuxGSM servers and icon logos from `linuxgsm.com/servers/` using a lightweight regex HTML parser in Go, caches game listings and download images locally, and streams unattended installations in real-time.
+- 🌗 **Dark/Light Mode:** Dual premium color systems driven by CSS custom properties, togglable from the sidebar footer and persisted in local storage.
+- 🌐 **Multilingual Support (i18n):** Full support for English (default) and German across the entire single page application.
+- 🌐 **External Port Checker:** Test reachability of game server ports from the outside world. Parses actual configured ports (`port`, `queryport`, `rconport`, `appport`, `sourcetvport`) directly from LinuxGSM config files (`<script>.cfg`, `common.cfg`), dynamically resolves the host's public IP, and performs standard TCP handshakes or UDP A2S_INFO Source Engine queries to verify router port-forwarding and firewall states.
+- 📝 **Automation Generators:** Customized copy-pasteable `systemd` service files and `crontab` lists generated per server inside the Settings view.
+- ❌ **Game Server Deletion:** Cleanly delete game server instances. Disables systemd, wipes crontabs, and removes either the specific script files (for shared users) or performs a full system user purge (`userdel -r`) for exclusive system users, protected by an interactive safety confirmation overlay.
+
+---
+
+## 🚀 Installation & Setup
+
+### 🌟 1. Interactive Automated Installation (Recommended)
+
+Execute the installer directly using `curl` (or `wget` if `curl` is not installed). **Note: The script must be run with root privileges (if not logged in as root, elevate your shell first, e.g., with `su -` or `sudo -i`).**
+
+Using `curl`:
+```bash
+curl -sSL https://raw.githubusercontent.com/yourdawi/linuxgsm-dashboard/main/install-dashboard.sh | bash
+```
+
+Using `wget` (fallback):
+```bash
+wget -qO- https://raw.githubusercontent.com/yourdawi/linuxgsm-dashboard/main/install-dashboard.sh | bash
+```
+
+This presents a colored **interactive terminal menu** that:
+- Detects your Linux distribution (Ubuntu/Debian, CentOS/RHEL, Arch, Alpine, openSUSE).
+- Auto-installs missing dependencies (`git`, `go`).
+- Clones, builds, and sets up the daemon as a systemd background service.
+- Displays your server's IP address and autogenerated credentials.
+
+---
+
+### 📝 2. Manual Installation Steps
+
+#### Prerequisites
+Ensure you have Git and Go 1.20+ installed on your system.
+
+#### Clone and Compile
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourdawi/linuxgsm-dashboard.git
+   cd linuxgsm-dashboard
+   ```
+2. Compile the Go code:
+   ```bash
+   go build -o lgsm-dashboard main.go
+   ```
+
+#### Run the Dashboard
+Since the dashboard needs to control system users and execute commands via `runuser` on gameserver accounts, it **must be run as root**:
+```bash
+sudo ./lgsm-dashboard -port 8080
+```
+On first launch, it will:
+1. Generate `config/config.json`.
+2. Generate a random password for the `admin` user.
+3. Print the credentials in the console. **Make sure to write down the generated password!**
+
+---
+
+## 💻 Local Testing & Mock Mode
+
+To test or develop the frontend locally on Windows/Linux without active LinuxGSM servers, execute it with the `-mock` CLI flag:
+```bash
+go run main.go -mock
+```
+This forces the application to bypass standard Linux system directories and generate a mock workspace with simulated server instances (`arkserver`, `valheimserver`), interactive command streams, config file folders, and dynamic CPU/RAM resource gauges.
+
+---
+
+## ⚖️ Disclaimer
+
+This is an **independent, community-driven project** and is **not officially affiliated, associated, or endorsed** by the official [LinuxGSM](https://linuxgsm.com/) project or its developers. LinuxGSM is a trademark of its respective owners. All product names, logos, and brands are property of their respective owners.
