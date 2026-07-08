@@ -3,11 +3,13 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +17,9 @@ import (
 
 	"github.com/yourdawi/linuxgsm-dashboard/backend"
 )
+
+// Version represents the current version of the dashboard
+var Version = "1.0.0"
 
 //go:embed ui/*
 var uiFS embed.FS
@@ -52,6 +57,136 @@ func isValidAction(a string) bool {
 		return true
 	}
 	return false
+}
+
+// Helper to get logged in user details from request session
+func getLoggedInUser(r *http.Request, authMgr *backend.AuthManager) (backend.User, error) {
+	cookie, err := r.Cookie("session_id")
+	if err != nil {
+		return backend.User{}, errors.New("unauthorized")
+	}
+	session, ok := authMgr.GetSession(cookie.Value)
+	if !ok {
+		return backend.User{}, errors.New("unauthorized")
+	}
+	user, ok := authMgr.GetUser(session.Username)
+	if !ok {
+		return backend.User{}, errors.New("unauthorized")
+	}
+	return user, nil
+}
+
+// Helper to check if user has access to a specific server
+func isUserAllowedServer(user backend.User, serverID string) bool {
+	if user.Role == "admin" {
+		return true
+	}
+	for _, srv := range user.Servers {
+		if srv == serverID {
+			return true
+		}
+	}
+	return false
+}
+
+// Helper to check if user has specific permission scope
+func hasUserPermission(user backend.User, perm string) bool {
+	if user.Role == "admin" {
+		return true
+	}
+	for _, p := range user.Permissions {
+		if p == perm {
+			return true
+		}
+	}
+	return false
+}
+
+// Helper to query the latest release from GitHub
+func fetchLatestRelease() (string, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/yourdawi/linuxgsm-dashboard/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "linuxgsm-dashboard")
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github api returned status %d", resp.StatusCode)
+	}
+	
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", err
+	}
+	
+	return release.TagName, nil
+}
+
+// Helper to update by pulling the git tag and compiling locally
+func triggerSelfUpdateByGit(tagName string) error {
+	execPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return err
+	}
+	execDir := filepath.Dir(execPath)
+
+	// Check if this is a git repository
+	if _, err := os.Stat(filepath.Join(execDir, ".git")); os.IsNotExist(err) {
+		return errors.New("cannot update from source: installation directory is not a git repository")
+	}
+
+	// 1. Run git fetch --tags
+	cmdFetch := exec.Command("git", "fetch", "--tags")
+	cmdFetch.Dir = execDir
+	if err := cmdFetch.Run(); err != nil {
+		return fmt.Errorf("failed to fetch git tags: %v", err)
+	}
+
+	// 2. Run git checkout <tagName>
+	cmdCheckout := exec.Command("git", "checkout", tagName)
+	cmdCheckout.Dir = execDir
+	if err := cmdCheckout.Run(); err != nil {
+		return fmt.Errorf("failed to checkout tag %s: %v", tagName, err)
+	}
+
+	// 3. Run go build -o lgsm-dashboard.new main.go
+	cmdBuild := exec.Command("go", "build", "-o", "lgsm-dashboard.new", "main.go")
+	cmdBuild.Dir = execDir
+	if err := cmdBuild.Run(); err != nil {
+		return fmt.Errorf("failed to compile new version: %v", err)
+	}
+
+	// 4. Safe swap
+	newPath := filepath.Join(execDir, "lgsm-dashboard.new")
+	oldPath := execPath + ".old"
+	_ = os.Remove(oldPath)
+
+	err = os.Rename(execPath, oldPath)
+	if err != nil {
+		return fmt.Errorf("failed to backup current binary: %v", err)
+	}
+
+	err = os.Rename(newPath, execPath)
+	if err != nil {
+		_ = os.Rename(oldPath, execPath) // try to rollback
+		return fmt.Errorf("failed to swap binary: %v", err)
+	}
+
+	return nil
 }
 
 func main() {
@@ -180,7 +315,23 @@ func main() {
 			return
 		}
 
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		servers := instMgr.GetInstances()
+		if user.Role != "admin" {
+			var filtered []backend.GameServerInstance
+			for _, srv := range servers {
+				if isUserAllowedServer(user, srv.ID) {
+					filtered = append(filtered, srv)
+				}
+			}
+			servers = filtered
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(servers)
 	}))
@@ -192,7 +343,23 @@ func main() {
 			return
 		}
 
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		servers := instMgr.GetInstances()
+		if user.Role != "admin" {
+			var filtered []backend.GameServerInstance
+			for _, srv := range servers {
+				if isUserAllowedServer(user, srv.ID) {
+					filtered = append(filtered, srv)
+				}
+			}
+			servers = filtered
+		}
+
 		stats, err := metricsCollector.GetStats(servers, isMock)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -212,10 +379,23 @@ func main() {
 			return
 		}
 
+		user, err := getLoggedInUser(r, authMgr)
+		var userClean interface{}
+		if err == nil {
+			userClean = map[string]interface{}{
+				"username":    user.Username,
+				"role":        user.Role,
+				"servers":     user.Servers,
+				"permissions": user.Permissions,
+			}
+		}
+
 		info := map[string]interface{}{
-			"os":   fmt.Sprintf("%s (%s)", runtime.GOOS, runtime.GOARCH),
-			"pid":  os.Getpid(),
-			"mock": isMock,
+			"os":      fmt.Sprintf("%s (%s)", runtime.GOOS, runtime.GOARCH),
+			"pid":     os.Getpid(),
+			"mock":    isMock,
+			"version": Version,
+			"user":    userClean,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -229,12 +409,18 @@ func main() {
 			return
 		}
 
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		var payload struct {
 			OldPassword string `json:"oldPassword"`
 			NewPassword string `json:"newPassword"`
 		}
 
-		err := json.NewDecoder(r.Body).Decode(&payload)
+		err = json.NewDecoder(r.Body).Decode(&payload)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -242,7 +428,7 @@ func main() {
 			return
 		}
 
-		err = authMgr.ChangePassword(payload.OldPassword, payload.NewPassword)
+		err = authMgr.ChangeUserPassword(user.Username, payload.OldPassword, payload.NewPassword)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -258,6 +444,12 @@ func main() {
 	http.HandleFunc("/api/games/install", authMgr.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil || user.Role != "admin" {
+			http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
 			return
 		}
 
@@ -296,6 +488,13 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil || user.Role != "admin" {
+			http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+			return
+		}
+
 		gameCrawler.StartSync()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "syncing"})
@@ -307,6 +506,13 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil || user.Role != "admin" {
+			http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+			return
+		}
+
 		status, progress, lastErr := gameCrawler.GetStatus()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
@@ -355,16 +561,202 @@ func main() {
 		w.Write([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#7c4dff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%;"><rect x="2" y="2" width="20" height="20" rx="2" ry="2"></rect><path d="M6 12h12M12 6v12"></path></svg>`))
 	})
 
+	// User CRUD Endpoint
+	http.HandleFunc("/api/admin/users", authMgr.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil || user.Role != "admin" {
+			http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+			return
+		}
+
+		if r.Method == http.MethodGet {
+			users := authMgr.GetUsers()
+			for i := range users {
+				users[i].PasswordHash = "" // sanitise
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(users)
+			return
+		}
+
+		if r.Method == http.MethodPost {
+			var payload struct {
+				Username    string   `json:"username"`
+				Password    string   `json:"password"`
+				Role        string   `json:"role"`
+				Servers     []string `json:"servers"`
+				Permissions []string `json:"permissions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Username == "" || payload.Password == "" {
+				http.Error(w, "Invalid payload", http.StatusBadRequest)
+				return
+			}
+			if !isValidUsername(payload.Username) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Invalid username format"})
+				return
+			}
+			if payload.Role != "admin" && payload.Role != "user" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Invalid role"})
+				return
+			}
+			err := authMgr.CreateUser(payload.Username, payload.Password, payload.Role, payload.Servers, payload.Permissions)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			return
+		}
+
+		if r.Method == http.MethodPut {
+			var payload struct {
+				Username    string   `json:"username"`
+				Password    string   `json:"password"`
+				Role        string   `json:"role"`
+				Servers     []string `json:"servers"`
+				Permissions []string `json:"permissions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Username == "" {
+				http.Error(w, "Invalid payload", http.StatusBadRequest)
+				return
+			}
+			if payload.Role != "admin" && payload.Role != "user" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Invalid role"})
+				return
+			}
+			err := authMgr.UpdateUser(payload.Username, payload.Password, payload.Role, payload.Servers, payload.Permissions)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			return
+		}
+
+		if r.Method == http.MethodDelete {
+			username := r.URL.Query().Get("username")
+			if username == "" {
+				http.Error(w, "Missing username parameter", http.StatusBadRequest)
+				return
+			}
+			err := authMgr.DeleteUser(username)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			return
+		}
+
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}))
+
+	// Dashboard check updates
+	http.HandleFunc("/api/admin/update/check", authMgr.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil || user.Role != "admin" {
+			http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+			return
+		}
+
+		latestTag, err := fetchLatestRelease()
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+
+		currentVer := strings.TrimPrefix(Version, "v")
+		latestVer := strings.TrimPrefix(latestTag, "v")
+		hasUpdate := latestVer != currentVer
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"current_version": Version,
+			"latest_version":  latestTag,
+			"has_update":      hasUpdate,
+		})
+	}))
+
+	// Dashboard trigger updates
+	http.HandleFunc("/api/admin/update/trigger", authMgr.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil || user.Role != "admin" {
+			http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var payload struct {
+			TagName string `json:"tag_name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.TagName == "" {
+			http.Error(w, "Invalid payload", http.StatusBadRequest)
+			return
+		}
+
+		err = triggerSelfUpdateByGit(payload.TagName)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Dashboard updated successfully. Restarting..."})
+
+		go func() {
+			time.Sleep(1 * time.Second)
+			fmt.Println("[SYS] Exiting for restart after self-update...")
+			os.Exit(0)
+		}()
+	}))
+
 	// Dynamic routing for /api/servers/{id}/...
 	http.HandleFunc("/api/servers/", authMgr.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		// Path format: /api/servers/{id}/{subroute}
 		parts := strings.Split(r.URL.Path, "/")
 		if len(parts) < 4 {
 			http.NotFound(w, r)
 			return
 		}
 
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+			return
+		}
+
 		serverID := parts[3]
+		if !isUserAllowedServer(user, serverID) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden - Server access denied"})
+			return
+		}
+
 		subRoute := ""
 		if len(parts) >= 5 {
 			subRoute = parts[4]
@@ -372,15 +764,17 @@ func main() {
 
 		switch subRoute {
 		case "delete":
-			// POST /api/servers/{id}/delete
 			if r.Method != http.MethodPost {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if user.Role != "admin" {
+				http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
 				return
 			}
 			instMgr.DeleteServer(w, r, serverID)
 
 		case "portcheck":
-			// GET /api/servers/{id}/portcheck
 			if r.Method != http.MethodGet {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 				return
@@ -388,7 +782,6 @@ func main() {
 			instMgr.CheckServerPorts(w, r, serverID)
 
 		case "action":
-			// GET /api/servers/{id}/action?action=start|stop|restart|update
 			if r.Method != http.MethodGet {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 				return
@@ -402,10 +795,39 @@ func main() {
 				http.Error(w, "Invalid action name", http.StatusBadRequest)
 				return
 			}
+
+			// Validate user permission scopes
+			switch action {
+			case "start":
+				if !hasUserPermission(user, "start") {
+					http.Error(w, "Forbidden - Missing start permission", http.StatusForbidden)
+					return
+				}
+			case "stop":
+				if !hasUserPermission(user, "stop") {
+					http.Error(w, "Forbidden - Missing stop permission", http.StatusForbidden)
+					return
+				}
+			case "restart":
+				if !hasUserPermission(user, "restart") {
+					http.Error(w, "Forbidden - Missing restart permission", http.StatusForbidden)
+					return
+				}
+			case "update", "backup", "validate", "details":
+				if user.Role != "admin" {
+					http.Error(w, "Forbidden - Administrator action", http.StatusForbidden)
+					return
+				}
+			}
+
 			instMgr.RunAction(w, r, serverID, action, r.URL.Query().Get("lang"))
 
 		case "console":
-			// POST /api/servers/{id}/console/send
+			if !hasUserPermission(user, "console") {
+				http.Error(w, "Forbidden - Missing console permission", http.StatusForbidden)
+				return
+			}
+
 			if len(parts) >= 6 && parts[5] == "send" {
 				if r.Method != http.MethodPost {
 					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -434,7 +856,6 @@ func main() {
 				return
 			}
 
-			// GET /api/servers/{id}/console?mode=tmux|log
 			if r.Method != http.MethodGet {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 				return
@@ -454,7 +875,11 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]interface{}{"lines": lines})
 
 		case "configs":
-			// GET /api/servers/{id}/configs
+			if !hasUserPermission(user, "config") {
+				http.Error(w, "Forbidden - Missing config permission", http.StatusForbidden)
+				return
+			}
+
 			if len(parts) == 5 {
 				if r.Method != http.MethodGet {
 					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -472,10 +897,8 @@ func main() {
 				return
 			}
 
-			// Subroute: /api/servers/{id}/configs/file
 			if len(parts) >= 6 && parts[5] == "file" {
 				if r.Method == http.MethodGet {
-					// Read config file contents
 					filePath := r.URL.Query().Get("path")
 					if filePath == "" {
 						http.Error(w, "Missing path query parameter", http.StatusBadRequest)
@@ -492,7 +915,6 @@ func main() {
 					json.NewEncoder(w).Encode(map[string]string{"content": content})
 
 				} else if r.Method == http.MethodPost {
-					// Save config file contents
 					var payload struct {
 						Path    string `json:"path"`
 						Content string `json:"content"`

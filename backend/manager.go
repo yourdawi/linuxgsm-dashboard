@@ -827,6 +827,45 @@ func parseServerPort(homeDir string, scriptName string) int {
 		}
 	}
 
+	// Game-specific fallbacks if not found in LGSM config
+	if scriptName == "mtaserver" {
+		mtaConfig := filepath.Join(homeDir, "serverfiles", "mods", "deathmatch", "mtaserver.conf")
+		file, err := os.Open(mtaConfig)
+		if err == nil {
+			defer file.Close()
+			mtaRegex := regexp.MustCompile(`<serverport>(\d+)</serverport>`)
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				matches := mtaRegex.FindStringSubmatch(scanner.Text())
+				if len(matches) > 1 {
+					p, err := strconv.Atoi(matches[1])
+					if err == nil && p > 0 {
+						return p
+					}
+				}
+			}
+		}
+	}
+
+	if scriptName == "mcserver" || scriptName == "minecraft" {
+		mcConfig := filepath.Join(homeDir, "serverfiles", "server.properties")
+		file, err := os.Open(mcConfig)
+		if err == nil {
+			defer file.Close()
+			mcRegex := regexp.MustCompile(`server-port=(\d+)`)
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				matches := mcRegex.FindStringSubmatch(scanner.Text())
+				if len(matches) > 1 {
+					p, err := strconv.Atoi(matches[1])
+					if err == nil && p > 0 {
+						return p
+					}
+				}
+			}
+		}
+	}
+
 	return 0 // default not found
 }
 
@@ -1309,6 +1348,114 @@ func checkUDPQuery(ip string, port int) bool {
 }
 
 func parseServerPortsFromConfig(homeDir string, scriptName string, game string) []PortProbe {
+	// Game-specific overrides for port configurations
+	if scriptName == "mtaserver" || game == "multitheftauto" {
+		mtaConfig := filepath.Join(homeDir, "serverfiles", "mods", "deathmatch", "mtaserver.conf")
+		file, err := os.Open(mtaConfig)
+		if err == nil {
+			defer file.Close()
+			mtaPortRegex := regexp.MustCompile(`<serverport>(\d+)</serverport>`)
+			mtaHttpRegex := regexp.MustCompile(`<httpport>(\d+)</httpport>`)
+
+			serverPort := 22003 // default
+			httpPort := 22005   // default
+
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if matches := mtaPortRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						serverPort = p
+					}
+				}
+				if matches := mtaHttpRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						httpPort = p
+					}
+				}
+			}
+
+			var probes []PortProbe
+			probes = append(probes, PortProbe{
+				Port:        serverPort,
+				Protocol:    "UDP",
+				Description: "MTA Game Port",
+			})
+			probes = append(probes, PortProbe{
+				Port:        serverPort + 123,
+				Protocol:    "UDP",
+				Description: "MTA ASE Query Port",
+			})
+			probes = append(probes, PortProbe{
+				Port:        httpPort,
+				Protocol:    "TCP",
+				Description: "MTA HTTP Web Server",
+			})
+			return probes
+		}
+	}
+
+	if scriptName == "mcserver" || scriptName == "minecraft" || game == "minecraft" || game == "mc" {
+		mcConfig := filepath.Join(homeDir, "serverfiles", "server.properties")
+		file, err := os.Open(mcConfig)
+		if err == nil {
+			defer file.Close()
+			portRegex := regexp.MustCompile(`server-port=(\d+)`)
+			queryRegex := regexp.MustCompile(`query.port=(\d+)`)
+			rconRegex := regexp.MustCompile(`rcon.port=(\d+)`)
+
+			serverPort := 25565
+			queryPort := 25565
+			rconPort := 25575
+			hasQuery := false
+			hasRcon := false
+
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if matches := portRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						serverPort = p
+					}
+				}
+				if matches := queryRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						queryPort = p
+						hasQuery = true
+					}
+				}
+				if matches := rconRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						rconPort = p
+						hasRcon = true
+					}
+				}
+			}
+
+			var probes []PortProbe
+			probes = append(probes, PortProbe{
+				Port:        serverPort,
+				Protocol:    "TCP",
+				Description: "Minecraft Game Port",
+			})
+			if hasQuery {
+				probes = append(probes, PortProbe{
+					Port:        queryPort,
+					Protocol:    "UDP",
+					Description: "Minecraft Query Port",
+				})
+			}
+			if hasRcon {
+				probes = append(probes, PortProbe{
+					Port:        rconPort,
+					Protocol:    "TCP",
+					Description: "Minecraft RCON Port",
+				})
+			}
+			return probes
+		}
+	}
+
 	configDir := filepath.Join(homeDir, "lgsm", "config-lgsm", scriptName)
 	filesToTry := []string{
 		filepath.Join(configDir, fmt.Sprintf("%s.cfg", scriptName)),

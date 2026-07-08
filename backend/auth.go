@@ -15,16 +15,28 @@ import (
 	"time"
 )
 
+type User struct {
+	Username     string   `json:"username"`
+	PasswordHash string   `json:"password_hash"`
+	Role         string   `json:"role"`        // "admin" or "user"
+	Servers      []string `json:"servers"`     // list of ServerIDs (e.g. ["arkserver"])
+	Permissions  []string `json:"permissions"` // e.g. ["start", "stop", "restart", "console", "config"]
+}
+
 type Config struct {
-	Username     string `json:"username"`
-	PasswordHash string `json:"password_hash"`
-	Port         int    `json:"port"`
+	Users []User `json:"users"`
+	Port  int    `json:"port"`
+}
+
+type Session struct {
+	Username string    `json:"username"`
+	Expiry   time.Time `json:"expiry"`
 }
 
 type AuthManager struct {
 	configPath string
 	config     Config
-	sessions   map[string]time.Time
+	sessions   map[string]Session
 	mu         sync.RWMutex
 }
 
@@ -35,7 +47,7 @@ func NewAuthManager(configDir string) (*AuthManager, error) {
 	
 	am := &AuthManager{
 		configPath: filepath.Join(configDir, "config.json"),
-		sessions:   make(map[string]time.Time),
+		sessions:   make(map[string]Session),
 	}
 	
 	if err := am.loadOrCreateConfig(); err != nil {
@@ -57,6 +69,14 @@ func (am *AuthManager) GetPort() int {
 	return am.config.Port
 }
 
+// Temporary struct to detect and parse legacy config structures
+type legacyConfig struct {
+	Username     string `json:"username"`
+	PasswordHash string `json:"password_hash"`
+	Port         int    `json:"port"`
+	Users        []User `json:"users"`
+}
+
 func (am *AuthManager) loadOrCreateConfig() error {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -69,9 +89,16 @@ func (am *AuthManager) loadOrCreateConfig() error {
 		}
 		
 		am.config = Config{
-			Username:     "admin",
-			PasswordHash: hashPassword(rawPassword),
-			Port:         8080,
+			Users: []User{
+				{
+					Username:     "admin",
+					PasswordHash: hashPassword(rawPassword),
+					Role:         "admin",
+					Servers:      []string{}, // Admins bypass server checks
+					Permissions:  []string{"start", "stop", "restart", "console", "config"},
+				},
+			},
+			Port: 8080,
 		}
 		
 		file, err := os.Create(am.configPath)
@@ -98,9 +125,51 @@ func (am *AuthManager) loadOrCreateConfig() error {
 			return err
 		}
 		defer file.Close()
-		
-		if err := json.NewDecoder(file).Decode(&am.config); err != nil {
+
+		var raw legacyConfig
+		if err := json.NewDecoder(file).Decode(&raw); err != nil {
 			return err
+		}
+
+		// Handle legacy single-user configuration migration
+		if len(raw.Users) == 0 {
+			adminUser := User{
+				Username:     raw.Username,
+				PasswordHash: raw.PasswordHash,
+				Role:         "admin",
+				Servers:      []string{},
+				Permissions:  []string{"start", "stop", "restart", "console", "config"},
+			}
+			if adminUser.Username == "" {
+				adminUser.Username = "admin"
+			}
+			if adminUser.PasswordHash == "" {
+				rawPassword, _ := generateRandomPassword(12)
+				adminUser.PasswordHash = hashPassword(rawPassword)
+				fmt.Println("==================================================================")
+				fmt.Println("   LEGACY CONFIG MIGRATION: Password generated!")
+				fmt.Println("   Username: admin")
+				fmt.Printf("   Password: %s\n", rawPassword)
+				fmt.Println("==================================================================")
+			}
+			am.config.Users = []User{adminUser}
+		} else {
+			am.config.Users = raw.Users
+		}
+		am.config.Port = raw.Port
+
+		// Save the migrated config if it was in legacy format
+		if len(raw.Users) == 0 {
+			fileToSave, err := os.Create(am.configPath)
+			if err != nil {
+				return err
+			}
+			defer fileToSave.Close()
+			encoder := json.NewEncoder(fileToSave)
+			encoder.SetIndent("", "  ")
+			if err := encoder.Encode(am.config); err != nil {
+				return err
+			}
 		}
 	}
 	
@@ -112,7 +181,16 @@ func (am *AuthManager) Login(username, password string) (string, error) {
 	defer am.mu.RUnlock()
 
 	expectedHash := hashPassword(password)
-	if username != am.config.Username || expectedHash != am.config.PasswordHash {
+	
+	var authenticatedUser *User
+	for _, u := range am.config.Users {
+		if u.Username == username && u.PasswordHash == expectedHash {
+			authenticatedUser = &u
+			break
+		}
+	}
+
+	if authenticatedUser == nil {
 		return "", errors.New("invalid credentials")
 	}
 
@@ -123,7 +201,10 @@ func (am *AuthManager) Login(username, password string) (string, error) {
 
 	am.mu.RUnlock()
 	am.mu.Lock()
-	am.sessions[sessionID] = time.Now().Add(24 * time.Hour) // 1 day session
+	am.sessions[sessionID] = Session{
+		Username: username,
+		Expiry:   time.Now().Add(24 * time.Hour), // 1 day session
+	}
 	am.mu.Unlock()
 	am.mu.RLock()
 
@@ -137,48 +218,162 @@ func (am *AuthManager) Logout(sessionID string) {
 }
 
 func (am *AuthManager) IsValidSession(sessionID string) bool {
+	_, ok := am.GetSession(sessionID)
+	return ok
+}
+
+func (am *AuthManager) GetSession(sessionID string) (Session, bool) {
 	am.mu.RLock()
-	expiry, exists := am.sessions[sessionID]
+	session, exists := am.sessions[sessionID]
 	am.mu.RUnlock()
 
 	if !exists {
-		return false
+		return Session{}, false
 	}
 
-	if time.Now().After(expiry) {
+	if time.Now().After(session.Expiry) {
 		am.mu.Lock()
 		delete(am.sessions, sessionID)
 		am.mu.Unlock()
-		return false
+		return Session{}, false
 	}
 
 	// Extend session duration on active use
 	am.mu.Lock()
-	am.sessions[sessionID] = time.Now().Add(2 * time.Hour)
+	session.Expiry = time.Now().Add(2 * time.Hour)
+	am.sessions[sessionID] = session
 	am.mu.Unlock()
 
-	return true
+	return session, true
+}
+
+func (am *AuthManager) GetUser(username string) (User, bool) {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	for _, u := range am.config.Users {
+		if u.Username == username {
+			return u, true
+		}
+	}
+	return User{}, false
+}
+
+func (am *AuthManager) GetUsers() []User {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	users := make([]User, len(am.config.Users))
+	copy(users, am.config.Users)
+	return users
+}
+
+func (am *AuthManager) CreateUser(username, password, role string, servers, permissions []string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	
+	for _, u := range am.config.Users {
+		if u.Username == username {
+			return errors.New("user already exists")
+		}
+	}
+	
+	newUser := User{
+		Username:     username,
+		PasswordHash: hashPassword(password),
+		Role:         role,
+		Servers:      servers,
+		Permissions:  permissions,
+	}
+	
+	am.config.Users = append(am.config.Users, newUser)
+	return am.saveConfigLocked()
+}
+
+func (am *AuthManager) UpdateUser(username, password, role string, servers, permissions []string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	
+	found := false
+	for i, u := range am.config.Users {
+		if u.Username == username {
+			if password != "" {
+				am.config.Users[i].PasswordHash = hashPassword(password)
+			}
+			am.config.Users[i].Role = role
+			am.config.Users[i].Servers = servers
+			am.config.Users[i].Permissions = permissions
+			found = true
+			break
+		}
+	}
+	
+	if !found {
+		return errors.New("user not found")
+	}
+	return am.saveConfigLocked()
+}
+
+func (am *AuthManager) DeleteUser(username string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	
+	adminCount := 0
+	for _, u := range am.config.Users {
+		if u.Role == "admin" {
+			adminCount++
+		}
+	}
+	
+	foundIdx := -1
+	for i, u := range am.config.Users {
+		if u.Username == username {
+			if u.Role == "admin" && adminCount <= 1 {
+				return errors.New("cannot delete the only remaining administrator")
+			}
+			foundIdx = i
+			break
+		}
+	}
+	
+	if foundIdx == -1 {
+		return errors.New("user not found")
+	}
+	
+	am.config.Users = append(am.config.Users[:foundIdx], am.config.Users[foundIdx+1:]...)
+	return am.saveConfigLocked()
+}
+
+func (am *AuthManager) ChangeUserPassword(username, oldPassword, newPassword string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	
+	for i, u := range am.config.Users {
+		if u.Username == username {
+			if hashPassword(oldPassword) != u.PasswordHash {
+				return errors.New("current password incorrect")
+			}
+			am.config.Users[i].PasswordHash = hashPassword(newPassword)
+			return am.saveConfigLocked()
+		}
+	}
+	return errors.New("user not found")
 }
 
 func (am *AuthManager) ChangePassword(oldPassword, newPassword string) error {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-
-	if hashPassword(oldPassword) != am.config.PasswordHash {
-		return errors.New("old password incorrect")
+	// For backwards compatibility, update the first admin
+	am.mu.RLock()
+	var adminUsername string
+	for _, u := range am.config.Users {
+		if u.Role == "admin" {
+			adminUsername = u.Username
+			break
+		}
 	}
+	am.mu.RUnlock()
 
-	am.config.PasswordHash = hashPassword(newPassword)
-
-	file, err := os.Create(am.configPath)
-	if err != nil {
-		return err
+	if adminUsername == "" {
+		return errors.New("no administrator user found")
 	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(am.config)
+	return am.ChangeUserPassword(adminUsername, oldPassword, newPassword)
 }
 
 func (am *AuthManager) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -194,13 +389,25 @@ func (am *AuthManager) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (am *AuthManager) saveConfigLocked() error {
+	file, err := os.Create(am.configPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(am.config)
+}
+
 func (am *AuthManager) cleanupSessionsLoop() {
 	ticker := time.NewTicker(30 * time.Minute)
 	for range ticker.C {
 		am.mu.Lock()
 		now := time.Now()
-		for id, expiry := range am.sessions {
-			if now.After(expiry) {
+		for id, session := range am.sessions {
+			if now.After(session.Expiry) {
 				delete(am.sessions, id)
 			}
 		}
