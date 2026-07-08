@@ -1569,3 +1569,55 @@ body.light-theme .game-card-icon {
     align-items: center;
     justify-content: center;
 }
+
+/* User Management View Styles */
+.user-table th {
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-color);
+}
+.user-table td {
+    padding: 0.75rem;
+    vertical-align: middle;
+}
+.user-table tr:hover {
+    background: rgba(255, 255, 255, 0.015);
+}
+body.light-theme .user-table tr:hover {
+    background: rgba(0, 0, 0, 0.015);
+}
+
+/* User Form Grid & checkbox styling */
+.checkbox-group-grid::-webkit-scrollbar {
+    width: 6px;
+}
+.checkbox-group-grid::-webkit-scrollbar-track {
+    background: transparent;
+}
+.checkbox-group-grid::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+body.light-theme .checkbox-group-grid::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.checkbox-label {
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    transition: var(--transition);
+}
+.checkbox-label:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+body.light-theme .checkbox-label:hover {
+    background: rgba(0, 0, 0, 0.05);
+}
+
+/* Update Card Custom Styles */
+.update-status-box {
+    background: rgba(255, 255, 255, 0.01);
+    border: 1px solid var(--border-color);
+    padding: 0.75rem 1rem;
+    border-radius: var(--inner-radius);
+}

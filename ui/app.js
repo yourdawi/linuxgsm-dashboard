@@ -266,6 +266,29 @@ function initApp() {
     el.btnLangToggle.addEventListener('click', toggleLanguage);
     el.btnSyncGames.addEventListener('click', syncGamesList);
 
+    // User modal listeners
+    const btnCreateUserModal = document.getElementById('btn-create-user-modal');
+    if (btnCreateUserModal) btnCreateUserModal.addEventListener('click', openCreateUserModal);
+    
+    const modalUserCloseX = document.getElementById('modal-user-close-x');
+    if (modalUserCloseX) modalUserCloseX.addEventListener('click', () => document.getElementById('modal-user').classList.add('hidden'));
+    
+    const modalUserClose = document.getElementById('modal-user-close');
+    if (modalUserClose) modalUserClose.addEventListener('click', () => document.getElementById('modal-user').classList.add('hidden'));
+    
+    const modalUserSubmit = document.getElementById('modal-user-submit');
+    if (modalUserSubmit) modalUserSubmit.addEventListener('click', saveUserForm);
+    
+    const userRoleSelect = document.getElementById('user-role');
+    if (userRoleSelect) userRoleSelect.addEventListener('change', updateUserFormVisibility);
+    
+    // Dashboard updater listeners
+    const btnCheckUpdate = document.getElementById('btn-check-update');
+    if (btnCheckUpdate) btnCheckUpdate.addEventListener('click', () => checkDashboardUpdate(true));
+    
+    const btnTriggerUpdate = document.getElementById('btn-trigger-update');
+    if (btnTriggerUpdate) btnTriggerUpdate.addEventListener('click', triggerDashboardUpdate);
+
     // Initialize Theme and Language
     initTheme();
     initLanguage();
@@ -280,6 +303,14 @@ function initApp() {
 function handleRouting() {
     const hash = window.location.hash || '#dashboard';
     const viewName = hash.substring(1);
+    
+    // Role-based view protection
+    if (state.currentUser && state.currentUser.role !== 'admin') {
+        if (viewName === 'users' || viewName === 'installer') {
+            window.location.hash = '#dashboard';
+            return;
+        }
+    }
     
     let targetView = document.getElementById(`view-${viewName}`);
     if (!targetView) {
@@ -317,6 +348,8 @@ function handleRouting() {
         if (state.selectedConsoleServer) {
             startConsolePolling();
         }
+    } else if (viewName === 'users') {
+        loadUsersList();
     } else if (viewName === 'settings') {
         loadSettingsInfo();
     } else if (viewName === 'installer') {
@@ -366,9 +399,51 @@ function showLogin() {
     stopDashboardPolling();
 }
 
-function hideLogin() {
+async function hideLogin() {
     el.loginContainer.classList.add('hidden');
     el.appContainer.classList.remove('hidden');
+    
+    try {
+        const res = await fetch('/api/system/info');
+        if (res.status === 200) {
+            const data = await res.json();
+            state.currentUser = data.user;
+            state.lastSettingsData = data;
+            renderSettingsMode(data);
+            
+            // Dynamically show the logged-in username in the sidebar footer
+            const sidebarUsername = document.getElementById('sidebar-username');
+            if (sidebarUsername && state.currentUser) {
+                sidebarUsername.textContent = state.currentUser.username;
+            }
+            
+            const menuUsersTab = document.getElementById('menu-users-tab');
+            if (menuUsersTab) {
+                if (state.currentUser && state.currentUser.role === 'admin') {
+                    menuUsersTab.classList.remove('hidden');
+                } else {
+                    menuUsersTab.classList.add('hidden');
+                    if (window.location.hash === '#users') {
+                        window.location.hash = '#dashboard';
+                    }
+                }
+            }
+
+            const menuInstallerTab = document.getElementById('menu-installer-tab');
+            if (menuInstallerTab) {
+                if (state.currentUser && state.currentUser.role === 'admin') {
+                    menuInstallerTab.classList.remove('hidden');
+                } else {
+                    menuInstallerTab.classList.add('hidden');
+                    if (window.location.hash === '#installer') {
+                        window.location.hash = '#dashboard';
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load user info:', e);
+    }
 }
 
 async function handleLogin(e) {
@@ -541,6 +616,12 @@ function renderServersGridQuiet() {
     });
 }
 
+function hasUserPermission(permission) {
+    if (!state.currentUser) return false;
+    if (state.currentUser.role === 'admin') return true;
+    return state.currentUser.permissions && state.currentUser.permissions.includes(permission);
+}
+
 function createServerCard(server) {
     const card = document.createElement('div');
     card.id = `server-card-${server.id}`;
@@ -569,6 +650,89 @@ function createServerCard(server) {
     
     const cpu = server.cpu || 0;
     const ram = server.ram || 0;
+    
+    const canStart = hasUserPermission('start');
+    const canStop = hasUserPermission('stop');
+    const canRestart = hasUserPermission('restart');
+    const canConsole = hasUserPermission('console');
+    const canConfig = hasUserPermission('config');
+    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+
+    // Build buttons HTML based on permissions
+    let actionsHtml = '';
+    if (canStart || canStop || canRestart) {
+        actionsHtml += `<div class="card-actions">`;
+        if (server.status === 'running') {
+            if (canStop) {
+                actionsHtml += `
+                    <button class="btn btn-danger btn-server-action" onclick="runServerAction('${server.id}', 'stop')" ${isBusy ? 'disabled' : ''}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg> ${t('btn-stop')}
+                    </button>`;
+            }
+        } else {
+            if (canStart) {
+                actionsHtml += `
+                    <button class="btn btn-success btn-server-action" onclick="runServerAction('${server.id}', 'start')" ${isBusy ? 'disabled' : ''}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg> ${t('btn-start')}
+                    </button>`;
+            }
+        }
+        if (canRestart) {
+            actionsHtml += `
+                <button class="btn btn-warning btn-server-action" onclick="runServerAction('${server.id}', 'restart')" ${isBusy ? 'disabled' : ''}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg> ${t('btn-restart')}
+                </button>`;
+        }
+        actionsHtml += `</div>`;
+    }
+
+    let subActionsHtml = '';
+    if (canConsole || canConfig || isAdmin) {
+        subActionsHtml += `<div class="card-actions-row-3">`;
+        if (canConsole) {
+            subActionsHtml += `
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConsole('${server.id}')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-console')}
+                </button>`;
+        }
+        if (canConfig) {
+            subActionsHtml += `
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConfigEditor('${server.id}')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-configs')}
+                </button>`;
+        }
+        if (isAdmin) {
+            subActionsHtml += `
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'update')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-update')}
+                </button>`;
+        }
+        subActionsHtml += `</div>`;
+    }
+
+    let adminActionsHtml = '';
+    if (isAdmin) {
+        adminActionsHtml += `
+            <div class="card-actions-row-3" style="margin-top: 0.4rem;">
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'details')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-details')}
+                </button>
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'backup')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-backup')}
+                </button>
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'validate')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-validate')}
+                </button>
+            </div>
+            <div class="card-actions-row-2" style="margin-top: 0.4rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
+                <button class="btn btn-primary btn-sm btn-server-action" onclick="checkServerPorts('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg> ${t('btn-portcheck')}
+                </button>
+                <button class="btn btn-danger btn-sm btn-server-action" onclick="openDeleteServerModal('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> ${t('btn-delete-server')}
+                </button>
+            </div>`;
+    }
     
     card.innerHTML = `
         <div class="card-header">
@@ -608,50 +772,9 @@ function createServerCard(server) {
             </div>
         </div>
         
-        <div class="card-actions">
-            ${server.status === 'running' ? `
-                <button class="btn btn-danger btn-server-action" onclick="runServerAction('${server.id}', 'stop')" ${isBusy ? 'disabled' : ''}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg> ${t('btn-stop')}
-                </button>
-            ` : `
-                <button class="btn btn-success btn-server-action" onclick="runServerAction('${server.id}', 'start')" ${isBusy ? 'disabled' : ''}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg> ${t('btn-start')}
-                </button>
-            `}
-            <button class="btn btn-warning btn-server-action" onclick="runServerAction('${server.id}', 'restart')" ${isBusy ? 'disabled' : ''}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg> ${t('btn-restart')}
-            </button>
-        </div>
-        <div class="card-actions-row-3">
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConsole('${server.id}')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-console')}
-            </button>
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConfigEditor('${server.id}')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-configs')}
-            </button>
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'update')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-update')}
-            </button>
-        </div>
-        <div class="card-actions-row-3" style="margin-top: 0.4rem;">
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'details')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-details')}
-            </button>
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'backup')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-backup')}
-            </button>
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'validate')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-validate')}
-            </button>
-        </div>
-        <div class="card-actions-row-2" style="margin-top: 0.4rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
-            <button class="btn btn-primary btn-sm btn-server-action" onclick="checkServerPorts('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg> ${t('btn-portcheck')}
-            </button>
-            <button class="btn btn-danger btn-sm btn-server-action" onclick="openDeleteServerModal('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> ${t('btn-delete-server')}
-            </button>
-        </div>
+        ${actionsHtml}
+        ${subActionsHtml}
+        ${adminActionsHtml}
     `;
     
     return card;
@@ -1376,14 +1499,25 @@ async function loadSettingsInfo() {
         const data = await res.json();
         
         state.lastSettingsData = data;
+        state.currentUser = data.user;
         
         el.settingsOs.textContent = data.os;
         el.settingsPid.textContent = data.pid;
+        
+        const versionVal = document.querySelector('[data-i18n="settings-info-version"]');
+        if (versionVal && versionVal.nextElementSibling) {
+            versionVal.nextElementSibling.textContent = data.version;
+        }
+
         renderSettingsMode(data);
         if (data.mock) {
             el.settingsMode.className = 'info-value highlight text-warning';
         } else {
             el.settingsMode.className = 'info-value highlight text-success';
+        }
+        
+        if (state.currentUser && state.currentUser.role === 'admin') {
+            checkDashboardUpdate(false);
         }
         
         // Populate tools dropdown
@@ -1980,9 +2114,40 @@ const i18n = {
         "modal-delete-warning": "WARNING: This action is permanent and cannot be undone! It will permanently delete all game files, configs, and the dedicated system user from this server.",
         "modal-delete-prompt-label": "Please type the name of the server to confirm deletion:",
         "modal-delete-cancel-btn": "Cancel",
-        "modal-delete-submit-btn": "Delete Server Permanently"
-        ,
-        "console-no-server-connected": "No server connected"
+        "modal-delete-submit-btn": "Delete Server Permanently",
+        "console-no-server-connected": "No server connected",
+        "menu-users": "Users",
+        "users-title": "User Administration",
+        "users-subtitle": "Create and manage dashboard users and their access permissions.",
+        "btn-new-user": "New User",
+        "col-username": "Username",
+        "col-role": "Role",
+        "col-servers": "Assigned Servers",
+        "col-permissions": "Permissions",
+        "col-actions": "Actions",
+        "role-user": "Normal User",
+        "role-admin": "Administrator",
+        "user-servers-label": "Server Assignment",
+        "user-servers-help": "Administrators automatically have access to all servers.",
+        "user-permissions-label": "Allowed Functions",
+        "user-permissions-help": "Administrators automatically have all permission scopes.",
+        "perm-start": "Start server",
+        "perm-stop": "Stop server",
+        "perm-restart": "Restart server",
+        "perm-console": "Live console",
+        "perm-config": "Edit configs",
+        "settings-update-title": "Dashboard Updates",
+        "settings-update-desc": "Check for new versions of the dashboard on GitHub.",
+        "settings-update-status-label": "Status:",
+        "update-status-latest": "Up to date",
+        "settings-update-new-version": "Available Version:",
+        "btn-check-update": "Check for Updates",
+        "btn-trigger-update": "Update Now",
+        "modal-user-title-new": "Create New User",
+        "modal-user-subtitle": "Assign user roles and permissions.",
+        "user-username-help": "3-16 characters, lowercase letters, numbers and underscores only.",
+        "user-password-help": "Leave blank to keep current password.",
+        "btn-cancel": "Cancel"
     },
     de: {
         "menu-dashboard": "Dashboard",
@@ -2152,9 +2317,40 @@ const i18n = {
         "modal-delete-warning": "WARNUNG: Diese Aktion kann nicht rückgängig gemacht werden! Dadurch werden alle Spieldateien, Konfigurationen und (falls exklusiv genutzt) der gesamte Systembenutzer dauerhaft vom Server gelöscht.",
         "modal-delete-prompt-label": "Bitte gebe den Namen des Servers ein, um das Löschen zu bestätigen:",
         "modal-delete-cancel-btn": "Abbrechen",
-        "modal-delete-submit-btn": "Server unwiderruflich löschen"
-        ,
-        "console-no-server-connected": "Kein Server verbunden"
+        "modal-delete-submit-btn": "Server unwiderruflich löschen",
+        "console-no-server-connected": "Kein Server verbunden",
+        "menu-users": "Benutzer",
+        "users-title": "Benutzerverwaltung",
+        "users-subtitle": "Erstelle und verwalte Dashboard-Benutzer und deren Zugriffsrechte.",
+        "btn-new-user": "Neuer Benutzer",
+        "col-username": "Benutzername",
+        "col-role": "Rolle",
+        "col-servers": "Zugeordnete Server",
+        "col-permissions": "Rechte",
+        "col-actions": "Aktionen",
+        "role-user": "Normaler Benutzer",
+        "role-admin": "Administrator",
+        "user-servers-label": "Server-Zuweisung",
+        "user-servers-help": "Administratoren haben automatisch Zugriff auf alle Server.",
+        "user-permissions-label": "Erlaubter Funktionsumfang",
+        "user-permissions-help": "Administratoren haben automatisch alle Berechtigungen.",
+        "perm-start": "Server starten",
+        "perm-stop": "Server stoppen",
+        "perm-restart": "Server neustarten",
+        "perm-console": "Live-Konsole",
+        "perm-config": "Configs bearbeiten",
+        "settings-update-title": "Dashboard-Updates",
+        "settings-update-desc": "Überprüfe, ob neue Versionen des Dashboards auf GitHub verfügbar sind.",
+        "settings-update-status-label": "Status:",
+        "update-status-latest": "Aktuell",
+        "settings-update-new-version": "Verfügbare Version:",
+        "btn-check-update": "Nach Updates suchen",
+        "btn-trigger-update": "Jetzt updaten",
+        "modal-user-title-new": "Neuen Benutzer anlegen",
+        "modal-user-subtitle": "Benutzerrollen und Berechtigungen zuweisen.",
+        "user-username-help": "3-16 Zeichen, nur Kleinbuchstaben, Zahlen und Unterstriche.",
+        "user-password-help": "Lass das Feld leer, um das Passwort nicht zu ändern.",
+        "btn-cancel": "Abbrechen"
     }
 };
 
@@ -2399,3 +2595,410 @@ async function confirmDeleteServer() {
         el.btnDeleteConfirmSubmit.disabled = false;
     }
 }
+
+// -------------------------------------------------------------
+// Dashboard Update Logic
+// -------------------------------------------------------------
+let latestTagName = '';
+
+async function checkDashboardUpdate(manual = false) {
+    const statusText = document.getElementById('update-status-text');
+    const detailsRow = document.getElementById('update-details-row');
+    const newVersionText = document.getElementById('update-new-version-text');
+    const btnTrigger = document.getElementById('btn-trigger-update');
+    const messageArea = document.getElementById('settings-update-message');
+    
+    if (!statusText) return;
+    
+    if (manual) {
+        messageArea.textContent = state.language === 'de' ? 'Suche nach Updates...' : 'Checking for updates...';
+        messageArea.className = 'info-message text-muted';
+    }
+    
+    try {
+        const res = await apiFetch('/api/admin/update/check');
+        const data = await res.json();
+        
+        if (data.has_update) {
+            statusText.textContent = state.language === 'de' ? 'Update verfügbar' : 'Update Available';
+            statusText.className = 'info-value text-warning';
+            newVersionText.textContent = data.latest_version;
+            detailsRow.classList.remove('hidden');
+            btnTrigger.classList.remove('hidden');
+            latestTagName = data.latest_version;
+            
+            if (manual) {
+                messageArea.textContent = state.language === 'de' ? 'Eine neue Version ist verfügbar!' : 'A new version is available!';
+                messageArea.className = 'info-message text-warning';
+            }
+        } else {
+            statusText.textContent = state.language === 'de' ? 'Aktuell' : 'Up to date';
+            statusText.className = 'info-value text-success';
+            detailsRow.classList.add('hidden');
+            btnTrigger.classList.add('hidden');
+            
+            if (manual) {
+                messageArea.textContent = state.language === 'de' ? 'Dashboard ist auf dem neuesten Stand.' : 'Dashboard is up to date.';
+                messageArea.className = 'info-message text-success';
+            }
+        }
+    } catch (e) {
+        console.error('Update check failed:', e);
+        if (manual) {
+            messageArea.textContent = state.language === 'de' ? 'Fehler beim Überprüfen von Updates.' : 'Error checking for updates.';
+            messageArea.className = 'info-message text-danger';
+        }
+    }
+}
+
+async function triggerDashboardUpdate() {
+    const messageArea = document.getElementById('settings-update-message');
+    const btnTrigger = document.getElementById('btn-trigger-update');
+    const btnCheck = document.getElementById('btn-check-update');
+    
+    if (!latestTagName) {
+        alert('Kein Update-Tag vorhanden.');
+        return;
+    }
+    
+    if (!confirm(state.language === 'de' ? 'Möchtest du das Dashboard wirklich aktualisieren? Die Verbindung wird kurz getrennt.' : 'Are you sure you want to update the dashboard? The connection will be briefly disconnected.')) {
+        return;
+    }
+    
+    messageArea.textContent = state.language === 'de' ? 'Update wird lokal kompiliert... Bitte warten.' : 'Update compiling locally... Please wait.';
+    messageArea.className = 'info-message text-warning';
+    btnTrigger.disabled = true;
+    btnCheck.disabled = true;
+    
+    try {
+        const res = await apiFetch('/api/admin/update/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag_name: latestTagName })
+        });
+        
+        if (res.status === 200) {
+            messageArea.textContent = state.language === 'de' ? 'Update erfolgreich! Dashboard startet neu...' : 'Update successful! Dashboard is restarting...';
+            messageArea.className = 'info-message text-success';
+            
+            setTimeout(() => {
+                window.location.reload();
+            }, 4000);
+        } else {
+            const data = await res.json();
+            throw new Error(data.error || 'Server error');
+        }
+    } catch (e) {
+        console.error('Update failed:', e);
+        messageArea.textContent = (state.language === 'de' ? 'Update fehlgeschlagen: ' : 'Update failed: ') + e.message;
+        messageArea.className = 'info-message text-danger';
+        btnTrigger.disabled = false;
+        btnCheck.disabled = false;
+    }
+}
+
+// -------------------------------------------------------------
+// User Management Logic
+// -------------------------------------------------------------
+let currentEditUser = null;
+
+async function loadUsersList() {
+    const tbody = document.getElementById('users-list-body');
+    if (!tbody) return;
+    
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-muted);">${state.language === 'de' ? 'Lade Benutzer...' : 'Loading users...'}</td></tr>`;
+    
+    try {
+        const res = await apiFetch('/api/admin/users');
+        const users = await res.json();
+        
+        tbody.innerHTML = '';
+        if (users.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-muted);">${state.language === 'de' ? 'Keine Benutzer gefunden.' : 'No users found.'}</td></tr>`;
+            return;
+        }
+        
+        users.forEach(user => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = '1px solid var(--border-color)';
+            
+            const roleBadge = user.role === 'admin' ? 
+                '<span class="badge badge-success" style="font-size: 0.75rem;">Admin</span>' : 
+                '<span class="badge badge-secondary" style="font-size: 0.75rem;">User</span>';
+                
+            const servers = user.role === 'admin' ? 
+                `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Alle Server' : 'All Servers'}</span>` : 
+                (user.servers && user.servers.length > 0 ? 
+                    user.servers.map(s => `<code style="font-size: 0.8rem;">${s}</code>`).join(', ') : 
+                    `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Keine' : 'None'}</span>`);
+                    
+            const perms = user.role === 'admin' ? 
+                `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Voller Zugriff' : 'Full Access'}</span>` : 
+                (user.permissions && user.permissions.length > 0 ? 
+                    user.permissions.map(p => {
+                        let label = p;
+                        if (state.language === 'de') {
+                            if (p === 'start') label = 'Start';
+                            if (p === 'stop') label = 'Stop';
+                            if (p === 'restart') label = 'Restart';
+                            if (p === 'console') label = 'Konsole';
+                            if (p === 'config') label = 'Configs';
+                        }
+                        return `<span class="badge badge-pulse" style="font-size: 0.7rem; background: rgba(255,255,255,0.05); color: var(--text-color); border: 1px solid var(--border-color);">${label}</span>`;
+                    }).join(' ') : 
+                    `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Keine' : 'None'}</span>`);
+            
+            const isSelf = state.currentUser && state.currentUser.username === user.username;
+            const deleteBtn = isSelf ? 
+                `<button class="btn btn-danger btn-sm" disabled style="opacity: 0.4;">${state.language === 'de' ? 'Löschen' : 'Delete'}</button>` : 
+                `<button class="btn btn-danger btn-sm" onclick="deleteUser('${user.username}')">${state.language === 'de' ? 'Löschen' : 'Delete'}</button>`;
+                
+            tr.innerHTML = `
+                <td style="padding: 0.75rem;"><strong>${user.username}</strong> ${isSelf ? `<small class="text-muted">(${state.language === 'de' ? 'Du' : 'You'})</small>` : ''}</td>
+                <td style="padding: 0.75rem;">${roleBadge}</td>
+                <td style="padding: 0.75rem;">${servers}</td>
+                <td style="padding: 0.75rem;">${perms}</td>
+                <td style="padding: 0.75rem; text-align: right; display: flex; gap: 0.5rem; justify-content: flex-end;">
+                    <button class="btn btn-secondary btn-sm" onclick="openEditUserModal('${user.username}')">${state.language === 'de' ? 'Bearbeiten' : 'Edit'}</button>
+                    ${deleteBtn}
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (e) {
+        console.error('Failed to load users:', e);
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-danger);">${state.language === 'de' ? 'Fehler beim Laden der Benutzer.' : 'Failed to load users.'}</td></tr>`;
+    }
+}
+
+async function populateUserServerCheckboxes() {
+    const listDiv = document.getElementById('user-servers-list');
+    if (!listDiv) return;
+    
+    listDiv.innerHTML = '';
+    
+    try {
+        const res = await fetch('/api/servers');
+        if (res.status === 200) {
+            const servers = await res.json();
+            if (servers.length === 0) {
+                listDiv.innerHTML = `<span class="text-muted" style="grid-column: 1 / -1; font-size: 0.8rem; padding: 0.5rem;">${state.language === 'de' ? 'Keine Server installiert.' : 'No servers installed.'}</span>`;
+                return;
+            }
+            
+            servers.forEach(srv => {
+                const label = document.createElement('label');
+                label.className = 'checkbox-label';
+                label.style.display = 'flex';
+                label.style.alignItems = 'center';
+                label.style.gap = '0.5rem';
+                label.style.cursor = 'pointer';
+                label.style.fontSize = '0.85rem';
+                
+                label.innerHTML = `
+                    <input type="checkbox" name="user-assigned-servers" value="${srv.id}">
+                    <span>${srv.name} (<code>${srv.user}</code>)</span>
+                `;
+                listDiv.appendChild(label);
+            });
+        }
+    } catch (e) {
+        console.error('Failed to load servers for user form:', e);
+    }
+}
+
+async function openCreateUserModal() {
+    currentEditUser = null;
+    
+    const title = document.getElementById('modal-user-title');
+    const usernameInput = document.getElementById('user-username');
+    const passwordInput = document.getElementById('user-password');
+    const passwordLabel = document.getElementById('user-password-label');
+    const passwordHelp = document.getElementById('user-password-help');
+    const roleSelect = document.getElementById('user-role');
+    const messageArea = document.getElementById('modal-user-message');
+    const modal = document.getElementById('modal-user');
+    
+    title.textContent = state.language === 'de' ? 'Neuen Benutzer anlegen' : 'Create New User';
+    usernameInput.disabled = false;
+    usernameInput.value = '';
+    passwordInput.value = '';
+    passwordInput.required = true;
+    passwordLabel.textContent = state.language === 'de' ? 'Passwort' : 'Password';
+    passwordHelp.classList.add('hidden');
+    roleSelect.value = 'user';
+    messageArea.innerHTML = '';
+    
+    await populateUserServerCheckboxes();
+    updateUserFormVisibility();
+    
+    modal.classList.remove('hidden');
+}
+
+async function openEditUserModal(username) {
+    currentEditUser = username;
+    
+    const title = document.getElementById('modal-user-title');
+    const usernameInput = document.getElementById('user-username');
+    const passwordInput = document.getElementById('user-password');
+    const passwordLabel = document.getElementById('user-password-label');
+    const passwordHelp = document.getElementById('user-password-help');
+    const roleSelect = document.getElementById('user-role');
+    const messageArea = document.getElementById('modal-user-message');
+    const modal = document.getElementById('modal-user');
+    
+    title.textContent = (state.language === 'de' ? 'Benutzer bearbeiten: ' : 'Edit User: ') + username;
+    usernameInput.disabled = true;
+    usernameInput.value = username;
+    passwordInput.value = '';
+    passwordInput.required = false;
+    passwordLabel.textContent = (state.language === 'de' ? 'Neues Passwort' : 'New Password') + ` (${state.language === 'de' ? 'optional' : 'optional'})`;
+    passwordHelp.classList.remove('hidden');
+    messageArea.innerHTML = '';
+    
+    await populateUserServerCheckboxes();
+    
+    try {
+        const res = await apiFetch('/api/admin/users');
+        const users = await res.json();
+        const user = users.find(u => u.username === username);
+        if (user) {
+            roleSelect.value = user.role;
+            
+            const serverCheckboxes = document.querySelectorAll('input[name="user-assigned-servers"]');
+            serverCheckboxes.forEach(cb => {
+                cb.checked = user.servers && user.servers.includes(cb.value);
+            });
+            
+            const permCheckboxes = document.querySelectorAll('#user-permissions-list input[type="checkbox"]');
+            permCheckboxes.forEach(cb => {
+                cb.checked = user.permissions && user.permissions.includes(cb.value);
+            });
+        }
+    } catch (e) {
+        console.error('Failed to load user details for editing:', e);
+    }
+    
+    updateUserFormVisibility();
+    modal.classList.remove('hidden');
+}
+
+function updateUserFormVisibility() {
+    const roleSelect = document.getElementById('user-role');
+    const serversSection = document.getElementById('user-servers-section');
+    const permissionsSection = document.getElementById('user-permissions-section');
+    
+    if (roleSelect.value === 'admin') {
+        serversSection.classList.add('hidden');
+        permissionsSection.classList.add('hidden');
+    } else {
+        serversSection.classList.remove('hidden');
+        permissionsSection.classList.remove('hidden');
+    }
+}
+
+async function saveUserForm() {
+    const usernameInput = document.getElementById('user-username');
+    const passwordInput = document.getElementById('user-password');
+    const roleSelect = document.getElementById('user-role');
+    const messageArea = document.getElementById('modal-user-message');
+    const modal = document.getElementById('modal-user');
+    
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value;
+    const role = roleSelect.value;
+    
+    if (!username) {
+        messageArea.textContent = state.language === 'de' ? 'Benutzername ist erforderlich.' : 'Username is required.';
+        messageArea.className = 'info-message text-danger';
+        return;
+    }
+    
+    if (!currentEditUser && !password) {
+        messageArea.textContent = state.language === 'de' ? 'Passwort ist erforderlich.' : 'Password is required.';
+        messageArea.className = 'info-message text-danger';
+        return;
+    }
+    
+    let servers = [];
+    if (role === 'user') {
+        const checkedServers = document.querySelectorAll('input[name="user-assigned-servers"]:checked');
+        checkedServers.forEach(cb => servers.push(cb.value));
+    }
+    
+    let permissions = [];
+    if (role === 'user') {
+        const checkedPerms = document.querySelectorAll('#user-permissions-list input[type="checkbox"]:checked');
+        checkedPerms.forEach(cb => permissions.push(cb.value));
+    } else {
+        permissions = ['start', 'stop', 'restart', 'console', 'config'];
+    }
+    
+    messageArea.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
+    messageArea.className = 'info-message text-muted';
+    
+    try {
+        let res;
+        if (currentEditUser) {
+            res = await apiFetch('/api/admin/users', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: currentEditUser,
+                    password: password || undefined,
+                    role,
+                    servers,
+                    permissions
+                })
+            });
+        } else {
+            res = await apiFetch('/api/admin/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username,
+                    password,
+                    role,
+                    servers,
+                    permissions
+                })
+            });
+        }
+        
+        const data = await res.json();
+        if (res.status === 200 && data.status === 'ok') {
+            modal.classList.add('hidden');
+            loadUsersList();
+        } else {
+            throw new Error(data.error || 'Server error');
+        }
+    } catch (e) {
+        console.error('Failed to save user:', e);
+        messageArea.textContent = (state.language === 'de' ? 'Fehler beim Speichern: ' : 'Failed to save: ') + e.message;
+        messageArea.className = 'info-message text-danger';
+    }
+}
+
+async function deleteUser(username) {
+    if (!confirm(state.language === 'de' ? `Möchtest du den Benutzer "${username}" wirklich unwiderruflich löschen?` : `Are you sure you want to permanently delete the user "${username}"?`)) {
+        return;
+    }
+    
+    try {
+        const res = await apiFetch(`/api/admin/users?username=${username}`, {
+            method: 'DELETE'
+        });
+        const data = await res.json();
+        if (res.status === 200 && data.status === 'ok') {
+            loadUsersList();
+        } else {
+            throw new Error(data.error || 'Server error');
+        }
+    } catch (e) {
+        console.error('Failed to delete user:', e);
+        alert((state.language === 'de' ? 'Fehler beim Löschen des Benutzers: ' : 'Failed to delete user: ') + e.message);
+    }
+}
+
+window.deleteUser = deleteUser;
+window.openEditUserModal = openEditUserModal;

@@ -37,8 +37,8 @@ A secure, lightweight, and modern single-binary web dashboard designed to manage
 
 ---
 
-## ✨ Features
-
+- 👥 **Multi-User Administration:** Create, update, and delete dashboard users with role-based access control. Assign specific game servers to non-admin users and restrict their permission scopes (`start`, `stop`, `restart`, `console`, `config`).
+- 🔄 **One-Click Self-Updates:** Seamlessly search for and apply dashboard updates directly from the settings panel. The backend automatically downloads matching pre-compiled releases from GitHub, safe-swaps the active binary, and triggers a clean systemd restart.
 - 🖥️ **Resource-Efficient Backend (Go):** Compiled static binary using only ~10-15MB RAM with embedded web assets for zero-dependency deployment.
 - 🛡️ **Interactive Server Console:** Real-time visual tmux pane updates paired with a **command input bar** to send RCON/console commands directly to the game server process (uses secure `tmux send-keys` escaping).
 - 👥 **Multi-Instance Scanning & Shebang Verification:** Scans system user home directories for all executable scripts and verifies their shebang and header comments to auto-detect any number of LinuxGSM instances (e.g. `gmodserver-1`, `gmodserver-2`) under a single user.
@@ -48,7 +48,7 @@ A secure, lightweight, and modern single-binary web dashboard designed to manage
 - ➕ **Game Installer & Scraper:** Dynamically crawls all supported LinuxGSM servers and icon logos from `linuxgsm.com/servers/` using a lightweight regex HTML parser in Go, caches game listings and download images locally, and streams unattended installations in real-time.
 - 🌗 **Dark/Light Mode:** Dual premium color systems driven by CSS custom properties, togglable from the sidebar footer and persisted in local storage.
 - 🌐 **Multilingual Support (i18n):** Full support for English (default) and German across the entire single page application.
-- 🌐 **External Port Checker:** Test reachability of game server ports from the outside world. Parses actual configured ports (`port`, `queryport`, `rconport`, `appport`, `sourcetvport`) directly from LinuxGSM config files (`<script>.cfg`, `common.cfg`), dynamically resolves the host's public IP, and performs standard TCP handshakes or UDP A2S_INFO Source Engine queries to verify router port-forwarding and firewall states.
+- 🌐 **External Port Checker:** Test reachability of game server ports from the outside world. Parses configured ports directly from LinuxGSM configs.
 - 📝 **Automation Generators:** Customized copy-pasteable `systemd` service files and `crontab` lists generated per server inside the Settings view.
 - ❌ **Game Server Deletion:** Cleanly delete game server instances. Disables systemd, wipes crontabs, and removes either the specific script files (for shared users) or performs a full system user purge (`userdel -r`) for exclusive system users, protected by an interactive safety confirmation overlay.
 
@@ -69,6 +69,7 @@ Using `wget` (fallback):
 ```bash
 wget -qO- https://raw.githubusercontent.com/yourdawi/linuxgsm-dashboard/main/install-dashboard.sh | bash
 ```
+
 
 This presents a colored **interactive terminal menu** that:
 - Detects your Linux distribution (Ubuntu/Debian, CentOS/RHEL, Arch, Alpine, openSUSE).

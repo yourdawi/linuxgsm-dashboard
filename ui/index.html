@@ -61,7 +61,7 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>
                     <span data-i18n="menu-dashboard">Dashboard</span>
                 </a>
-                <a href="#installer" class="menu-item" data-view="installer">
+                <a href="#installer" id="menu-installer-tab" class="menu-item" data-view="installer">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
                     <span data-i18n="menu-installer">Spiele-Installer</span>
                 </a>
@@ -72,6 +72,10 @@
                 <a href="#console" class="menu-item" data-view="console">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
                     <span data-i18n="menu-console">Live-Konsole</span>
+                </a>
+                <a href="#users" id="menu-users-tab" class="menu-item hidden" data-view="users">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                    <span data-i18n="menu-users">Benutzer</span>
                 </a>
                 <a href="#settings" class="menu-item" data-view="settings">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
@@ -90,7 +94,7 @@
                     </button>
                 </div>
                 <div class="user-info">
-                    <span class="user-name">Administrator</span>
+                    <span class="user-name" id="sidebar-username">Administrator</span>
                     <button id="btn-logout" class="btn-logout" title="Abmelden">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"></path></svg>
                     </button>
@@ -368,6 +372,37 @@
                 </div>
             </section>
 
+            <!-- View: Users -->
+            <section id="view-users" class="app-view hidden">
+                <header class="view-header">
+                    <div>
+                        <h1 data-i18n="users-title">Benutzerverwaltung</h1>
+                        <p data-i18n="users-subtitle">Erstelle und verwalte Dashboard-Benutzer und deren Zugriffsrechte.</p>
+                    </div>
+                    <button id="btn-create-user-modal" class="btn btn-primary">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><line x1="19" y1="8" x2="19" y2="14"></line><line x1="22" y1="11" x2="16" y2="11"></line></svg>
+                        <span data-i18n="btn-new-user">Neuer Benutzer</span>
+                    </button>
+                </header>
+
+                <div class="glass-panel" style="padding: 1.5rem; overflow-x: auto;">
+                    <table class="user-table" id="users-list-table" style="width: 100%; border-collapse: collapse; text-align: left;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid var(--border-color); opacity: 0.85;">
+                                <th style="padding: 0.75rem;" data-i18n="col-username">Benutzername</th>
+                                <th style="padding: 0.75rem;" data-i18n="col-role">Rolle</th>
+                                <th style="padding: 0.75rem;" data-i18n="col-servers">Zugeordnete Server</th>
+                                <th style="padding: 0.75rem;" data-i18n="col-permissions">Rechte</th>
+                                <th style="padding: 0.75rem; text-align: right;" data-i18n="col-actions">Aktionen</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-list-body">
+                            <!-- Dynamically loaded -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
             <!-- View: Settings -->
             <section id="view-settings" class="app-view hidden">
                 <header class="view-header">
@@ -419,6 +454,26 @@
                                 <span class="info-value highlight" id="settings-mode">Lädt...</span>
                             </div>
                         </div>
+                    </div>
+
+                    <div class="settings-card glass-panel" id="settings-update-card">
+                        <h3 data-i18n="settings-update-title">Dashboard-Updates</h3>
+                        <p class="text-muted" data-i18n="settings-update-desc">Überprüfe, ob neue Versionen des Dashboards auf GitHub verfügbar sind.</p>
+                        <div class="update-status-box mt-4">
+                            <div class="update-status-row" style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+                                <span class="info-label" data-i18n="settings-update-status-label" style="font-weight: 500;">Status:</span>
+                                <span class="info-value text-success" id="update-status-text" data-i18n="update-status-latest" style="font-weight: 600;">Aktuell</span>
+                            </div>
+                            <div class="update-info-row mt-2 hidden" id="update-details-row" style="display: flex; justify-content: space-between;">
+                                <span class="info-label" data-i18n="settings-update-new-version" style="font-weight: 500;">Verfügbare Version:</span>
+                                <span class="info-value highlight" id="update-new-version-text" style="font-weight: 600;">v0.0.0</span>
+                            </div>
+                        </div>
+                        <div class="update-action-box mt-4" style="display: flex; gap: 0.5rem;">
+                            <button id="btn-check-update" class="btn btn-secondary" style="width: 100%;" data-i18n="btn-check-update">Nach Updates suchen</button>
+                            <button id="btn-trigger-update" class="btn btn-primary hidden" style="width: 100%;" data-i18n="btn-trigger-update">Jetzt updaten</button>
+                        </div>
+                        <div id="settings-update-message" class="info-message mt-2" style="font-size: 0.8rem; text-align: center;"></div>
                     </div>
 
                     <!-- Autostart & Cronjob templates -->
@@ -589,6 +644,83 @@
             <div class="modal-footer" style="justify-content: space-between; padding: 1rem 1.5rem; display: flex; align-items: center;">
                 <button id="modal-delete-close" class="btn btn-secondary" data-i18n="modal-delete-cancel-btn">Abbrechen</button>
                 <button id="btn-delete-confirm-submit" class="btn btn-danger" disabled data-i18n="modal-delete-submit-btn">Server unwiderruflich löschen</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: User Form -->
+    <div id="modal-user" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width: 550px;">
+            <div class="modal-header">
+                <div>
+                    <h3 id="modal-user-title" data-i18n="modal-user-title-new">Neuen Benutzer anlegen</h3>
+                    <p class="text-muted mb-0" id="modal-user-subtitle" data-i18n="modal-user-subtitle">Benutzerrollen und Berechtigungen zuweisen.</p>
+                </div>
+                <button id="modal-user-close-x" class="btn-icon modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 1.5rem;">
+                <form id="modal-user-form">
+                    <div class="form-group">
+                        <label for="user-username" data-i18n="username-label">Benutzername</label>
+                        <input type="text" id="user-username" required placeholder="z.B. supporter_1" autocomplete="username">
+                        <small class="text-muted" data-i18n="user-username-help" style="font-size: 0.75rem; display: block; margin-top: 0.25rem;">3-16 Zeichen, nur Kleinbuchstaben, Zahlen und Unterstriche.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="user-password" id="user-password-label" data-i18n="password-label">Passwort</label>
+                        <input type="password" id="user-password" autocomplete="new-password">
+                        <small class="text-muted" id="user-password-help" data-i18n="user-password-help" style="font-size: 0.75rem; display: block; margin-top: 0.25rem;">Lass das Feld leer, um das Passwort nicht zu ändern.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="user-role" data-i18n="role-label">Rolle</label>
+                        <select id="user-role" class="form-control" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.5rem; border-radius: 6px; width: 100%;">
+                            <option value="user" data-i18n="role-user">Normaler Benutzer</option>
+                            <option value="admin" data-i18n="role-admin">Administrator</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Server Assignment Section -->
+                    <div class="form-group mt-4" id="user-servers-section">
+                        <label data-i18n="user-servers-label" style="font-weight: 600; display: block; margin-bottom: 0.5rem;">Server-Zuweisung</label>
+                        <div id="user-servers-list" class="checkbox-group-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); padding: 0.75rem; border-radius: 8px; max-height: 150px; overflow-y: auto;">
+                            <!-- Dynamically populated -->
+                        </div>
+                        <small class="text-muted" data-i18n="user-servers-help" style="font-size: 0.75rem; display: block; margin-top: 0.25rem;">Admins haben automatisch Zugriff auf alle Server.</small>
+                    </div>
+                    
+                    <!-- Permissions Scope Section -->
+                    <div class="form-group mt-4" id="user-permissions-section">
+                        <label data-i18n="user-permissions-label" style="font-weight: 600; display: block; margin-bottom: 0.5rem;">Erlaubter Funktionsumfang</label>
+                        <div id="user-permissions-list" class="checkbox-group-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); padding: 0.75rem; border-radius: 8px;">
+                            <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
+                                <input type="checkbox" value="start" checked>
+                                <span data-i18n="perm-start">Server starten</span>
+                            </label>
+                            <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
+                                <input type="checkbox" value="stop" checked>
+                                <span data-i18n="perm-stop">Server stoppen</span>
+                            </label>
+                            <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
+                                <input type="checkbox" value="restart" checked>
+                                <span data-i18n="perm-restart">Server neustarten</span>
+                            </label>
+                            <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
+                                <input type="checkbox" value="console" checked>
+                                <span data-i18n="perm-console">Live-Konsole</span>
+                            </label>
+                            <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
+                                <input type="checkbox" value="config" checked>
+                                <span data-i18n="perm-config">Configs bearbeiten</span>
+                            </label>
+                        </div>
+                        <small class="text-muted" data-i18n="user-permissions-help" style="font-size: 0.75rem; display: block; margin-top: 0.25rem;">Admins haben automatisch alle Berechtigungen.</small>
+                    </div>
+
+                    <div id="modal-user-message" class="info-message mt-3" style="font-size: 0.8rem; text-align: center;"></div>
+                </form>
+            </div>
+            <div class="modal-footer" style="justify-content: flex-end; padding: 1rem 1.5rem; display: flex; gap: 0.5rem;">
+                <button id="modal-user-close" class="btn btn-secondary" data-i18n="btn-cancel">Abbrechen</button>
+                <button id="modal-user-submit" class="btn btn-primary" data-i18n="btn-save">Speichern</button>
             </div>
         </div>
     </div>

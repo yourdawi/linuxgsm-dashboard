@@ -126,15 +126,23 @@ do_install() {
     # Create installation directory
     mkdir -p "$INSTALL_DIR"
 
-    # Check Git and Go installation state
+    # Check Git, Go and curl installation state
     local git_preexisted="false"
     local go_preexisted="false"
+    local curl_preexisted="false"
 
     if command -v git &> /dev/null; then
         git_preexisted="true"
         echo -e "${GREEN}[INFO] Git was already present on the system.${NC}"
     else
         install_package "git"
+    fi
+
+    if command -v curl &> /dev/null; then
+        curl_preexisted="true"
+        echo -e "${GREEN}[INFO] curl was already present on the system.${NC}"
+    else
+        install_package "curl"
     fi
 
     if command -v go &> /dev/null; then
@@ -154,10 +162,9 @@ do_install() {
         install_package "sudo"
     fi
 
-    # Pre-install LinuxGSM game server dependencies (once for all future game installs)
+    # Pre-install LinuxGSM game server dependencies
     echo -e "${YELLOW}[SYS] Installing LinuxGSM game server dependencies...${NC}"
 
-    # Helper: try to install a package, with optional fallback name
     try_install() {
         local primary="$1"
         local fallback="$2"
@@ -179,7 +186,6 @@ do_install() {
     }
 
     if [ "$OS_TYPE" == "debian" ]; then
-        # Enable i386 architecture for 32-bit game server libraries
         dpkg --add-architecture i386 > /dev/null 2>&1
         apt-get update -y > /dev/null 2>&1
 
@@ -193,7 +199,6 @@ do_install() {
             try_install "$pkg"
         done
 
-        # Packages renamed across Debian versions (primary → fallback)
         try_install "libsdl2-2.0-0:i386" "libsdl2-2.0-0"
         try_install "libncurses5" "libncurses6"
         try_install "libncursesw5" "libncursesw6"
@@ -206,7 +211,6 @@ do_install() {
 
     echo -e "${GREEN}[OK] LinuxGSM dependencies installed.${NC}"
 
-    # Verify Go is available now
     if ! command -v go &> /dev/null; then
         echo -e "${RED}[ERROR] Go could not be installed. Aborting.${NC}"
         return 1
@@ -216,21 +220,28 @@ do_install() {
     cat <<EOT > "$STATE_FILE"
 GIT_PREEXISTED=$git_preexisted
 GO_PREEXISTED=$go_preexisted
+CURL_PREEXISTED=$curl_preexisted
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 EOT
     chmod 600 "$STATE_FILE"
     echo -e "${GREEN}[OK] Package installation status logged to: $STATE_FILE${NC}"
 
+    # Determine branch to clone
+    local branch_name="main"
+    if [ "$1" == "--dev" ] || [ "$2" == "--dev" ] || [ "$ACTION" == "--dev" ] || [ "$1" == "dev" ] || [ "$2" == "dev" ]; then
+        branch_name="dev"
+    fi
+
     # Use local development files if present, otherwise clone repository
-    if [ -f "./main.go" ] && [ -d "./backend" ] && [ -d "./ui" ]; then
+    if [ -f "./main.go" ] && [ -d "./backend" ] && [ -d "./ui" ] && [ "$branch_name" != "dev" ]; then
         echo -e "${GREEN}[INFO] Copying local development files to $INSTALL_DIR...${NC}"
         cp -r ./main.go ./go.mod ./backend ./ui "$INSTALL_DIR/"
     else
-        echo -e "${YELLOW}[SYS] Downloading dashboard repository...${NC}"
+        echo -e "${YELLOW}[SYS] Downloading dashboard repository (branch: $branch_name)...${NC}"
         local repo_url="https://github.com/yourdawi/linuxgsm-dashboard.git"
         local temp_dir=$(mktemp -d)
         
-        git clone "$repo_url" "$temp_dir" > /dev/null 2>&1
+        git clone -b "$branch_name" "$repo_url" "$temp_dir" > /dev/null 2>&1
         if [ $? -eq 0 ]; then
             cp -r "$temp_dir"/* "$INSTALL_DIR/"
             rm -rf "$temp_dir"
@@ -242,14 +253,14 @@ EOT
 
     cd "$INSTALL_DIR" || return 1
 
-    # Compile binary
-    echo -e "${CYAN}[SYS] Compiling Go code...${NC}"
+    echo -e "${YELLOW}[SYS] Compiling Go code...${NC}"
     go build -o lgsm-dashboard main.go
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}[ERROR] Compilation failed!${NC}"
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}[OK] Dashboard compiled successfully.${NC}"
+    else
+        echo -e "${RED}[ERROR] Compilation failed.${NC}"
         return 1
     fi
-    echo -e "${GREEN}[OK] Dashboard compiled successfully.${NC}"
 
     # Create systemd service file
     echo -e "${CYAN}[SYS] Creating Systemd service file...${NC}"
@@ -335,6 +346,7 @@ do_uninstall() {
     # 2. Read state file and uninstall packages if they were installed by this script
     local git_preexisted="true"
     local go_preexisted="true"
+    local curl_preexisted="true"
 
     if [ -f "$STATE_FILE" ]; then
         source "$STATE_FILE"
@@ -347,6 +359,12 @@ do_uninstall() {
         uninstall_package "git"
     else
         echo -e "${GREEN}[INFO] Keeping package 'git' as it was already present before installation.${NC}"
+    fi
+
+    if [ "$curl_preexisted" == "false" ]; then
+        uninstall_package "curl"
+    else
+        echo -e "${GREEN}[INFO] Keeping package 'curl' as it was already present before installation.${NC}"
     fi
 
     local go_pkg="golang"
@@ -409,7 +427,7 @@ ACTION=$1
 if [ -n "$ACTION" ]; then
     case $ACTION in
         install|--install)
-            do_install
+            do_install "$@"
             exit 0
             ;;
         uninstall|--uninstall)
@@ -420,9 +438,13 @@ if [ -n "$ACTION" ]; then
             show_status
             exit 0
             ;;
+        --dev|dev)
+            do_install "$@"
+            exit 0
+            ;;
         *)
             echo -e "${RED}[ERROR] Unknown argument: $ACTION${NC}"
-            echo -e "Usage: $0 [install|uninstall|status]"
+            echo -e "Usage: $0 [install|uninstall|status] [--dev]"
             exit 1
             ;;
     esac

@@ -19,16 +19,17 @@ import (
 )
 
 type GameServerInstance struct {
-	ID     string  `json:"id"`     // Username
-	Name   string  `json:"name"`   // Game Name
-	User   string  `json:"user"`   // Linux User
-	Script string  `json:"script"` // Executable script name (e.g. arkserver)
-	Status string  `json:"status"` // running | stopped | installing | updating
-	Port   int     `json:"port"`   // Game Port
-	Game   string  `json:"game"`   // Game ID
-	CPU    float64 `json:"cpu"`    // Process CPU usage percentage
-	RAM    float64 `json:"ram"`    // Process RAM usage in GB
-	PIDs   []int   `json:"pids,omitempty"`
+	ID          string      `json:"id"`     // Username
+	Name        string      `json:"name"`   // Game Name
+	User        string      `json:"user"`   // Linux User
+	Script      string      `json:"script"` // Executable script name (e.g. arkserver)
+	Status      string      `json:"status"` // running | stopped | installing | updating
+	Port        int         `json:"port"`   // Game Port
+	Game        string      `json:"game"`   // Game ID
+	CPU         float64     `json:"cpu"`    // Process CPU usage percentage
+	RAM         float64     `json:"ram"`    // Process RAM usage in GB
+	PIDs        []int       `json:"pids,omitempty"`
+	ParsedPorts []PortProbe `json:"parsed_ports,omitempty"`
 }
 
 type ConfigFile struct {
@@ -67,6 +68,10 @@ func NewInstanceManager(isMock bool) *InstanceManager {
 				Status: "running",
 				Port:   7777,
 				Game:   "ark",
+				ParsedPorts: []PortProbe{
+					{Port: 7777, Protocol: "UDP", Description: "Game"},
+					{Port: 27015, Protocol: "UDP", Description: "Query"},
+				},
 			},
 			{
 				ID:     "vhserver",
@@ -76,6 +81,10 @@ func NewInstanceManager(isMock bool) *InstanceManager {
 				Status: "stopped",
 				Port:   2456,
 				Game:   "valheim",
+				ParsedPorts: []PortProbe{
+					{Port: 2456, Protocol: "UDP", Description: "Game"},
+					{Port: 2457, Protocol: "UDP", Description: "Query"},
+				},
 			},
 		}
 	} else {
@@ -218,10 +227,139 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 				// Don't overwrite active operations statuses
 				v.Status = existing.Status
 			}
+			// Retain parsed ports/name if already loaded
+			if len(existing.ParsedPorts) > 0 {
+				v.ParsedPorts = existing.ParsedPorts
+				v.Name = existing.Name
+				v.Port = existing.Port
+			}
 		}
 	}
 
 	im.instances = detected
+
+	// Trigger details refresh in background for any newly detected or not-yet-parsed servers
+	for k, v := range detected {
+		if len(v.ParsedPorts) == 0 {
+			go im.RefreshServerDetails(k)
+		}
+	}
+}
+
+// parseDetailsOutput parses the details command output to extract the server name and ports.
+func parseDetailsOutput(output string) (string, []PortProbe) {
+	serverName := ""
+	ports := []PortProbe{}
+
+	lines := strings.Split(output, "\n")
+	reName := regexp.MustCompile(`(?i)Server name:\s*(.+)`)
+	rePort := regexp.MustCompile(`(?i)^\s*([a-zA-Z0-9\s_\-]+)\s+(\d+)\s+(tcp|udp)`)
+	reClean := regexp.MustCompile(`(?i)(\x1b|\\x1b|\\e|\\033)?\[[0-9;]*[a-zA-Z]`)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		
+		// 1. Try server name match
+		if match := reName.FindStringSubmatch(line); len(match) > 1 {
+			rawName := strings.TrimSpace(match[1])
+			serverName = strings.TrimSpace(reClean.ReplaceAllString(rawName, ""))
+			continue
+		}
+		
+		// 2. Try port match
+		if match := rePort.FindStringSubmatch(line); len(match) > 3 {
+			desc := strings.TrimSpace(match[1])
+			portStr := match[2]
+			proto := strings.ToUpper(match[3])
+			
+			portVal := 0
+			fmt.Sscanf(portStr, "%d", &portVal)
+			
+			if portVal > 0 {
+				ports = append(ports, PortProbe{
+					Port:        portVal,
+					Protocol:    proto,
+					Description: desc,
+					Open:        false,
+				})
+			}
+		}
+	}
+
+	return serverName, ports
+}
+
+// RefreshServerDetails queries details from LinuxGSM in the background and updates in-memory states.
+func (im *InstanceManager) RefreshServerDetails(serverID string) {
+	im.mu.Lock()
+	srv, exists := im.instances[serverID]
+	if !exists || im.isMock {
+		im.mu.Unlock()
+		return
+	}
+	// Avoid re-fetching if already populated
+	if len(srv.ParsedPorts) > 0 {
+		im.mu.Unlock()
+		return
+	}
+	username := srv.User
+	scriptName := srv.Script
+	im.mu.Unlock()
+
+	im.executeRefreshDetails(serverID, username, scriptName)
+}
+
+// RefreshServerDetailsForce forces a details query from LinuxGSM in the background.
+func (im *InstanceManager) RefreshServerDetailsForce(serverID string) {
+	im.mu.Lock()
+	srv, exists := im.instances[serverID]
+	if !exists || im.isMock {
+		im.mu.Unlock()
+		return
+	}
+	username := srv.User
+	scriptName := srv.Script
+	im.mu.Unlock()
+
+	im.executeRefreshDetails(serverID, username, scriptName)
+}
+
+func (im *InstanceManager) executeRefreshDetails(serverID, username, scriptName string) {
+	go func() {
+		execCmd := fmt.Sprintf("./%s details", scriptName)
+		cmd := exec.Command("runuser", "-l", username, "-c", execCmd)
+		
+		outputBytes, err := cmd.Output()
+		if err != nil {
+			fmt.Printf("[WARNING] failed to query details for server %s: %v\n", serverID, err)
+			return
+		}
+		
+		serverName, ports := parseDetailsOutput(stripAnsi(string(outputBytes)))
+		
+		im.mu.Lock()
+		defer im.mu.Unlock()
+		
+		srv, exists := im.instances[serverID]
+		if exists {
+			if serverName != "" {
+				srv.Name = serverName
+			}
+			if len(ports) > 0 {
+				srv.ParsedPorts = ports
+				// Update main game port
+				for _, p := range ports {
+					if strings.EqualFold(p.Description, "Game") {
+						srv.Port = p.Port
+						break
+					}
+				}
+				if srv.Port == 0 && len(ports) > 0 {
+					srv.Port = ports[0].Port
+				}
+			}
+		}
+	}()
 }
 
 func (srv *GameServerInstance) GetProcessResourceUsage() (cpu float64, ram float64, pids []int) {
@@ -508,7 +646,11 @@ func (im *InstanceManager) SaveConfigFileContent(serverID, path, content string)
 		return fmt.Errorf("access denied: path outside allowed config directories")
 	}
 
-	return os.WriteFile(cleanPath, []byte(content), 0644)
+	err := os.WriteFile(cleanPath, []byte(content), 0644)
+	if err == nil {
+		go im.RefreshServerDetailsForce(serverID)
+	}
+	return err
 }
 
 func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, serverID, action, lang string) {
@@ -628,6 +770,11 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 
 	// Rescan instances to reflect status changes
 	im.ScanInstances()
+
+	// Force refresh details on start/restart/update actions
+	if action == "start" || action == "restart" || action == "update" {
+		go im.RefreshServerDetailsForce(serverID)
+	}
 
 	sendSSE("message", map[string]interface{}{
 		"type": "exit",
@@ -824,6 +971,45 @@ func parseServerPort(homeDir string, scriptName string) int {
 		}()
 		if port > 0 {
 			return port
+		}
+	}
+
+	// Game-specific fallbacks if not found in LGSM config
+	if scriptName == "mtaserver" {
+		mtaConfig := filepath.Join(homeDir, "serverfiles", "mods", "deathmatch", "mtaserver.conf")
+		file, err := os.Open(mtaConfig)
+		if err == nil {
+			defer file.Close()
+			mtaRegex := regexp.MustCompile(`<serverport>(\d+)</serverport>`)
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				matches := mtaRegex.FindStringSubmatch(scanner.Text())
+				if len(matches) > 1 {
+					p, err := strconv.Atoi(matches[1])
+					if err == nil && p > 0 {
+						return p
+					}
+				}
+			}
+		}
+	}
+
+	if scriptName == "mcserver" || scriptName == "minecraft" {
+		mcConfig := filepath.Join(homeDir, "serverfiles", "server.properties")
+		file, err := os.Open(mcConfig)
+		if err == nil {
+			defer file.Close()
+			mcRegex := regexp.MustCompile(`server-port=(\d+)`)
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				matches := mcRegex.FindStringSubmatch(scanner.Text())
+				if len(matches) > 1 {
+					p, err := strconv.Atoi(matches[1])
+					if err == nil && p > 0 {
+						return p
+					}
+				}
+			}
 		}
 	}
 
@@ -1103,20 +1289,36 @@ func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Reque
 	}
 
 	var probes []PortProbe
-
 	if isMock {
 		// Mock responses
-		probes = []PortProbe{
-			{Port: srv.Port, Protocol: "TCP", Open: srv.Status == "running", Description: "Game Port (TCP)"},
-			{Port: srv.Port, Protocol: "UDP", Open: srv.Status == "running", Description: "Game Query Port (UDP)"},
-		}
-		if srv.Game != "minecraft" {
-			probes = append(probes, PortProbe{Port: srv.Port + 1, Protocol: "UDP", Open: srv.Status == "running", Description: "Steam Query Port (UDP)"})
+		if len(srv.ParsedPorts) > 0 {
+			for _, pp := range srv.ParsedPorts {
+				probes = append(probes, PortProbe{
+					Port:        pp.Port,
+					Protocol:    pp.Protocol,
+					Open:        srv.Status == "running",
+					Description: pp.Description,
+				})
+			}
+		} else {
+			probes = []PortProbe{
+				{Port: srv.Port, Protocol: "TCP", Open: srv.Status == "running", Description: "Game Port (TCP)"},
+				{Port: srv.Port, Protocol: "UDP", Open: srv.Status == "running", Description: "Game Query Port (UDP)"},
+			}
+			if srv.Game != "minecraft" {
+				probes = append(probes, PortProbe{Port: srv.Port + 1, Protocol: "UDP", Open: srv.Status == "running", Description: "Steam Query Port (UDP)"})
+			}
 		}
 	} else {
-		// Try to parse ports directly from config files
-		homeDir := filepath.Join("/home", srv.User)
-		configProbes := parseServerPortsFromConfig(homeDir, srv.Script, srv.Game)
+		var configProbes []PortProbe
+		if len(srv.ParsedPorts) > 0 {
+			configProbes = make([]PortProbe, len(srv.ParsedPorts))
+			copy(configProbes, srv.ParsedPorts)
+		} else {
+			// Try to parse ports directly from config files
+			homeDir := filepath.Join("/home", srv.User)
+			configProbes = parseServerPortsFromConfig(homeDir, srv.Script, srv.Game)
+		}
 
 		// If no probes could be parsed, fallback to heuristics
 		if len(configProbes) == 0 {
@@ -1309,6 +1511,114 @@ func checkUDPQuery(ip string, port int) bool {
 }
 
 func parseServerPortsFromConfig(homeDir string, scriptName string, game string) []PortProbe {
+	// Game-specific overrides for port configurations
+	if scriptName == "mtaserver" || game == "multitheftauto" {
+		mtaConfig := filepath.Join(homeDir, "serverfiles", "mods", "deathmatch", "mtaserver.conf")
+		file, err := os.Open(mtaConfig)
+		if err == nil {
+			defer file.Close()
+			mtaPortRegex := regexp.MustCompile(`<serverport>(\d+)</serverport>`)
+			mtaHttpRegex := regexp.MustCompile(`<httpport>(\d+)</httpport>`)
+
+			serverPort := 22003 // default
+			httpPort := 22005   // default
+
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if matches := mtaPortRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						serverPort = p
+					}
+				}
+				if matches := mtaHttpRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						httpPort = p
+					}
+				}
+			}
+
+			var probes []PortProbe
+			probes = append(probes, PortProbe{
+				Port:        serverPort,
+				Protocol:    "UDP",
+				Description: "MTA Game Port",
+			})
+			probes = append(probes, PortProbe{
+				Port:        serverPort + 123,
+				Protocol:    "UDP",
+				Description: "MTA ASE Query Port",
+			})
+			probes = append(probes, PortProbe{
+				Port:        httpPort,
+				Protocol:    "TCP",
+				Description: "MTA HTTP Web Server",
+			})
+			return probes
+		}
+	}
+
+	if scriptName == "mcserver" || scriptName == "minecraft" || game == "minecraft" || game == "mc" {
+		mcConfig := filepath.Join(homeDir, "serverfiles", "server.properties")
+		file, err := os.Open(mcConfig)
+		if err == nil {
+			defer file.Close()
+			portRegex := regexp.MustCompile(`server-port=(\d+)`)
+			queryRegex := regexp.MustCompile(`query.port=(\d+)`)
+			rconRegex := regexp.MustCompile(`rcon.port=(\d+)`)
+
+			serverPort := 25565
+			queryPort := 25565
+			rconPort := 25575
+			hasQuery := false
+			hasRcon := false
+
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if matches := portRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						serverPort = p
+					}
+				}
+				if matches := queryRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						queryPort = p
+						hasQuery = true
+					}
+				}
+				if matches := rconRegex.FindStringSubmatch(line); len(matches) > 1 {
+					if p, err := strconv.Atoi(matches[1]); err == nil && p > 0 {
+						rconPort = p
+						hasRcon = true
+					}
+				}
+			}
+
+			var probes []PortProbe
+			probes = append(probes, PortProbe{
+				Port:        serverPort,
+				Protocol:    "TCP",
+				Description: "Minecraft Game Port",
+			})
+			if hasQuery {
+				probes = append(probes, PortProbe{
+					Port:        queryPort,
+					Protocol:    "UDP",
+					Description: "Minecraft Query Port",
+				})
+			}
+			if hasRcon {
+				probes = append(probes, PortProbe{
+					Port:        rconPort,
+					Protocol:    "TCP",
+					Description: "Minecraft RCON Port",
+				})
+			}
+			return probes
+		}
+	}
+
 	configDir := filepath.Join(homeDir, "lgsm", "config-lgsm", scriptName)
 	filesToTry := []string{
 		filepath.Join(configDir, fmt.Sprintf("%s.cfg", scriptName)),
