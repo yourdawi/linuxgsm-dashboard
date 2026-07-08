@@ -304,6 +304,14 @@ function handleRouting() {
     const hash = window.location.hash || '#dashboard';
     const viewName = hash.substring(1);
     
+    // Role-based view protection
+    if (state.currentUser && state.currentUser.role !== 'admin') {
+        if (viewName === 'users' || viewName === 'installer') {
+            window.location.hash = '#dashboard';
+            return;
+        }
+    }
+    
     let targetView = document.getElementById(`view-${viewName}`);
     if (!targetView) {
         window.location.hash = '#dashboard';
@@ -403,6 +411,12 @@ async function hideLogin() {
             state.lastSettingsData = data;
             renderSettingsMode(data);
             
+            // Dynamically show the logged-in username in the sidebar footer
+            const sidebarUsername = document.getElementById('sidebar-username');
+            if (sidebarUsername && state.currentUser) {
+                sidebarUsername.textContent = state.currentUser.username;
+            }
+            
             const menuUsersTab = document.getElementById('menu-users-tab');
             if (menuUsersTab) {
                 if (state.currentUser && state.currentUser.role === 'admin') {
@@ -410,6 +424,18 @@ async function hideLogin() {
                 } else {
                     menuUsersTab.classList.add('hidden');
                     if (window.location.hash === '#users') {
+                        window.location.hash = '#dashboard';
+                    }
+                }
+            }
+
+            const menuInstallerTab = document.getElementById('menu-installer-tab');
+            if (menuInstallerTab) {
+                if (state.currentUser && state.currentUser.role === 'admin') {
+                    menuInstallerTab.classList.remove('hidden');
+                } else {
+                    menuInstallerTab.classList.add('hidden');
+                    if (window.location.hash === '#installer') {
                         window.location.hash = '#dashboard';
                     }
                 }
@@ -590,6 +616,12 @@ function renderServersGridQuiet() {
     });
 }
 
+function hasUserPermission(permission) {
+    if (!state.currentUser) return false;
+    if (state.currentUser.role === 'admin') return true;
+    return state.currentUser.permissions && state.currentUser.permissions.includes(permission);
+}
+
 function createServerCard(server) {
     const card = document.createElement('div');
     card.id = `server-card-${server.id}`;
@@ -618,6 +650,89 @@ function createServerCard(server) {
     
     const cpu = server.cpu || 0;
     const ram = server.ram || 0;
+    
+    const canStart = hasUserPermission('start');
+    const canStop = hasUserPermission('stop');
+    const canRestart = hasUserPermission('restart');
+    const canConsole = hasUserPermission('console');
+    const canConfig = hasUserPermission('config');
+    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+
+    // Build buttons HTML based on permissions
+    let actionsHtml = '';
+    if (canStart || canStop || canRestart) {
+        actionsHtml += `<div class="card-actions">`;
+        if (server.status === 'running') {
+            if (canStop) {
+                actionsHtml += `
+                    <button class="btn btn-danger btn-server-action" onclick="runServerAction('${server.id}', 'stop')" ${isBusy ? 'disabled' : ''}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg> ${t('btn-stop')}
+                    </button>`;
+            }
+        } else {
+            if (canStart) {
+                actionsHtml += `
+                    <button class="btn btn-success btn-server-action" onclick="runServerAction('${server.id}', 'start')" ${isBusy ? 'disabled' : ''}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg> ${t('btn-start')}
+                    </button>`;
+            }
+        }
+        if (canRestart) {
+            actionsHtml += `
+                <button class="btn btn-warning btn-server-action" onclick="runServerAction('${server.id}', 'restart')" ${isBusy ? 'disabled' : ''}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg> ${t('btn-restart')}
+                </button>`;
+        }
+        actionsHtml += `</div>`;
+    }
+
+    let subActionsHtml = '';
+    if (canConsole || canConfig || isAdmin) {
+        subActionsHtml += `<div class="card-actions-row-3">`;
+        if (canConsole) {
+            subActionsHtml += `
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConsole('${server.id}')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-console')}
+                </button>`;
+        }
+        if (canConfig) {
+            subActionsHtml += `
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConfigEditor('${server.id}')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-configs')}
+                </button>`;
+        }
+        if (isAdmin) {
+            subActionsHtml += `
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'update')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-update')}
+                </button>`;
+        }
+        subActionsHtml += `</div>`;
+    }
+
+    let adminActionsHtml = '';
+    if (isAdmin) {
+        adminActionsHtml += `
+            <div class="card-actions-row-3" style="margin-top: 0.4rem;">
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'details')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-details')}
+                </button>
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'backup')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-backup')}
+                </button>
+                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'validate')" ${isBusy ? 'disabled' : ''}>
+                    ${t('btn-validate')}
+                </button>
+            </div>
+            <div class="card-actions-row-2" style="margin-top: 0.4rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
+                <button class="btn btn-primary btn-sm btn-server-action" onclick="checkServerPorts('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg> ${t('btn-portcheck')}
+                </button>
+                <button class="btn btn-danger btn-sm btn-server-action" onclick="openDeleteServerModal('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> ${t('btn-delete-server')}
+                </button>
+            </div>`;
+    }
     
     card.innerHTML = `
         <div class="card-header">
@@ -657,50 +772,9 @@ function createServerCard(server) {
             </div>
         </div>
         
-        <div class="card-actions">
-            ${server.status === 'running' ? `
-                <button class="btn btn-danger btn-server-action" onclick="runServerAction('${server.id}', 'stop')" ${isBusy ? 'disabled' : ''}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg> ${t('btn-stop')}
-                </button>
-            ` : `
-                <button class="btn btn-success btn-server-action" onclick="runServerAction('${server.id}', 'start')" ${isBusy ? 'disabled' : ''}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg> ${t('btn-start')}
-                </button>
-            `}
-            <button class="btn btn-warning btn-server-action" onclick="runServerAction('${server.id}', 'restart')" ${isBusy ? 'disabled' : ''}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg> ${t('btn-restart')}
-            </button>
-        </div>
-        <div class="card-actions-row-3">
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConsole('${server.id}')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-console')}
-            </button>
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConfigEditor('${server.id}')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-configs')}
-            </button>
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'update')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-update')}
-            </button>
-        </div>
-        <div class="card-actions-row-3" style="margin-top: 0.4rem;">
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'details')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-details')}
-            </button>
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'backup')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-backup')}
-            </button>
-            <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'validate')" ${isBusy ? 'disabled' : ''}>
-                ${t('btn-validate')}
-            </button>
-        </div>
-        <div class="card-actions-row-2" style="margin-top: 0.4rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
-            <button class="btn btn-primary btn-sm btn-server-action" onclick="checkServerPorts('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg> ${t('btn-portcheck')}
-            </button>
-            <button class="btn btn-danger btn-sm btn-server-action" onclick="openDeleteServerModal('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> ${t('btn-delete-server')}
-            </button>
-        </div>
+        ${actionsHtml}
+        ${subActionsHtml}
+        ${adminActionsHtml}
     `;
     
     return card;
