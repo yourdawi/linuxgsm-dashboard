@@ -254,13 +254,15 @@ func parseDetailsOutput(output string) (string, []PortProbe) {
 	lines := strings.Split(output, "\n")
 	reName := regexp.MustCompile(`(?i)Server name:\s*(.+)`)
 	rePort := regexp.MustCompile(`(?i)^\s*([a-zA-Z0-9\s_\-]+)\s+(\d+)\s+(tcp|udp)`)
+	reClean := regexp.MustCompile(`(?i)(\x1b|\\x1b|\\e|\\033)?\[[0-9;]*[a-zA-Z]`)
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		
 		// 1. Try server name match
 		if match := reName.FindStringSubmatch(line); len(match) > 1 {
-			serverName = strings.TrimSpace(match[1])
+			rawName := strings.TrimSpace(match[1])
+			serverName = strings.TrimSpace(reClean.ReplaceAllString(rawName, ""))
 			continue
 		}
 		
@@ -333,7 +335,7 @@ func (im *InstanceManager) executeRefreshDetails(serverID, username, scriptName 
 			return
 		}
 		
-		serverName, ports := parseDetailsOutput(string(outputBytes))
+		serverName, ports := parseDetailsOutput(stripAnsi(string(outputBytes)))
 		
 		im.mu.Lock()
 		defer im.mu.Unlock()

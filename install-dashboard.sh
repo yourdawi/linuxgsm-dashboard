@@ -126,15 +126,23 @@ do_install() {
     # Create installation directory
     mkdir -p "$INSTALL_DIR"
 
-    # Check Git and Go installation state
+    # Check Git, Go and curl installation state
     local git_preexisted="false"
     local go_preexisted="false"
+    local curl_preexisted="false"
 
     if command -v git &> /dev/null; then
         git_preexisted="true"
         echo -e "${GREEN}[INFO] Git was already present on the system.${NC}"
     else
         install_package "git"
+    fi
+
+    if command -v curl &> /dev/null; then
+        curl_preexisted="true"
+        echo -e "${GREEN}[INFO] curl was already present on the system.${NC}"
+    else
+        install_package "curl"
     fi
 
     if command -v go &> /dev/null; then
@@ -212,6 +220,7 @@ do_install() {
     cat <<EOT > "$STATE_FILE"
 GIT_PREEXISTED=$git_preexisted
 GO_PREEXISTED=$go_preexisted
+CURL_PREEXISTED=$curl_preexisted
 INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
 EOT
     chmod 600 "$STATE_FILE"
@@ -337,6 +346,7 @@ do_uninstall() {
     # 2. Read state file and uninstall packages if they were installed by this script
     local git_preexisted="true"
     local go_preexisted="true"
+    local curl_preexisted="true"
 
     if [ -f "$STATE_FILE" ]; then
         source "$STATE_FILE"
@@ -349,6 +359,12 @@ do_uninstall() {
         uninstall_package "git"
     else
         echo -e "${GREEN}[INFO] Keeping package 'git' as it was already present before installation.${NC}"
+    fi
+
+    if [ "$curl_preexisted" == "false" ]; then
+        uninstall_package "curl"
+    else
+        echo -e "${GREEN}[INFO] Keeping package 'curl' as it was already present before installation.${NC}"
     fi
 
     local go_pkg="golang"
