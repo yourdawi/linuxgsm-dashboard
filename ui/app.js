@@ -303,6 +303,37 @@ function initApp() {
     el.btnLangToggle.addEventListener('click', toggleLanguage);
     el.btnSyncGames.addEventListener('click', syncGamesList);
 
+    // Mobile navigation listeners
+    const btnMobileToggle = document.getElementById('btn-mobile-toggle');
+    const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+    const appSidebar = document.getElementById('app-sidebar');
+    const btnMobileThemeToggle = document.getElementById('btn-mobile-theme-toggle');
+
+    if (btnMobileToggle && sidebarBackdrop && appSidebar) {
+        btnMobileToggle.addEventListener('click', () => {
+            appSidebar.classList.add('active');
+            sidebarBackdrop.classList.add('active');
+        });
+
+        sidebarBackdrop.addEventListener('click', () => {
+            appSidebar.classList.remove('active');
+            sidebarBackdrop.classList.remove('active');
+        });
+
+        // Close sidebar drawer on clicking any menu item
+        const menuItems = appSidebar.querySelectorAll('.menu-item');
+        menuItems.forEach(item => {
+            item.addEventListener('click', () => {
+                appSidebar.classList.remove('active');
+                sidebarBackdrop.classList.remove('active');
+            });
+        });
+    }
+
+    if (btnMobileThemeToggle) {
+        btnMobileThemeToggle.addEventListener('click', toggleTheme);
+    }
+
     // User modal listeners
     const btnCreateUserModal = document.getElementById('btn-create-user-modal');
     if (btnCreateUserModal) btnCreateUserModal.addEventListener('click', openCreateUserModal);
@@ -2525,14 +2556,21 @@ function setTheme(theme) {
     state.theme = theme;
     localStorage.setItem('theme', theme);
     
+    const sunIconMobile = document.querySelector('.sun-icon-mobile');
+    const moonIconMobile = document.querySelector('.moon-icon-mobile');
+    
     if (theme === 'light') {
         document.body.classList.add('light-theme');
         el.themeIconSun.classList.add('hidden');
         el.themeIconMoon.classList.remove('hidden');
+        if (sunIconMobile) sunIconMobile.classList.add('hidden');
+        if (moonIconMobile) moonIconMobile.classList.remove('hidden');
     } else {
         document.body.classList.remove('light-theme');
         el.themeIconSun.classList.remove('hidden');
         el.themeIconMoon.classList.add('hidden');
+        if (sunIconMobile) sunIconMobile.classList.remove('hidden');
+        if (moonIconMobile) moonIconMobile.classList.add('hidden');
     }
 }
 
