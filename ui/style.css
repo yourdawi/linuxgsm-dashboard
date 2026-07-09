@@ -1367,18 +1367,25 @@ body.light-theme .btn-theme-toggle-mobile:hover {
     
     body {
         flex-direction: column;
+        overflow-x: hidden;
+    }
+    
+    .app-wrapper {
+        flex-direction: column;
+        overflow-x: hidden;
     }
     
     /* Off-canvas sidebar as drawer */
     .sidebar {
         position: fixed;
         top: 0;
-        left: -280px; /* Hidden offscreen by default */
+        left: 0;
         width: 260px;
         height: 100vh;
         z-index: 190;
+        transform: translateX(-100%); /* Hidden offscreen by default */
         transition: transform 0.3s ease;
-        box-shadow: 10px 0 30px rgba(0, 0, 0, 0.5);
+        box-shadow: none;
         border-right: 1px solid var(--border-color);
         background: rgba(12, 12, 20, 0.95);
     }
@@ -1388,7 +1395,8 @@ body.light-theme .btn-theme-toggle-mobile:hover {
     }
     
     .sidebar.active {
-        transform: translateX(280px); /* Slide in */
+        transform: translateX(0); /* Slide in to top-left */
+        box-shadow: 10px 0 30px rgba(0, 0, 0, 0.5);
     }
     
     .sidebar-brand {
