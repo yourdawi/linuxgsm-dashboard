@@ -19,7 +19,7 @@ import (
 )
 
 // Version represents the current version of the dashboard
-var Version = "1.0.0"
+var Version = "1.0.1"
 
 //go:embed ui/*
 var uiFS embed.FS
