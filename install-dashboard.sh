@@ -374,10 +374,10 @@ EOT
         branch_name="dev"
     fi
 
-    # Use local development files if present, otherwise clone repository
     if [ -f "./main.go" ] && [ -d "./backend" ] && [ -d "./ui" ] && [ "$branch_name" != "dev" ]; then
         echo -e "${GREEN}[INFO] Copying local development files to $INSTALL_DIR...${NC}"
         cp -r ./main.go ./go.mod ./backend ./ui "$INSTALL_DIR/"
+        [ -d "./.git" ] && cp -r "./.git" "$INSTALL_DIR/"
     else
         echo -e "${YELLOW}[SYS] Downloading dashboard repository (branch: $branch_name)...${NC}"
         local repo_url="https://github.com/yourdawi/linuxgsm-dashboard.git"
