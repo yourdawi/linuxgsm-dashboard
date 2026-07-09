@@ -813,9 +813,14 @@ func main() {
 					http.Error(w, "Forbidden - Missing restart permission", http.StatusForbidden)
 					return
 				}
-			case "update", "backup", "validate", "details":
+			case "update", "validate":
 				if user.Role != "admin" {
 					http.Error(w, "Forbidden - Administrator action", http.StatusForbidden)
+					return
+				}
+			case "backup", "details":
+				if !hasUserPermission(user, "backup") {
+					http.Error(w, "Forbidden - Missing backup permission", http.StatusForbidden)
 					return
 				}
 			}
@@ -940,6 +945,128 @@ func main() {
 				return
 			}
 			http.NotFound(w, r)
+
+		case "backups":
+			if !hasUserPermission(user, "backup") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden - Missing backup permission"})
+				return
+			}
+
+			actionType := ""
+			if len(parts) >= 6 {
+				actionType = parts[5]
+			}
+
+			switch actionType {
+			case "": // GET /api/servers/{id}/backups -> list backups
+				if r.Method != http.MethodGet {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				backups, err := instMgr.ListBackups(serverID)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(backups)
+				return
+
+			case "delete": // POST /api/servers/{id}/backups/delete?file=xxx
+				if r.Method != http.MethodPost {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				fileName := r.URL.Query().Get("file")
+				if fileName == "" {
+					http.Error(w, "Missing file parameter", http.StatusBadRequest)
+					return
+				}
+				err := instMgr.DeleteBackup(serverID, fileName)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				return
+
+			case "download": // GET /api/servers/{id}/backups/download?file=xxx
+				if r.Method != http.MethodGet {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				fileName := r.URL.Query().Get("file")
+				if fileName == "" {
+					http.Error(w, "Missing file parameter", http.StatusBadRequest)
+					return
+				}
+				filePath, err := instMgr.GetBackupPath(serverID, fileName)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fileName))
+				http.ServeFile(w, r, filePath)
+				return
+
+			case "restore": // GET /api/servers/{id}/backups/restore?file=xxx -> SSE Stream
+				if r.Method != http.MethodGet {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				fileName := r.URL.Query().Get("file")
+				if fileName == "" {
+					http.Error(w, "Missing file parameter", http.StatusBadRequest)
+					return
+				}
+				instMgr.RestoreBackup(w, r, serverID, fileName, r.URL.Query().Get("lang"))
+				return
+
+			case "settings":
+				if r.Method == http.MethodGet {
+					settings, err := instMgr.GetBackupSettings(serverID)
+					if err != nil {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusInternalServerError)
+						json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(settings)
+					return
+				} else if r.Method == http.MethodPost {
+					var payload backend.BackupSettings
+					err := json.NewDecoder(r.Body).Decode(&payload)
+					if err != nil {
+						http.Error(w, "Invalid payload", http.StatusBadRequest)
+						return
+					}
+					err = instMgr.SaveBackupSettings(serverID, payload)
+					if err != nil {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusInternalServerError)
+						json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+					return
+				} else {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+			default:
+				http.NotFound(w, r)
+				return
+			}
 
 		default:
 			http.NotFound(w, r)

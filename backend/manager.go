@@ -12,11 +12,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+type BackupFile struct {
+	Name string    `json:"name"`
+	Size int64     `json:"size"`
+	Date time.Time `json:"date"`
+	Path string    `json:"path"`
+}
+
+type BackupSettings struct {
+	MaxBackups        string `json:"maxbackups"`
+	MaxBackupDays     string `json:"maxbackupdays"`
+	StopOnBackup      string `json:"stoponbackup"`
+	AutoBackupEnabled bool   `json:"autobackup_enabled"`
+	AutoBackupCron    string `json:"autobackup_cron"`
+}
 
 type GameServerInstance struct {
 	ID          string      `json:"id"`     // Username
@@ -1744,4 +1760,507 @@ func cleanupLeftoverSudoers() {
 			_ = os.Remove(f)
 		}
 	}
+}
+
+// Backup Management Implementations
+
+func getBackupDirs(user string) []string {
+	return []string{
+		filepath.Join("/home", user, "backup"),
+		filepath.Join("/home", user, "backups"),
+	}
+}
+
+func getBackupFilePath(user string, filename string) (string, error) {
+	if strings.Contains(filename, "/") || strings.Contains(filename, "\\") || strings.Contains(filename, "..") {
+		return "", fmt.Errorf("invalid backup filename")
+	}
+	if !strings.HasSuffix(filename, ".tar.gz") {
+		return "", fmt.Errorf("invalid backup file extension")
+	}
+
+	dirs := getBackupDirs(user)
+	for _, dir := range dirs {
+		path := filepath.Join(dir, filename)
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("backup file not found")
+}
+
+func (im *InstanceManager) ListBackups(serverID string) ([]BackupFile, error) {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return nil, fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		now := time.Now()
+		return []BackupFile{
+			{
+				Name: fmt.Sprintf("%s-backup-2026-07-08-120000.tar.gz", srv.Script),
+				Size: 1024 * 1024 * 150,
+				Date: now.Add(-24 * time.Hour),
+				Path: fmt.Sprintf("mock://backup/%s-backup-2026-07-08-120000.tar.gz", srv.Script),
+			},
+			{
+				Name: fmt.Sprintf("%s-backup-2026-07-09-080000.tar.gz", srv.Script),
+				Size: 1024 * 1024 * 152,
+				Date: now.Add(-2 * time.Hour),
+				Path: fmt.Sprintf("mock://backup/%s-backup-2026-07-09-080000.tar.gz", srv.Script),
+			},
+		}, nil
+	}
+
+	var backups []BackupFile
+	dirs := getBackupDirs(srv.User)
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".tar.gz") {
+				info, err := entry.Info()
+				if err != nil {
+					continue
+				}
+				backups = append(backups, BackupFile{
+					Name: entry.Name(),
+					Size: info.Size(),
+					Date: info.ModTime(),
+					Path: filepath.Join(dir, entry.Name()),
+				})
+			}
+		}
+	}
+
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].Date.After(backups[j].Date)
+	})
+
+	return backups, nil
+}
+
+func (im *InstanceManager) DeleteBackup(serverID, fileName string) error {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		fmt.Printf("[MOCK DELETE] Deleted backup %s for %s\n", fileName, serverID)
+		return nil
+	}
+
+	filePath, err := getBackupFilePath(srv.User, fileName)
+	if err != nil {
+		return err
+	}
+
+	return os.Remove(filePath)
+}
+
+func (im *InstanceManager) GetBackupPath(serverID, fileName string) (string, error) {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return "", fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		dummyPath := filepath.Join(".", "mock-backup.tar.gz")
+		_ = os.WriteFile(dummyPath, []byte("Mock backup file content"), 0644)
+		return dummyPath, nil
+	}
+
+	return getBackupFilePath(srv.User, fileName)
+}
+
+func getCrontab(user string) (string, error) {
+	cmd := exec.Command("crontab", "-u", user, "-l")
+	var outBytes bytes.Buffer
+	cmd.Stdout = &outBytes
+	err := cmd.Run()
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return "", nil
+		}
+		return "", err
+	}
+	return outBytes.String(), nil
+}
+
+func saveCrontab(user string, content string) error {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		cmd := exec.Command("crontab", "-u", user, "-r")
+		_ = cmd.Run()
+		return nil
+	}
+	cmd := exec.Command("crontab", "-u", user, "-")
+	cmd.Stdin = strings.NewReader(trimmed + "\n")
+	return cmd.Run()
+}
+
+func (im *InstanceManager) GetBackupSettings(serverID string) (BackupSettings, error) {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return BackupSettings{}, fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		return BackupSettings{
+			MaxBackups:        "4",
+			MaxBackupDays:     "30",
+			StopOnBackup:      "on",
+			AutoBackupEnabled: true,
+			AutoBackupCron:    "0 5 * * *",
+		}, nil
+	}
+
+	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	commonPath := filepath.Join(configDir, "common.cfg")
+	instancePath := filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script))
+
+	settings := BackupSettings{
+		MaxBackups:    "",
+		MaxBackupDays: "",
+		StopOnBackup:  "",
+	}
+
+	parseFile := func(path string) {
+		contentBytes, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		lines := strings.Split(string(contentBytes), "\n")
+		re := regexp.MustCompile(`^\s*(maxbackups|maxbackupdays|stoponbackup)\s*=\s*["']?([^"'\s#]*)["']?`)
+		for _, line := range lines {
+			matches := re.FindStringSubmatch(line)
+			if len(matches) > 2 {
+				key := matches[1]
+				val := matches[2]
+				switch key {
+				case "maxbackups":
+					settings.MaxBackups = val
+				case "maxbackupdays":
+					settings.MaxBackupDays = val
+				case "stoponbackup":
+					settings.StopOnBackup = val
+				}
+			}
+		}
+	}
+
+	parseFile(commonPath)
+	parseFile(instancePath)
+
+	// Read and parse crontab for automatic backups
+	cronExpr := ""
+	cronEnabled := false
+	if crontabStr, err := getCrontab(srv.User); err == nil {
+		lines := strings.Split(crontabStr, "\n")
+		reCron := regexp.MustCompile(`^([^/]+)(/\S+\s+backup.*)`)
+		for _, line := range lines {
+			if strings.Contains(line, srv.Script) && strings.Contains(line, "backup") {
+				matches := reCron.FindStringSubmatch(strings.TrimSpace(line))
+				if len(matches) > 2 {
+					cronExpr = strings.TrimSpace(matches[1])
+					cronEnabled = true
+					break
+				}
+			}
+		}
+	}
+	settings.AutoBackupEnabled = cronEnabled
+	settings.AutoBackupCron = cronExpr
+
+	return settings, nil
+}
+
+func (im *InstanceManager) SaveBackupSettings(serverID string, settings BackupSettings) error {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		fmt.Printf("[MOCK SAVE SETTINGS] Saved backups settings %+v for %s\n", settings, serverID)
+		return nil
+	}
+
+	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	instancePath := filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script))
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+
+	var content string
+	if contentBytes, err := os.ReadFile(instancePath); err == nil {
+		content = string(contentBytes)
+	}
+
+	lines := strings.Split(content, "\n")
+	updated := map[string]bool{
+		"maxbackups":    false,
+		"maxbackupdays": false,
+		"stoponbackup":  false,
+	}
+
+	reMaxBackups := regexp.MustCompile(`^\s*maxbackups\s*=`)
+	reMaxBackupDays := regexp.MustCompile(`^\s*maxbackupdays\s*=`)
+	reStopOnBackup := regexp.MustCompile(`^\s*stoponbackup\s*=`)
+
+	for i, line := range lines {
+		if reMaxBackups.MatchString(line) {
+			lines[i] = fmt.Sprintf("maxbackups=\"%s\"", settings.MaxBackups)
+			updated["maxbackups"] = true
+		} else if reMaxBackupDays.MatchString(line) {
+			lines[i] = fmt.Sprintf("maxbackupdays=\"%s\"", settings.MaxBackupDays)
+			updated["maxbackupdays"] = true
+		} else if reStopOnBackup.MatchString(line) {
+			lines[i] = fmt.Sprintf("stoponbackup=\"%s\"", settings.StopOnBackup)
+			updated["stoponbackup"] = true
+		}
+	}
+
+	if !updated["maxbackups"] && settings.MaxBackups != "" {
+		lines = append(lines, fmt.Sprintf("maxbackups=\"%s\"", settings.MaxBackups))
+	}
+	if !updated["maxbackupdays"] && settings.MaxBackupDays != "" {
+		lines = append(lines, fmt.Sprintf("maxbackupdays=\"%s\"", settings.MaxBackupDays))
+	}
+	if !updated["stoponbackup"] && settings.StopOnBackup != "" {
+		lines = append(lines, fmt.Sprintf("stoponbackup=\"%s\"", settings.StopOnBackup))
+	}
+
+	newContent := strings.Join(lines, "\n")
+	err := os.WriteFile(instancePath, []byte(newContent), 0644)
+	if err != nil {
+		return err
+	}
+
+	// Update crontab
+	if crontabStr, err := getCrontab(srv.User); err == nil {
+		lines := strings.Split(crontabStr, "\n")
+		var newLines []string
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			if strings.Contains(trimmed, srv.Script) && strings.Contains(trimmed, "backup") {
+				continue
+			}
+			newLines = append(newLines, line)
+		}
+
+		if settings.AutoBackupEnabled && settings.AutoBackupCron != "" {
+			newLine := fmt.Sprintf("%s /home/%s/%s backup > /dev/null 2>&1", settings.AutoBackupCron, srv.User, srv.Script)
+			newLines = append(newLines, newLine)
+		}
+
+		newCrontab := strings.Join(newLines, "\n")
+		_ = saveCrontab(srv.User, newCrontab)
+	}
+
+	return nil
+}
+
+func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request, serverID, fileName, lang string) {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+
+	if srv == nil {
+		im.mu.Unlock()
+		http.Error(w, "Server not found", http.StatusNotFound)
+		return
+	}
+
+	oldStatus := srv.Status
+	srv.Status = "updating"
+	im.mu.Unlock()
+
+	updateStatus := func(newStatus string) {
+		im.mu.Lock()
+		defer im.mu.Unlock()
+		if isMock {
+			for i := range im.mockServers {
+				if im.mockServers[i].ID == serverID {
+					im.mockServers[i].Status = newStatus
+					break
+				}
+			}
+		} else {
+			if s, ok := im.instances[serverID]; ok {
+				s.Status = newStatus
+			}
+		}
+	}
+
+	if isMock {
+		StreamMockRestore(w, r, serverID, fileName, updateStatus)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		updateStatus(oldStatus)
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	sendSSE := func(msgType string, data interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(w, "data: %s\n\n", jsonData)
+		flusher.Flush()
+	}
+
+	logLine := func(text string) {
+		sendSSE("message", map[string]interface{}{
+			"type": "log",
+			"text": text,
+		})
+	}
+
+	filePath, err := getBackupFilePath(srv.User, fileName)
+	if err != nil {
+		updateStatus(oldStatus)
+		sendSSE("message", map[string]interface{}{"type": "log", "text": "Error finding backup: " + err.Error()})
+		sendSSE("message", map[string]interface{}{"type": "exit", "code": 1})
+		return
+	}
+
+	go func() {
+		defer func() {
+			im.ScanInstances()
+			updateStatus("stopped")
+		}()
+
+		if oldStatus == "running" {
+			logLine(Msg(lang, "Stopping game server before restore...", "Stoppe Gameserver vor der Wiederherstellung..."))
+			execCmd := fmt.Sprintf("cd /home/%s && ./%s stop", srv.User, srv.Script)
+			cmd := exec.Command("runuser", "-l", srv.User, "-c", execCmd)
+			_ = cmd.Run()
+		}
+
+		logLine(Msg(lang, fmt.Sprintf("Restoring backup archive %s...", fileName), fmt.Sprintf("Stelle Backup-Archiv %s wieder her...", fileName)))
+
+		tarCmd := fmt.Sprintf("tar -xzf %s -C /home/%s", filePath, srv.User)
+		cmd := exec.Command("runuser", "-l", srv.User, "-c", tarCmd)
+
+		var outBuf, errBuf bytes.Buffer
+		cmd.Stdout = &outBuf
+		cmd.Stderr = &errBuf
+
+		err := cmd.Run()
+		if err != nil {
+			logLine(Msg(lang, "Error during restore: ", "Fehler bei der Wiederherstellung: ") + err.Error())
+			logLine(errBuf.String())
+			sendSSE("message", map[string]interface{}{"type": "exit", "code": 1})
+			return
+		}
+
+		logLine(Msg(lang, "Backup files extracted successfully.", "Backup-Dateien erfolgreich entpackt."))
+
+		if oldStatus == "running" {
+			logLine(Msg(lang, "Restarting game server...", "Starte Gameserver neu..."))
+			execCmd := fmt.Sprintf("cd /home/%s && ./%s start", srv.User, srv.Script)
+			cmd := exec.Command("runuser", "-l", srv.User, "-c", execCmd)
+			_ = cmd.Run()
+			updateStatus("running")
+		} else {
+			updateStatus("stopped")
+		}
+
+		logLine(Msg(lang, "Restore process completed successfully.", "Wiederherstellung erfolgreich abgeschlossen."))
+		sendSSE("message", map[string]interface{}{"type": "exit", "code": 0})
+	}()
 }
