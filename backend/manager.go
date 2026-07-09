@@ -1766,6 +1766,8 @@ func cleanupLeftoverSudoers() {
 
 func getBackupDirs(user string) []string {
 	return []string{
+		filepath.Join("/home", user, "lgsm", "backup"),
+		filepath.Join("/home", user, "lgsm", "backups"),
 		filepath.Join("/home", user, "backup"),
 		filepath.Join("/home", user, "backups"),
 	}
