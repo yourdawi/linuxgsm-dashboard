@@ -386,6 +386,7 @@ EOT
         git clone -b "$branch_name" "$repo_url" "$temp_dir" > /dev/null 2>&1
         if [ $? -eq 0 ]; then
             cp -r "$temp_dir"/* "$INSTALL_DIR/"
+            [ -d "$temp_dir/.git" ] && cp -r "$temp_dir/.git" "$INSTALL_DIR/"
             rm -rf "$temp_dir"
         else
             echo -e "${RED}[ERROR] Download failed.${NC}"
