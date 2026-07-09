@@ -71,6 +71,17 @@ if [ "$OS_TYPE" == "unknown" ]; then
     fi
 fi
 
+# Helper to prompt user (interactive or fallback to tty)
+prompt_user() {
+    local prompt_msg="$1"
+    local var_name="$2"
+    if [ -t 0 ]; then
+        read -p "$prompt_msg" "$var_name"
+    else
+        read -p "$prompt_msg" "$var_name" < /dev/tty
+    fi
+}
+
 # Helper to check if a package is installed
 is_package_installed() {
     local pkg=$1
@@ -188,8 +199,8 @@ do_install() {
     fi
 
     # 2. Port configuration & validation
-    if [ -c /dev/tty ]; then
-        read -p "Please enter the port for the dashboard [default: $PORT]: " user_port < /dev/tty
+    if [ -c /dev/tty ] || [ -t 0 ]; then
+        prompt_user "Please enter the port for the dashboard [default: $PORT]: " user_port
         if [ -n "$user_port" ]; then
             if ! [[ "$user_port" =~ ^[0-9]+$ ]] || [ "$user_port" -lt 1 ] || [ "$user_port" -gt 65535 ]; then
                 echo -e "${RED}[ERROR] Invalid port entered. Using default $PORT.${NC}"
@@ -431,8 +442,8 @@ EOT
     
     if [ "$open_fw" == "true" ]; then
         local fw_confirm="y"
-        if [ -c /dev/tty ]; then
-            read -p "Active firewall detected. Do you want to automatically open port $PORT? [Y/n]: " fw_confirm < /dev/tty
+        if [ -c /dev/tty ] || [ -t 0 ]; then
+            prompt_user "Active firewall detected. Do you want to automatically open port $PORT? [Y/n]: " fw_confirm
         fi
         if [[ "$fw_confirm" =~ ^[yY]?$ ]]; then
             configure_firewall "add"
@@ -485,7 +496,7 @@ do_uninstall() {
     echo -e "${RED}             Starting Uninstallation...                           ${NC}"
     echo -e "${RED}==================================================================${NC}"
 
-    if ! read -p "Are you sure you want to delete the dashboard and all configurations? [y/N]: " confirm < /dev/tty; then
+    if ! prompt_user "Are you sure you want to delete the dashboard and all configurations? [y/N]: " confirm; then
         echo -e "${RED}[ERROR] Input stream closed. Exiting...${NC}"
         exit 1
     fi
@@ -522,7 +533,7 @@ do_uninstall() {
     # 3. Clean up system packages if requested
     local remove_packages="false"
     if [ -f "$STATE_FILE" ]; then
-        if read -p "Do you want to uninstall system packages that were installed by this script? [y/N]: " rm_pkg < /dev/tty; then
+        if prompt_user "Do you want to uninstall system packages that were installed by this script? [y/N]: " rm_pkg; then
             if [[ "$rm_pkg" =~ ^[yY]$ ]]; then
                 remove_packages="true"
             fi
@@ -685,7 +696,7 @@ while true; do
     echo -e "  3) Show Status & System Info"
     echo -e "  4) Exit"
     echo -e "${BLUE}==================================================================${NC}"
-    if ! read -p "Please choose an option [1-4]: " choice < /dev/tty; then
+    if ! prompt_user "Please choose an option [1-4]: " choice; then
         echo -e "${RED}[ERROR] Input stream closed. Exiting...${NC}"
         exit 1
     fi
