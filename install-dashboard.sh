@@ -415,7 +415,7 @@ PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
@@ -522,11 +522,9 @@ do_uninstall() {
     # 3. Clean up system packages if requested
     local remove_packages="false"
     if [ -f "$STATE_FILE" ]; then
-        if [ "$git_preexisted" == "false" ] || [ "$go_preexisted" == "false" ] || [ "$curl_preexisted" == "false" ] || [ "$sudo_preexisted" == "false" ] || [ -n "$INSTALLED_DEPS" ]; then
-            if read -p "Do you want to uninstall system packages that were installed by this script? [y/N]: " rm_pkg < /dev/tty; then
-                if [[ "$rm_pkg" =~ ^[yY]$ ]]; then
-                    remove_packages="true"
-                fi
+        if read -p "Do you want to uninstall system packages that were installed by this script? [y/N]: " rm_pkg < /dev/tty; then
+            if [[ "$rm_pkg" =~ ^[yY]$ ]]; then
+                remove_packages="true"
             fi
         fi
     else
