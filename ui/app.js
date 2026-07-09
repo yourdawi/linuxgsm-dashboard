@@ -186,7 +186,25 @@ const el = {
     syncGamesText: document.getElementById('sync-games-text'),
     gamesSyncProgressBar: document.getElementById('games-sync-progress-bar'),
     gamesSyncProgressFill: document.getElementById('games-sync-progress-fill'),
-    gamesSyncProgressText: document.getElementById('games-sync-progress-text')
+    gamesSyncProgressText: document.getElementById('games-sync-progress-text'),
+    
+    // Backups View
+    backupsServerSelect: document.getElementById('backups-server-select'),
+    backupsBtnCreate: document.getElementById('backups-btn-create'),
+    backupsTableBody: document.getElementById('backups-list-table-body'),
+    backupsEmptyMessage: document.getElementById('backups-empty-message'),
+    backupsLoading: document.getElementById('backups-loading'),
+    backupsSettingsForm: document.getElementById('backups-settings-form'),
+    backupsSettingMaxBackups: document.getElementById('backups-setting-maxbackups'),
+    backupsSettingMaxBackupDays: document.getElementById('backups-setting-maxbackupdays'),
+    backupsSettingStopOnBackup: document.getElementById('backups-setting-stoponbackup'),
+    backupsSettingsSaveBtn: document.getElementById('backups-settings-save-btn'),
+    backupsSettingsMessage: document.getElementById('backups-settings-message'),
+    backupsSettingAutoBackupEnabled: document.getElementById('backups-setting-autobackup-enabled'),
+    backupsSettingCronContainer: document.getElementById('backups-setting-cron-container'),
+    backupsSettingCronPreset: document.getElementById('backups-setting-cron-preset'),
+    backupsSettingCustomCronContainer: document.getElementById('backups-setting-custom-cron-container'),
+    backupsSettingCronCustom: document.getElementById('backups-setting-cron-custom')
 };
 
 // -------------------------------------------------------------
@@ -241,6 +259,25 @@ function initApp() {
     // Settings listeners
     el.settingsPasswordForm.addEventListener('submit', changePassword);
     el.settingsServerSelect.addEventListener('change', handleSettingsServerChange);
+    
+    // Backups listeners
+    el.backupsServerSelect.addEventListener('change', handleBackupsServerChange);
+    el.backupsBtnCreate.addEventListener('click', handleBackupsBtnCreateClick);
+    el.backupsSettingsForm.addEventListener('submit', saveBackupSettings);
+    el.backupsSettingAutoBackupEnabled.addEventListener('change', () => {
+        if (el.backupsSettingAutoBackupEnabled.checked) {
+            el.backupsSettingCronContainer.classList.remove('hidden');
+        } else {
+            el.backupsSettingCronContainer.classList.add('hidden');
+        }
+    });
+    el.backupsSettingCronPreset.addEventListener('change', () => {
+        if (el.backupsSettingCronPreset.value === 'custom') {
+            el.backupsSettingCustomCronContainer.classList.remove('hidden');
+        } else {
+            el.backupsSettingCustomCronContainer.classList.add('hidden');
+        }
+    });
     
     // Action modal listeners
     el.modalStreamClose.addEventListener('click', () => {
@@ -305,10 +342,20 @@ function handleRouting() {
     const viewName = hash.substring(1);
     
     // Role-based view protection
-    if (state.currentUser && state.currentUser.role !== 'admin') {
+    if (state.currentUser) {
+        const isAdmin = state.currentUser.role === 'admin';
+        const hasBackup = state.currentUser.permissions && state.currentUser.permissions.includes('backup');
         if (viewName === 'users' || viewName === 'installer') {
-            window.location.hash = '#dashboard';
-            return;
+            if (!isAdmin) {
+                window.location.hash = '#dashboard';
+                return;
+            }
+        }
+        if (viewName === 'backups') {
+            if (!isAdmin && !hasBackup) {
+                window.location.hash = '#dashboard';
+                return;
+            }
         }
     }
     
@@ -354,6 +401,8 @@ function handleRouting() {
         loadSettingsInfo();
     } else if (viewName === 'installer') {
         loadGamesList();
+    } else if (viewName === 'backups') {
+        populateBackupsDropdown();
     }
 }
 
@@ -436,6 +485,18 @@ async function hideLogin() {
                 } else {
                     menuInstallerTab.classList.add('hidden');
                     if (window.location.hash === '#installer') {
+                        window.location.hash = '#dashboard';
+                    }
+                }
+            }
+
+            const menuBackupsTab = document.getElementById('menu-backups-tab');
+            if (menuBackupsTab) {
+                if (state.currentUser && (state.currentUser.role === 'admin' || (state.currentUser.permissions && state.currentUser.permissions.includes('backup')))) {
+                    menuBackupsTab.classList.remove('hidden');
+                } else {
+                    menuBackupsTab.classList.add('hidden');
+                    if (window.location.hash === '#backups') {
                         window.location.hash = '#dashboard';
                     }
                 }
@@ -711,19 +772,26 @@ function createServerCard(server) {
     }
 
     let adminActionsHtml = '';
-    if (isAdmin) {
+    const canBackup = hasUserPermission('backup');
+    if (isAdmin || canBackup) {
         adminActionsHtml += `
-            <div class="card-actions-row-3" style="margin-top: 0.4rem;">
+            <div class="card-actions-row-${(isAdmin ? 3 : 2)}" style="margin-top: 0.4rem;">
                 <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'details')" ${isBusy ? 'disabled' : ''}>
                     ${t('btn-details')}
                 </button>
                 <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'backup')" ${isBusy ? 'disabled' : ''}>
                     ${t('btn-backup')}
-                </button>
+                </button>`;
+        if (isAdmin) {
+            adminActionsHtml += `
                 <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'validate')" ${isBusy ? 'disabled' : ''}>
                     ${t('btn-validate')}
-                </button>
-            </div>
+                </button>`;
+        }
+        adminActionsHtml += `</div>`;
+        
+        if (isAdmin) {
+            adminActionsHtml += `
             <div class="card-actions-row-2" style="margin-top: 0.4rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
                 <button class="btn btn-primary btn-sm btn-server-action" onclick="checkServerPorts('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg> ${t('btn-portcheck')}
@@ -732,6 +800,7 @@ function createServerCard(server) {
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> ${t('btn-delete-server')}
                 </button>
             </div>`;
+        }
     }
     
     card.innerHTML = `
@@ -915,6 +984,23 @@ function updateConsoleViewButtons() {
     el.consoleBtnValidate.disabled = isBusy;
     el.consoleInputField.disabled = !isRunning || isBusy;
     el.consoleInputSubmit.disabled = !isRunning || isBusy;
+    
+    const canBackup = hasUserPermission('backup');
+    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+    
+    if (isAdmin || canBackup) {
+        el.consoleBtnDetails.classList.remove('hidden');
+        el.consoleBtnBackup.classList.remove('hidden');
+    } else {
+        el.consoleBtnDetails.classList.add('hidden');
+        el.consoleBtnBackup.classList.add('hidden');
+    }
+    
+    if (isAdmin) {
+        el.consoleBtnValidate.classList.remove('hidden');
+    } else {
+        el.consoleBtnValidate.classList.add('hidden');
+    }
     
     if (isRunning) {
         el.consoleStatusDot.className = 'status-dot status-online';
@@ -2146,8 +2232,44 @@ const i18n = {
         "modal-user-title-new": "Create New User",
         "modal-user-subtitle": "Assign user roles and permissions.",
         "user-username-help": "3-16 characters, lowercase letters, numbers and underscores only.",
-        "user-password-help": "Leave blank to keep current password.",
-        "btn-cancel": "Cancel"
+        "btn-cancel": "Cancel",
+        "menu-backups": "Backups",
+        "backups-title": "Backups",
+        "backups-subtitle": "List, create, download, delete and restore server backups.",
+        "backups-select-default": "-- Select a server --",
+        "backups-btn-create": "Create Backup",
+        "backups-no-server-selected": "No server selected",
+        "backups-empty": "No backups found for this server.",
+        "col-filename": "Filename",
+        "col-date": "Date",
+        "col-size": "Size",
+        "btn-download": "Download",
+        "btn-restore": "Restore",
+        "btn-delete": "Delete",
+        "perm-backup": "Manage backups",
+        "confirm-delete-backup-title": "Delete Backup",
+        "confirm-delete-backup-text": "Are you sure you want to delete this backup? This action cannot be undone.",
+        "confirm-restore-backup-title": "Restore Backup",
+        "confirm-restore-backup-text": "Are you sure you want to restore this backup? The game server will be stopped and all files will be replaced with the state of this backup.",
+        "backups-settings-title": "Backup Settings",
+        "backups-setting-maxbackups-label": "Max Backups (maxbackups)",
+        "backups-setting-maxbackups-help": "Set the maximum number of backups to retain. 0 prevents backups from being saved.",
+        "backups-setting-maxbackupdays-label": "Max Backup Days (maxbackupdays)",
+        "backups-setting-maxbackupdays-help": "Backups older than this number of days will be deleted. 0 retains backup for 24 hours.",
+        "backups-setting-stoponbackup-label": "Stop on Backup (stoponbackup)",
+        "backups-setting-stoponbackup-help": "Stop the server while compressing to prevent file changes and corruption.",
+        "option-on": "On",
+        "option-off": "Off",
+        "backups-settings-saved": "Backup settings saved successfully!",
+        "backups-settings-save-error": "Failed to save backup settings.",
+        "backups-setting-autobackup-label": "Enable automatic backups (Cronjob)",
+        "backups-setting-cron-preset-label": "Backup Interval",
+        "cron-preset-daily": "Daily at 05:00 AM (Recommended)",
+        "cron-preset-weekly": "Weekly on Sunday at 04:00 AM",
+        "cron-preset-12h": "Every 12 Hours",
+        "cron-preset-custom": "Custom (Cron Expression)",
+        "backups-setting-cron-custom-label": "Cron Expression",
+        "backups-setting-cron-custom-help": "Format: Minute Hour Day-of-Month Month Day-of-Week"
     },
     de: {
         "menu-dashboard": "Dashboard",
@@ -2349,8 +2471,44 @@ const i18n = {
         "modal-user-title-new": "Neuen Benutzer anlegen",
         "modal-user-subtitle": "Benutzerrollen und Berechtigungen zuweisen.",
         "user-username-help": "3-16 Zeichen, nur Kleinbuchstaben, Zahlen und Unterstriche.",
-        "user-password-help": "Lass das Feld leer, um das Passwort nicht zu ändern.",
-        "btn-cancel": "Abbrechen"
+        "btn-cancel": "Abbrechen",
+        "menu-backups": "Backups",
+        "backups-title": "Backups",
+        "backups-subtitle": "Backups auflisten, erstellen, herunterladen, löschen und wiederherstellen.",
+        "backups-select-default": "-- Server auswählen --",
+        "backups-btn-create": "Backup erstellen",
+        "backups-no-server-selected": "Kein Server ausgewählt",
+        "backups-empty": "Keine Backups für diesen Server gefunden.",
+        "col-filename": "Dateiname",
+        "col-date": "Datum",
+        "col-size": "Größe",
+        "btn-download": "Herunterladen",
+        "btn-restore": "Wiederherstellen",
+        "btn-delete": "Löschen",
+        "perm-backup": "Backups verwalten",
+        "confirm-delete-backup-title": "Backup löschen",
+        "confirm-delete-backup-text": "Möchtest du dieses Backup wirklich löschen? Dieser Schritt kann nicht rückgängig gemacht werden.",
+        "confirm-restore-backup-title": "Backup wiederherstellen",
+        "confirm-restore-backup-text": "Möchtest du dieses Backup wirklich wiederherstellen? Der Gameserver wird gestoppt und alle Spieldateien werden auf den Stand dieses Backups zurückgesetzt.",
+        "backups-settings-title": "Backup-Einstellungen",
+        "backups-setting-maxbackups-label": "Max Backups (maxbackups)",
+        "backups-setting-maxbackups-help": "Maximale Anzahl an Backups, die behalten werden. 0 verhindert das Speichern von Backups.",
+        "backups-setting-maxbackupdays-label": "Max Backup-Tage (maxbackupdays)",
+        "backups-setting-maxbackupdays-help": "Backups, die älter als diese Anzahl an Tagen sind, werden gelöscht. 0 behält das Backup für 24 Stunden.",
+        "backups-setting-stoponbackup-label": "Server stoppen bei Backup (stoponbackup)",
+        "backups-setting-stoponbackup-help": "Stoppt den Server während der Komprimierung, um Dateiveränderungen und Datenkorruption zu verhindern.",
+        "option-on": "An",
+        "option-off": "Aus",
+        "backups-settings-saved": "Backup-Einstellungen erfolgreich gespeichert!",
+        "backups-settings-save-error": "Fehler beim Speichern der Backup-Einstellungen.",
+        "backups-setting-autobackup-label": "Automatische Backups aktivieren (Cronjob)",
+        "backups-setting-cron-preset-label": "Backup-Intervall",
+        "cron-preset-daily": "Täglich um 05:00 Uhr (Empfohlen)",
+        "cron-preset-weekly": "Wöchentlich am Sonntag um 04:00 Uhr",
+        "cron-preset-12h": "Alle 12 Stunden",
+        "cron-preset-custom": "Benutzerdefiniert (Cron-Ausdruck)",
+        "backups-setting-cron-custom-label": "Cron-Ausdruck",
+        "backups-setting-cron-custom-help": "Format: Minute Stunde Tag-des-Monats Monat Tag-der-Woche"
     }
 };
 
@@ -2931,7 +3089,7 @@ async function saveUserForm() {
         const checkedPerms = document.querySelectorAll('#user-permissions-list input[type="checkbox"]:checked');
         checkedPerms.forEach(cb => permissions.push(cb.value));
     } else {
-        permissions = ['start', 'stop', 'restart', 'console', 'config'];
+        permissions = ['start', 'stop', 'restart', 'console', 'config', 'backup'];
     }
     
     messageArea.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
@@ -3002,3 +3160,338 @@ async function deleteUser(username) {
 
 window.deleteUser = deleteUser;
 window.openEditUserModal = openEditUserModal;
+window.confirmDeleteBackup = confirmDeleteBackup;
+window.confirmRestoreBackup = confirmRestoreBackup;
+
+// -------------------------------------------------------------
+// Backups View Management
+// -------------------------------------------------------------
+
+function populateBackupsDropdown() {
+    const current = el.backupsServerSelect.value;
+    
+    el.backupsServerSelect.innerHTML = `<option value="">${t('backups-select-default')}</option>`;
+    
+    state.servers.forEach(server => {
+        const opt = document.createElement('option');
+        opt.value = server.id;
+        opt.textContent = `${server.name} (${server.user})`;
+        el.backupsServerSelect.appendChild(opt);
+    });
+    
+    if (current && state.servers.find(s => s.id === current)) {
+        el.backupsServerSelect.value = current;
+    } else {
+        state.selectedBackupServer = '';
+        updateBackupsView();
+    }
+}
+
+function handleBackupsServerChange() {
+    state.selectedBackupServer = el.backupsServerSelect.value;
+    updateBackupsView();
+}
+
+function updateBackupsView() {
+    if (!state.selectedBackupServer) {
+        el.backupsBtnCreate.disabled = true;
+        el.backupsTableBody.innerHTML = '';
+        el.backupsEmptyMessage.classList.add('hidden');
+        el.backupsLoading.classList.add('hidden');
+        
+        el.backupsSettingMaxBackups.disabled = true;
+        el.backupsSettingMaxBackupDays.disabled = true;
+        el.backupsSettingStopOnBackup.disabled = true;
+        el.backupsSettingsSaveBtn.disabled = true;
+        el.backupsSettingMaxBackups.value = '';
+        el.backupsSettingMaxBackupDays.value = '';
+        el.backupsSettingStopOnBackup.value = 'on';
+        el.backupsSettingsMessage.textContent = '';
+        
+        el.backupsSettingAutoBackupEnabled.disabled = true;
+        el.backupsSettingAutoBackupEnabled.checked = false;
+        el.backupsSettingCronPreset.disabled = true;
+        el.backupsSettingCronPreset.value = '0 5 * * *';
+        el.backupsSettingCronCustom.disabled = true;
+        el.backupsSettingCronCustom.value = '';
+        el.backupsSettingCronContainer.classList.add('hidden');
+        el.backupsSettingCustomCronContainer.classList.add('hidden');
+        
+        const placeholder = document.createElement('tr');
+        placeholder.innerHTML = `<td colspan="4" class="text-center text-muted" style="padding: 2rem;">${t('backups-no-server-selected')}</td>`;
+        el.backupsTableBody.appendChild(placeholder);
+        return;
+    }
+    
+    el.backupsBtnCreate.disabled = false;
+    
+    el.backupsSettingMaxBackups.disabled = false;
+    el.backupsSettingMaxBackupDays.disabled = false;
+    el.backupsSettingStopOnBackup.disabled = false;
+    el.backupsSettingsSaveBtn.disabled = false;
+    el.backupsSettingsMessage.textContent = '';
+    
+    el.backupsSettingAutoBackupEnabled.disabled = false;
+    el.backupsSettingCronPreset.disabled = false;
+    el.backupsSettingCronCustom.disabled = false;
+    
+    loadBackupsList();
+    loadBackupSettings();
+}
+
+async function loadBackupsList() {
+    const serverId = state.selectedBackupServer;
+    if (!serverId) return;
+    
+    el.backupsLoading.classList.remove('hidden');
+    el.backupsEmptyMessage.classList.add('hidden');
+    el.backupsTableBody.innerHTML = '';
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/backups`);
+        el.backupsLoading.classList.add('hidden');
+        
+        if (res.status === 200) {
+            const backups = await res.json();
+            if (backups.length === 0) {
+                el.backupsEmptyMessage.classList.remove('hidden');
+                el.backupsEmptyMessage.textContent = t('backups-empty');
+                return;
+            }
+            
+            backups.forEach(backup => {
+                const tr = document.createElement('tr');
+                const sizeFormatted = formatBytes(backup.size);
+                const dateObj = new Date(backup.date);
+                const dateFormatted = dateObj.toLocaleString(state.language === 'de' ? 'de-DE' : 'en-US');
+                const downloadUrl = `/api/servers/${serverId}/backups/download?file=${encodeURIComponent(backup.name)}`;
+                
+                tr.innerHTML = `
+                    <td style="padding: 0.85rem 1rem;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 0.5rem; vertical-align: middle; color: var(--text-secondary);"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                        <strong>${escapeHtml(backup.name)}</strong>
+                    </td>
+                    <td style="padding: 0.85rem 1rem;">${dateFormatted}</td>
+                    <td style="padding: 0.85rem 1rem;">${sizeFormatted}</td>
+                    <td style="padding: 0.85rem 1rem; display: flex; gap: 0.5rem;">
+                        <a href="${downloadUrl}" class="btn btn-secondary btn-sm" download style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
+                            ${t('btn-download')}
+                        </a>
+                        <button class="btn btn-warning btn-sm" onclick="confirmRestoreBackup('${serverId}', '${escapeJs(backup.name)}')" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0-.57-8.38l5.67-5.67"></path></svg>
+                            ${t('btn-restore')}
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="confirmDeleteBackup('${serverId}', '${escapeJs(backup.name)}')" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                            ${t('btn-delete')}
+                        </button>
+                    </td>
+                `;
+                el.backupsTableBody.appendChild(tr);
+            });
+        }
+    } catch (err) {
+        el.backupsLoading.classList.add('hidden');
+        console.error('Error loading backups:', err);
+    }
+}
+
+async function loadBackupSettings() {
+    const serverId = state.selectedBackupServer;
+    if (!serverId) return;
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/backups/settings`);
+        if (res.status === 200) {
+            const settings = await res.json();
+            el.backupsSettingMaxBackups.value = settings.maxbackups || '';
+            el.backupsSettingMaxBackupDays.value = settings.maxbackupdays || '';
+            el.backupsSettingStopOnBackup.value = settings.stoponbackup === 'off' ? 'off' : 'on';
+            
+            el.backupsSettingAutoBackupEnabled.checked = !!settings.autobackup_enabled;
+            if (settings.autobackup_enabled) {
+                el.backupsSettingCronContainer.classList.remove('hidden');
+                const cron = settings.autobackup_cron || '';
+                const presets = ['0 5 * * *', '0 4 * * 0', '0 */12 * * *'];
+                if (presets.includes(cron)) {
+                    el.backupsSettingCronPreset.value = cron;
+                    el.backupsSettingCustomCronContainer.classList.add('hidden');
+                    el.backupsSettingCronCustom.value = '';
+                } else {
+                    el.backupsSettingCronPreset.value = 'custom';
+                    el.backupsSettingCustomCronContainer.classList.remove('hidden');
+                    el.backupsSettingCronCustom.value = cron;
+                }
+            } else {
+                el.backupsSettingCronContainer.classList.add('hidden');
+                el.backupsSettingCustomCronContainer.classList.add('hidden');
+                el.backupsSettingCronPreset.value = '0 5 * * *';
+                el.backupsSettingCronCustom.value = '';
+            }
+        }
+    } catch (err) {
+        console.error('Error loading backup settings:', err);
+    }
+}
+
+async function saveBackupSettings(e) {
+    if (e) e.preventDefault();
+    
+    const serverId = state.selectedBackupServer;
+    if (!serverId) return;
+    
+    el.backupsSettingsMessage.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
+    el.backupsSettingsMessage.className = 'info-message text-muted';
+    el.backupsSettingsSaveBtn.disabled = true;
+    
+    try {
+        let cronVal = '';
+        if (el.backupsSettingAutoBackupEnabled.checked) {
+            const preset = el.backupsSettingCronPreset.value;
+            if (preset === 'custom') {
+                cronVal = el.backupsSettingCronCustom.value.trim();
+                if (!cronVal) {
+                    throw new Error(state.language === 'de' ? 'Ein gültiger Cron-Ausdruck wird benötigt!' : 'A valid Cron expression is required!');
+                }
+            } else {
+                cronVal = preset;
+            }
+        }
+        
+        const res = await apiFetch(`/api/servers/${serverId}/backups/settings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                maxbackups: el.backupsSettingMaxBackups.value,
+                maxbackupdays: el.backupsSettingMaxBackupDays.value,
+                stoponbackup: el.backupsSettingStopOnBackup.value,
+                autobackup_enabled: el.backupsSettingAutoBackupEnabled.checked,
+                autobackup_cron: cronVal
+            })
+        });
+        
+        el.backupsSettingsSaveBtn.disabled = false;
+        if (res.status === 200) {
+            el.backupsSettingsMessage.textContent = t('backups-settings-saved');
+            el.backupsSettingsMessage.className = 'info-message text-success';
+            setTimeout(() => {
+                if (state.selectedBackupServer === serverId) {
+                    el.backupsSettingsMessage.textContent = '';
+                }
+            }, 3000);
+        } else {
+            const data = await res.json();
+            el.backupsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || t('backups-settings-save-error'));
+            el.backupsSettingsMessage.className = 'info-message text-danger';
+        }
+    } catch (err) {
+        el.backupsSettingsSaveBtn.disabled = false;
+        console.error('Error saving backup settings:', err);
+        el.backupsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + err.message;
+        el.backupsSettingsMessage.className = 'info-message text-danger';
+    }
+}
+
+function handleBackupsBtnCreateClick() {
+    const serverId = state.selectedBackupServer;
+    if (!serverId) return;
+    
+    runServerAction(serverId, 'backup');
+}
+
+function confirmDeleteBackup(serverId, filename) {
+    if (confirm(`${t('confirm-delete-backup-text')} (${filename})`)) {
+        deleteBackup(serverId, filename);
+    }
+}
+
+async function deleteBackup(serverId, filename) {
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/backups/delete?file=${encodeURIComponent(filename)}`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+        if (res.status === 200 && data.status === 'ok') {
+            loadBackupsList();
+        } else {
+            alert((state.language === 'de' ? 'Fehler beim Löschen des Backups: ' : 'Error deleting backup: ') + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        console.error('Delete backup error:', e);
+        alert((state.language === 'de' ? 'Fehler beim Löschen des Backups: ' : 'Error deleting backup: ') + e.message);
+    }
+}
+
+function confirmRestoreBackup(serverId, filename) {
+    if (confirm(`${t('confirm-restore-backup-text')} (${filename})`)) {
+        runBackupRestoreAction(serverId, filename);
+    }
+}
+
+function runBackupRestoreAction(serverId, filename) {
+    const tAction = state.language === 'de' ? 'Wiederherstellung' : 'Restore';
+    el.modalStreamTitle.textContent = (state.language === 'de' ? `Backup-Wiederherstellung für {server}` : `Backup Restore for {server}`).replace('{server}', serverId);
+    el.modalStreamStatus.textContent = t('status-connecting');
+    el.modalStreamStatus.className = 'badge badge-warning animate-pulse';
+    el.modalStreamOutput.innerHTML = '';
+    el.modalStreamClose.disabled = true;
+    el.modalStream.classList.remove('hidden');
+    
+    const url = `/api/servers/${serverId}/backups/restore?file=${encodeURIComponent(filename)}&lang=${state.language}`;
+    const eventSource = new EventSource(url);
+    
+    eventSource.onopen = () => {
+        el.modalStreamStatus.textContent = state.language === 'de' ? 'Wiederherstellung läuft...' : 'Restoring backup...';
+        el.modalStreamStatus.className = 'badge badge-warning badge-pulse animate-pulse';
+    };
+    
+    eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'log') {
+            const line = document.createElement('div');
+            line.className = 'terminal-row';
+            line.textContent = data.text;
+            el.modalStreamOutput.appendChild(line);
+            
+            if (el.modalStreamAutoscroll.checked) {
+                el.modalStreamOutput.scrollTop = el.modalStreamOutput.scrollHeight;
+            }
+        } else if (data.type === 'exit') {
+            const exitCode = data.code;
+            el.modalStreamStatus.textContent = exitCode === 0 ? t('status-success') : t('status-error');
+            el.modalStreamStatus.className = exitCode === 0 ? 'badge badge-success' : 'badge badge-danger';
+            el.modalStreamClose.disabled = false;
+            eventSource.close();
+            
+            loadBackupsList();
+        }
+    };
+    
+    eventSource.onerror = (err) => {
+        const line = document.createElement('div');
+        line.className = 'terminal-row text-danger';
+        line.textContent = state.language === 'de' ? 'Fehler beim Verbinden mit der Wiederherstellung.' : 'Error connecting to the restore stream.';
+        el.modalStreamOutput.appendChild(line);
+        el.modalStreamStatus.textContent = t('status-cancelled');
+        el.modalStreamStatus.className = 'badge badge-danger';
+        el.modalStreamClose.disabled = false;
+        eventSource.close();
+    };
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+
+function escapeJs(str) {
+    return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
+}

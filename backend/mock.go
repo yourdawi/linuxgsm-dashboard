@@ -317,3 +317,52 @@ func StreamMockInstall(w http.ResponseWriter, r *http.Request, gameCmd, username
 		"code": 0,
 	})
 }
+
+// StreamMockRestore writes a sequence of simulated console events to the client SSE stream during a backup restore
+func StreamMockRestore(w http.ResponseWriter, r *http.Request, serverID, filename string, updateStatusCallback func(string)) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	sendSSE := func(eventType string, data interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(w, "data: %s\n\n", jsonData)
+		flusher.Flush()
+	}
+
+	logLine := func(text string, delayMs int) {
+		time.Sleep(time.Duration(delayMs) * time.Millisecond)
+		sendSSE("message", map[string]interface{}{
+			"type": "log",
+			"text": text,
+		})
+	}
+
+	logLine(fmt.Sprintf("[%s] Starting restore of backup %s for %s...", time.Now().Format("15:04:05"), filename, serverID), 100)
+	logLine("Stopping game server for safe restoration...", 200)
+	updateStatusCallback("stopped")
+	logLine("Stopping tmux session... OK", 150)
+	logLine(fmt.Sprintf("Extracting backup archive %s...", filename), 300)
+	logLine("tar -xzf archive: [=====>                         ] 18%", 200)
+	logLine("tar -xzf archive: [===========>                   ] 38%", 200)
+	logLine("tar -xzf archive: [===================>           ] 65%", 200)
+	logLine("tar -xzf archive: [=========================>     ] 85%", 200)
+	logLine("tar -xzf archive: [==============================>] 100%", 200)
+	logLine("Restoring configurations... OK", 200)
+	logLine("Verifying file permissions... OK", 150)
+	logLine("Starting server back up...", 300)
+	updateStatusCallback("running")
+	logLine("Server is now running.", 100)
+	logLine(fmt.Sprintf("[%s] Restore completed successfully.", time.Now().Format("15:04:05")), 100)
+
+	sendSSE("message", map[string]interface{}{
+		"type": "exit",
+		"code": 0,
+	})
+}

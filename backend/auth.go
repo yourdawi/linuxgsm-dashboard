@@ -95,7 +95,7 @@ func (am *AuthManager) loadOrCreateConfig() error {
 					PasswordHash: hashPassword(rawPassword),
 					Role:         "admin",
 					Servers:      []string{}, // Admins bypass server checks
-					Permissions:  []string{"start", "stop", "restart", "console", "config"},
+					Permissions:  []string{"start", "stop", "restart", "console", "config", "backup"},
 				},
 			},
 			Port: 8080,
@@ -138,7 +138,7 @@ func (am *AuthManager) loadOrCreateConfig() error {
 				PasswordHash: raw.PasswordHash,
 				Role:         "admin",
 				Servers:      []string{},
-				Permissions:  []string{"start", "stop", "restart", "console", "config"},
+				Permissions:  []string{"start", "stop", "restart", "console", "config", "backup"},
 			}
 			if adminUser.Username == "" {
 				adminUser.Username = "admin"
