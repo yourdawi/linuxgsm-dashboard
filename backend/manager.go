@@ -786,6 +786,13 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 		}
 	}
 
+	// Reset status from "updating" so ScanInstances detects the actual status
+	im.mu.Lock()
+	if s, ok := im.instances[serverID]; ok && s.Status == "updating" {
+		s.Status = "stopped"
+	}
+	im.mu.Unlock()
+
 	// Rescan instances to reflect status changes
 	im.ScanInstances()
 
