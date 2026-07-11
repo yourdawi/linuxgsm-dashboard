@@ -204,7 +204,44 @@ const el = {
     backupsSettingCronContainer: document.getElementById('backups-setting-cron-container'),
     backupsSettingCronPreset: document.getElementById('backups-setting-cron-preset'),
     backupsSettingCustomCronContainer: document.getElementById('backups-setting-custom-cron-container'),
-    backupsSettingCronCustom: document.getElementById('backups-setting-cron-custom')
+    backupsSettingCronCustom: document.getElementById('backups-setting-cron-custom'),
+    backupsBtnUpload: document.getElementById('backups-btn-upload'),
+    backupsInputUpload: document.getElementById('backups-input-upload'),
+    backupsUploadProgressContainer: document.getElementById('backups-upload-progress-container'),
+    backupsUploadFilename: document.getElementById('backups-upload-filename'),
+    backupsUploadPercentage: document.getElementById('backups-upload-percentage'),
+    backupsUploadProgressBar: document.getElementById('backups-upload-progress-bar'),
+    
+    // Extensions elements
+    consoleBtnUpdateLgsm: document.getElementById('console-btn-update-lgsm'),
+    consoleBtnForceUpdate: document.getElementById('console-btn-force-update'),
+    consoleBtnTestAlert: document.getElementById('console-btn-test-alert'),
+    consoleGameActions: document.getElementById('console-game-actions'),
+    
+    alertsSettingDiscordEnabled: document.getElementById('alerts-setting-discord-enabled'),
+    alertsSettingDiscordWebhook: document.getElementById('alerts-setting-discord-webhook'),
+    alertsSettingDiscordContainer: document.getElementById('alerts-setting-discord-container'),
+    
+    alertsSettingTelegramEnabled: document.getElementById('alerts-setting-telegram-enabled'),
+    alertsSettingTelegramToken: document.getElementById('alerts-setting-telegram-token'),
+    alertsSettingTelegramChatid: document.getElementById('alerts-setting-telegram-chatid'),
+    alertsSettingTelegramContainer: document.getElementById('alerts-setting-telegram-container'),
+    
+    alertsSettingEmailEnabled: document.getElementById('alerts-setting-email-enabled'),
+    alertsSettingEmailSmtp: document.getElementById('alerts-setting-email-smtp'),
+    alertsSettingEmailPort: document.getElementById('alerts-setting-email-port'),
+    alertsSettingEmailUser: document.getElementById('alerts-setting-email-user'),
+    alertsSettingEmailPass: document.getElementById('alerts-setting-email-pass'),
+    alertsSettingEmailDest: document.getElementById('alerts-setting-email-dest'),
+    alertsSettingEmailContainer: document.getElementById('alerts-setting-email-container'),
+    
+    alertsSettingsPanel: document.getElementById('alerts-settings-panel'),
+    alertsSettingsSaveBtn: document.getElementById('alerts-settings-save-btn'),
+    alertsSettingsMessage: document.getElementById('alerts-settings-message'),
+    alertsSettingsForm: document.getElementById('alerts-settings-form'),
+    
+    settingsToolsBtnSystemd: document.getElementById('settings-tools-btn-systemd'),
+    settingsToolsBtnCron: document.getElementById('settings-tools-btn-cron')
 };
 
 // -------------------------------------------------------------
@@ -240,6 +277,9 @@ function initApp() {
     el.consoleBtnDetails.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'details'));
     el.consoleBtnBackup.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'backup'));
     el.consoleBtnValidate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'validate'));
+    el.consoleBtnUpdateLgsm.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'update-lgsm'));
+    el.consoleBtnForceUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'force-update'));
+    el.consoleBtnTestAlert.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'test-alert'));
     
     el.consoleModeTmux.addEventListener('click', () => switchConsoleMode('tmux'));
     el.consoleModeLog.addEventListener('click', () => switchConsoleMode('log'));
@@ -259,11 +299,22 @@ function initApp() {
     // Settings listeners
     el.settingsPasswordForm.addEventListener('submit', changePassword);
     el.settingsServerSelect.addEventListener('change', handleSettingsServerChange);
+    el.settingsToolsBtnSystemd.addEventListener('click', installSystemdService);
+    el.settingsToolsBtnCron.addEventListener('click', installCronjobs);
     
     // Backups listeners
     el.backupsServerSelect.addEventListener('change', handleBackupsServerChange);
     el.backupsBtnCreate.addEventListener('click', handleBackupsBtnCreateClick);
+    el.backupsBtnUpload.addEventListener('click', () => el.backupsInputUpload.click());
+    el.backupsInputUpload.addEventListener('change', handleBackupsUpload);
     el.backupsSettingsForm.addEventListener('submit', saveBackupSettings);
+    
+    // Alerts listeners
+    el.alertsSettingsForm.addEventListener('submit', saveAlertSettings);
+    el.alertsSettingDiscordEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingDiscordEnabled, el.alertsSettingDiscordContainer));
+    el.alertsSettingTelegramEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingTelegramEnabled, el.alertsSettingTelegramContainer));
+    el.alertsSettingEmailEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingEmailEnabled, el.alertsSettingEmailContainer));
+    
     el.backupsSettingAutoBackupEnabled.addEventListener('change', () => {
         if (el.backupsSettingAutoBackupEnabled.checked) {
             el.backupsSettingCronContainer.classList.remove('hidden');
@@ -995,9 +1046,13 @@ function updateConsoleViewButtons() {
         el.consoleBtnDetails.disabled = true;
         el.consoleBtnBackup.disabled = true;
         el.consoleBtnValidate.disabled = true;
+        el.consoleBtnUpdateLgsm.disabled = true;
+        el.consoleBtnForceUpdate.disabled = true;
+        el.consoleBtnTestAlert.disabled = true;
         el.consoleInputField.disabled = true;
         el.consoleInputSubmit.disabled = true;
         el.terminalTitleText.textContent = t('console-no-server-connected');
+        renderConsoleGameActions(null);
         return;
     }
     
@@ -1013,6 +1068,9 @@ function updateConsoleViewButtons() {
     el.consoleBtnDetails.disabled = isBusy;
     el.consoleBtnBackup.disabled = isBusy;
     el.consoleBtnValidate.disabled = isBusy;
+    el.consoleBtnUpdateLgsm.disabled = isBusy;
+    el.consoleBtnForceUpdate.disabled = isBusy;
+    el.consoleBtnTestAlert.disabled = isBusy;
     el.consoleInputField.disabled = !isRunning || isBusy;
     el.consoleInputSubmit.disabled = !isRunning || isBusy;
     
@@ -1029,8 +1087,14 @@ function updateConsoleViewButtons() {
     
     if (isAdmin) {
         el.consoleBtnValidate.classList.remove('hidden');
+        el.consoleBtnUpdateLgsm.classList.remove('hidden');
+        el.consoleBtnForceUpdate.classList.remove('hidden');
+        el.consoleBtnTestAlert.classList.remove('hidden');
     } else {
         el.consoleBtnValidate.classList.add('hidden');
+        el.consoleBtnUpdateLgsm.classList.add('hidden');
+        el.consoleBtnForceUpdate.classList.add('hidden');
+        el.consoleBtnTestAlert.classList.add('hidden');
     }
     
     if (isRunning) {
@@ -1043,6 +1107,8 @@ function updateConsoleViewButtons() {
         el.consoleStatusDot.className = 'status-dot status-offline';
         el.consoleStatusText.textContent = t('status-offline');
     }
+    
+    renderConsoleGameActions(server);
 }
 
 function startConsolePolling() {
@@ -1754,6 +1820,7 @@ function populateSettingsServerSelect() {
         el.settingsToolsArea.classList.remove('hidden');
     } else {
         el.settingsToolsArea.classList.add('hidden');
+        resetSettingsAlerts();
     }
 }
 
@@ -1761,6 +1828,7 @@ function handleSettingsServerChange() {
     const serverID = el.settingsServerSelect.value;
     if (!serverID) {
         el.settingsToolsArea.classList.add('hidden');
+        resetSettingsAlerts();
         return;
     }
     
@@ -1785,22 +1853,43 @@ RestartSec=10
 WantedBy=multi-user.target`;
 
     // 2. Generate Cronjob template
-    const cronCode = `# LinuxGSM ${server.name} Geplante Wartungsaufgaben
-# 1. Server auf Abstürze überwachen (alle 5 Minuten)
+    const isDe = state.language === 'de';
+    const cronCode = `# LinuxGSM ${server.name} ${isDe ? 'Geplante Wartungsaufgaben' : 'Scheduled Maintenance Tasks'}
+# 1. ${isDe ? 'Server auf Abstürze überwachen (alle 5 Minuten)' : 'Monitor server for crashes (every 5 minutes)'}
 */5 * * * * /home/${server.user}/${server.script} monitor > /dev/null 2>&1
 
-# 2. Automatische Updateprüfung (alle 30 Minuten, startet bei Update neu)
+# 2. ${isDe ? 'Automatische Updateprüfung (alle 30 Minuten, startet bei Update neu)' : 'Automatic update check (every 30 minutes, restarts on update)'}
 */30 * * * * /home/${server.user}/${server.script} update > /dev/null 2>&1
 
-# 3. Täglicher Updatecheck & Neustart um 04:30 Uhr nachts
+# 3. ${isDe ? 'Täglicher Updatecheck & Neustart um 04:30 Uhr nachts' : 'Daily update check & restart at 04:30 AM'}
 30 4 * * * /home/${server.user}/${server.script} force-update > /dev/null 2>&1
 
-# 4. Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)
+# 4. ${isDe ? 'Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)' : 'Weekly update of LinuxGSM itself (every Sunday at 00:00 AM)'}
 0 0 * * 0 /home/${server.user}/${server.script} update-lgsm > /dev/null 2>&1`;
 
     el.templateSystemd.textContent = systemdCode;
     el.templateCron.textContent = cronCode;
     el.settingsToolsArea.classList.remove('hidden');
+    
+    // 3. Configure alerts and load settings
+    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+    if (isAdmin) {
+        el.alertsSettingDiscordEnabled.disabled = false;
+        el.alertsSettingDiscordWebhook.disabled = false;
+        el.alertsSettingTelegramEnabled.disabled = false;
+        el.alertsSettingTelegramToken.disabled = false;
+        el.alertsSettingTelegramChatid.disabled = false;
+        el.alertsSettingEmailEnabled.disabled = false;
+        el.alertsSettingEmailSmtp.disabled = false;
+        el.alertsSettingEmailPort.disabled = false;
+        el.alertsSettingEmailUser.disabled = false;
+        el.alertsSettingEmailPass.disabled = false;
+        el.alertsSettingEmailDest.disabled = false;
+        el.alertsSettingsSaveBtn.disabled = false;
+        loadAlertSettings();
+    } else {
+        resetSettingsAlerts();
+    }
 }
 
 // -------------------------------------------------------------
@@ -2098,6 +2187,12 @@ const i18n = {
         "btn-backup": "Backup",
         "btn-validate": "Validate",
         "btn-update-lgsm": "Update LGSM",
+        "btn-force-update": "Force Update",
+        "btn-test-alert": "Test Alert",
+        "alerts-settings-title": "Notification Alerts Settings",
+        "alerts-discord-webhook-label": "Discord Webhook URL",
+        "settings-tools-btn-systemd": "Install & Enable Service",
+        "settings-tools-btn-cron": "Write Cronjobs to Crontab",
         "btn-refresh": "Refresh",
         "inst-title": "Game Installer",
         "inst-subtitle": "Install a new LinuxGSM server. A system user will be automatically created.",
@@ -2128,6 +2223,10 @@ const i18n = {
         "settings-tools-card-desc": "Select one of your active servers to show copy-paste templates for systemd and cronjobs.",
         "settings-tools-select-label": "Select server",
         "settings-tools-select-default": "-- Select server --",
+        "settings-tools-systemd-title": "Systemd Service (Autostart on Boot)",
+        "settings-tools-systemd-desc": "Create a file under /etc/systemd/system/lgsm-[server].service as root and add the following content:",
+        "settings-tools-cron-title": "Cronjobs (Scheduled Maintenance Tasks)",
+        "settings-tools-cron-desc": "Add these lines to the server user's crontab (or via crontab -e as root):",
         "settings-info-os": "Operating System",
         "settings-info-mode": "Dashboard Mode",
         "modal-config-no-file": "Choose a file",
@@ -2269,6 +2368,10 @@ const i18n = {
         "backups-subtitle": "List, create, download, delete and restore server backups.",
         "backups-select-default": "-- Select a server --",
         "backups-btn-create": "Create Backup",
+        "backups-btn-upload": "Upload Backup",
+        "backups-upload-invalid-ext": "Only .tar.gz files are allowed.",
+        "backups-upload-success": "Backup uploaded successfully.",
+        "backups-upload-error": "Failed to upload backup due to a network error.",
         "backups-no-server-selected": "No server selected",
         "backups-empty": "No backups found for this server.",
         "col-filename": "Filename",
@@ -2325,6 +2428,12 @@ const i18n = {
         "btn-backup": "Backup",
         "btn-validate": "Validieren",
         "btn-update-lgsm": "LGSM Updaten",
+        "btn-force-update": "Force Update",
+        "btn-test-alert": "Alert Testen",
+        "alerts-settings-title": "Benachrichtigungs-Einstellungen",
+        "alerts-discord-webhook-label": "Discord Webhook URL",
+        "settings-tools-btn-systemd": "Dienst automatisch installieren & aktivieren",
+        "settings-tools-btn-cron": "Cronjobs in Crontab schreiben",
         "btn-refresh": "Aktualisieren",
         "inst-title": "Spiele-Installer",
         "inst-subtitle": "Installiere einen neuen LinuxGSM Server. Es wird automatisch ein neuer Systembenutzer angelegt.",
@@ -2508,6 +2617,10 @@ const i18n = {
         "backups-subtitle": "Backups auflisten, erstellen, herunterladen, löschen und wiederherstellen.",
         "backups-select-default": "-- Server auswählen --",
         "backups-btn-create": "Backup erstellen",
+        "backups-btn-upload": "Backup hochladen",
+        "backups-upload-invalid-ext": "Nur .tar.gz-Dateien sind erlaubt.",
+        "backups-upload-success": "Backup erfolgreich hochgeladen.",
+        "backups-upload-error": "Fehler beim Hochladen des Backups aufgrund eines Netzwerkfehlers.",
         "backups-no-server-selected": "Kein Server ausgewählt",
         "backups-empty": "Keine Backups für diesen Server gefunden.",
         "col-filename": "Dateiname",
@@ -3233,6 +3346,7 @@ function handleBackupsServerChange() {
 function updateBackupsView() {
     if (!state.selectedBackupServer) {
         el.backupsBtnCreate.disabled = true;
+        el.backupsBtnUpload.disabled = true;
         el.backupsTableBody.innerHTML = '';
         el.backupsEmptyMessage.classList.add('hidden');
         el.backupsLoading.classList.add('hidden');
@@ -3256,12 +3370,13 @@ function updateBackupsView() {
         el.backupsSettingCustomCronContainer.classList.add('hidden');
         
         const placeholder = document.createElement('tr');
-        placeholder.innerHTML = `<td colspan="4" class="text-center text-muted" style="padding: 2rem;">${t('backups-no-server-selected')}</td>`;
+        placeholder.innerHTML = `<td colspan="4" class="text-center text-muted" style="padding: 2rem;">\${t('backups-no-server-selected')}</td>`;
         el.backupsTableBody.appendChild(placeholder);
         return;
     }
     
     el.backupsBtnCreate.disabled = false;
+    el.backupsBtnUpload.disabled = false;
     
     el.backupsSettingMaxBackups.disabled = false;
     el.backupsSettingMaxBackupDays.disabled = false;
@@ -3431,6 +3546,70 @@ async function saveBackupSettings(e) {
     }
 }
 
+async function handleBackupsUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    el.backupsInputUpload.value = '';
+
+    const serverId = state.selectedBackupServer;
+    if (!serverId) return;
+
+    if (!file.name.endsWith('.tar.gz')) {
+        alert(t('backups-upload-invalid-ext'));
+        return;
+    }
+
+    el.backupsUploadProgressContainer.classList.remove('hidden');
+    el.backupsUploadFilename.textContent = file.name;
+    el.backupsUploadPercentage.textContent = '0%';
+    el.backupsUploadProgressBar.style.width = '0%';
+
+    el.backupsBtnUpload.disabled = true;
+    el.backupsBtnCreate.disabled = true;
+
+    const formData = new FormData();
+    formData.append('backup', file);
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            el.backupsUploadPercentage.textContent = `${percent}%`;
+            el.backupsUploadProgressBar.style.width = `${percent}%`;
+        }
+    });
+
+    xhr.addEventListener('load', () => {
+        el.backupsUploadProgressContainer.classList.add('hidden');
+        el.backupsBtnUpload.disabled = false;
+        el.backupsBtnCreate.disabled = false;
+
+        if (xhr.status >= 200 && xhr.status < 300) {
+            alert(t('backups-upload-success'));
+            loadBackupsList();
+        } else {
+            let errorMsg = 'Upload failed';
+            try {
+                const res = JSON.parse(xhr.responseText);
+                errorMsg = res.error || errorMsg;
+            } catch (err) {}
+            alert((state.language === 'de' ? 'Fehler beim Hochladen: ' : 'Upload failed: ') + errorMsg);
+        }
+    });
+
+    xhr.addEventListener('error', () => {
+        el.backupsUploadProgressContainer.classList.add('hidden');
+        el.backupsBtnUpload.disabled = false;
+        el.backupsBtnCreate.disabled = false;
+        alert(t('backups-upload-error'));
+    });
+
+    xhr.open('POST', `/api/servers/${serverId}/backups/upload`);
+    xhr.send(formData);
+}
+
 function handleBackupsBtnCreateClick() {
     const serverId = state.selectedBackupServer;
     if (!serverId) return;
@@ -3532,4 +3711,243 @@ function escapeHtml(str) {
 
 function escapeJs(str) {
     return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
+function toggleContainer(checkbox, container) {
+    if (checkbox.checked) {
+        container.classList.remove('hidden');
+    } else {
+        container.classList.add('hidden');
+    }
+}
+
+async function loadAlertSettings() {
+    const serverId = el.settingsServerSelect.value;
+    if (!serverId) return;
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/alerts`);
+        if (res.status === 200) {
+            const data = await res.json();
+            
+            el.alertsSettingDiscordEnabled.checked = data.discord_enabled;
+            el.alertsSettingDiscordWebhook.value = data.discord_webhook || '';
+            toggleContainer(el.alertsSettingDiscordEnabled, el.alertsSettingDiscordContainer);
+            
+            el.alertsSettingTelegramEnabled.checked = data.telegram_enabled;
+            el.alertsSettingTelegramToken.value = data.telegram_token || '';
+            el.alertsSettingTelegramChatid.value = data.telegram_chatid || '';
+            toggleContainer(el.alertsSettingTelegramEnabled, el.alertsSettingTelegramContainer);
+            
+            el.alertsSettingEmailEnabled.checked = data.email_enabled;
+            el.alertsSettingEmailSmtp.value = data.email_smtp || '';
+            el.alertsSettingEmailPort.value = data.email_port || '';
+            el.alertsSettingEmailUser.value = data.email_user || '';
+            el.alertsSettingEmailPass.value = data.email_pass || '';
+            el.alertsSettingEmailDest.value = data.email_dest || '';
+            toggleContainer(el.alertsSettingEmailEnabled, el.alertsSettingEmailContainer);
+        }
+    } catch (err) {
+        console.error('Error loading alert settings:', err);
+    }
+}
+
+async function saveAlertSettings(e) {
+    if (e) e.preventDefault();
+    
+    const serverId = el.settingsServerSelect.value;
+    if (!serverId) return;
+    
+    el.alertsSettingsMessage.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
+    el.alertsSettingsMessage.className = 'info-message text-muted';
+    el.alertsSettingsSaveBtn.disabled = true;
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/alerts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                discord_enabled: el.alertsSettingDiscordEnabled.checked,
+                discord_webhook: el.alertsSettingDiscordWebhook.value.trim(),
+                telegram_enabled: el.alertsSettingTelegramEnabled.checked,
+                telegram_token: el.alertsSettingTelegramToken.value.trim(),
+                telegram_chatid: el.alertsSettingTelegramChatid.value.trim(),
+                email_enabled: el.alertsSettingEmailEnabled.checked,
+                email_smtp: el.alertsSettingEmailSmtp.value.trim(),
+                email_port: el.alertsSettingEmailPort.value.trim(),
+                email_user: el.alertsSettingEmailUser.value.trim(),
+                email_pass: el.alertsSettingEmailPass.value.trim(),
+                email_dest: el.alertsSettingEmailDest.value.trim()
+            })
+        });
+        
+        el.alertsSettingsSaveBtn.disabled = false;
+        if (res.status === 200) {
+            el.alertsSettingsMessage.textContent = state.language === 'de' ? 'Benachrichtigungs-Einstellungen erfolgreich gespeichert.' : 'Alert settings saved successfully.';
+            el.alertsSettingsMessage.className = 'info-message text-success';
+            setTimeout(() => {
+                if (el.settingsServerSelect.value === serverId) {
+                    el.alertsSettingsMessage.textContent = '';
+                }
+            }, 3000);
+        } else {
+            const data = await res.json();
+            el.alertsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || 'Unknown error');
+            el.alertsSettingsMessage.className = 'info-message text-danger';
+        }
+    } catch (err) {
+        el.alertsSettingsSaveBtn.disabled = false;
+        console.error('Error saving alert settings:', err);
+        el.alertsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + err.message;
+        el.alertsSettingsMessage.className = 'info-message text-danger';
+    }
+}
+
+function resetSettingsAlerts() {
+    el.alertsSettingDiscordEnabled.disabled = true;
+    el.alertsSettingDiscordEnabled.checked = false;
+    el.alertsSettingDiscordWebhook.disabled = true;
+    el.alertsSettingDiscordWebhook.value = '';
+    el.alertsSettingDiscordContainer.classList.add('hidden');
+    
+    el.alertsSettingTelegramEnabled.disabled = true;
+    el.alertsSettingTelegramEnabled.checked = false;
+    el.alertsSettingTelegramToken.disabled = true;
+    el.alertsSettingTelegramToken.value = '';
+    el.alertsSettingTelegramChatid.disabled = true;
+    el.alertsSettingTelegramChatid.value = '';
+    el.alertsSettingTelegramContainer.classList.add('hidden');
+    
+    el.alertsSettingEmailEnabled.disabled = true;
+    el.alertsSettingEmailEnabled.checked = false;
+    el.alertsSettingEmailSmtp.disabled = true;
+    el.alertsSettingEmailSmtp.value = '';
+    el.alertsSettingEmailPort.disabled = true;
+    el.alertsSettingEmailPort.value = '';
+    el.alertsSettingEmailUser.disabled = true;
+    el.alertsSettingEmailUser.value = '';
+    el.alertsSettingEmailPass.disabled = true;
+    el.alertsSettingEmailPass.value = '';
+    el.alertsSettingEmailDest.disabled = true;
+    el.alertsSettingEmailDest.value = '';
+    el.alertsSettingEmailContainer.classList.add('hidden');
+    
+    el.alertsSettingsSaveBtn.disabled = true;
+    el.alertsSettingsMessage.textContent = '';
+}
+
+async function installSystemdService() {
+    const serverId = el.settingsServerSelect.value;
+    if (!serverId) return;
+    
+    if (!confirm(state.language === 'de' ? 'Bist du sicher, dass du den Systemd-Dienst für diesen Server installieren möchtest? Dies registriert den Server im System-Autostart.' : 'Are you sure you want to install the Systemd service for this server? This registers the server in the system autostart.')) {
+        return;
+    }
+    
+    el.settingsToolsBtnSystemd.disabled = true;
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/systemd/install`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+        
+        if (res.status === 200 && data.status === 'ok') {
+            alert(state.language === 'de' ? 'Systemd-Dienst erfolgreich installiert und aktiviert!' : 'Systemd service successfully installed and enabled!');
+        } else {
+            alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || 'Unknown error'));
+        }
+    } catch (err) {
+        console.error('Systemd install error:', err);
+        alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + err.message);
+    } finally {
+        el.settingsToolsBtnSystemd.disabled = false;
+    }
+}
+
+async function installCronjobs() {
+    const serverId = el.settingsServerSelect.value;
+    if (!serverId) return;
+    
+    if (!confirm(state.language === 'de' ? 'Bist du sicher, dass du die LinuxGSM Wartungs-Cronjobs einrichten möchtest? Dies überschreibt bestehende Wartungs-Cronjobs dieses Servers.' : 'Are you sure you want to write the LinuxGSM maintenance cronjobs? This will replace existing maintenance cronjobs for this server.')) {
+        return;
+    }
+    
+    el.settingsToolsBtnCron.disabled = true;
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/cron/install`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+        
+        if (res.status === 200 && data.status === 'ok') {
+            alert(state.language === 'de' ? 'Cronjobs erfolgreich in die Crontab geschrieben!' : 'Cronjobs successfully written to crontab!');
+        } else {
+            alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || 'Unknown error'));
+        }
+    } catch (err) {
+        console.error('Cron install error:', err);
+        alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + err.message);
+    } finally {
+        el.settingsToolsBtnCron.disabled = false;
+    }
+}
+
+function renderConsoleGameActions(server) {
+    if (!server) {
+        el.consoleGameActions.classList.add('hidden');
+        el.consoleGameActions.innerHTML = '';
+        return;
+    }
+
+    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+    const isBusy = server.status === 'installing' || server.status === 'updating';
+
+    if (!isAdmin) {
+        el.consoleGameActions.classList.add('hidden');
+        el.consoleGameActions.innerHTML = '';
+        return;
+    }
+
+    if (server.game === 'rust') {
+        el.consoleGameActions.innerHTML = `
+            <button id="console-btn-map-wipe" class="btn btn-danger btn-sm" \${isBusy ? 'disabled' : ''}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+                <span>Map Wipe</span>
+            </button>
+            <button id="console-btn-full-wipe" class="btn btn-danger btn-sm" \${isBusy ? 'disabled' : ''}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                <span>Full Wipe</span>
+            </button>
+        `;
+        el.consoleGameActions.classList.remove('hidden');
+
+        document.getElementById('console-btn-map-wipe').addEventListener('click', () => {
+            if (confirm(state.language === 'de' ? 'Bist du sicher, dass du ein Map-Wipe durchführen möchtest? Alle Kartendaten gehen verloren!' : 'Are you sure you want to perform a Map Wipe? All map progress will be deleted!')) {
+                runServerAction(server.id, 'map-wipe');
+            }
+        });
+        document.getElementById('console-btn-full-wipe').addEventListener('click', () => {
+            if (confirm(state.language === 'de' ? 'Bist du sicher, dass du ein Full-Wipe durchführen möchtest? Alle Karten- und Blueprint-Daten gehen verloren!' : 'Are you sure you want to perform a Full Wipe? All map and blueprint database progress will be deleted!')) {
+                runServerAction(server.id, 'full-wipe');
+            }
+        });
+    } else if (server.game === 'ts3') {
+        el.consoleGameActions.innerHTML = `
+            <button id="console-btn-ts3-pw" class="btn btn-warning btn-sm" \${isBusy ? 'disabled' : ''}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                <span>Query Passwort ändern</span>
+            </button>
+        `;
+        el.consoleGameActions.classList.remove('hidden');
+        document.getElementById('console-btn-ts3-pw').addEventListener('click', () => {
+            if (confirm(state.language === 'de' ? 'Möchtest du das Query-Admin-Passwort für diesen Teamspeak 3 Server zurücksetzen? Der Server startet danach neu.' : 'Do you want to reset the Query Admin password for this Teamspeak 3 Server? The server will restart.')) {
+                runServerAction(server.id, 'change-password');
+            }
+        });
+    } else {
+        el.consoleGameActions.classList.add('hidden');
+        el.consoleGameActions.innerHTML = '';
+    }
 }

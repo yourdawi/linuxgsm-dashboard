@@ -58,6 +58,7 @@ type InstanceManager struct {
 	instances   map[string]*GameServerInstance
 	isMock      bool
 	mockServers []GameServerInstance
+	mockBackups map[string][]BackupFile
 }
 
 // Msg returns the English or German text depending on the language code.
@@ -70,8 +71,9 @@ func Msg(lang, en, de string) string {
 
 func NewInstanceManager(isMock bool) *InstanceManager {
 	im := &InstanceManager{
-		instances: make(map[string]*GameServerInstance),
-		isMock:    isMock,
+		instances:   make(map[string]*GameServerInstance),
+		isMock:      isMock,
+		mockBackups: make(map[string][]BackupFile),
 	}
 
 	if isMock {
@@ -692,7 +694,7 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 
 	// Set local state status to avoid concurrent triggers
 	oldStatus := srv.Status
-	if action == "update" {
+	if action == "update" || action == "update-lgsm" || action == "force-update" {
 		srv.Status = "updating"
 	}
 	im.mu.Unlock()
@@ -1764,16 +1766,81 @@ func cleanupLeftoverSudoers() {
 
 // Backup Management Implementations
 
-func getBackupDirs(user string) []string {
-	return []string{
+func (im *InstanceManager) getBackupDirsForServer(srv *GameServerInstance) []string {
+	user := srv.User
+	dirs := []string{
 		filepath.Join("/home", user, "lgsm", "backup"),
 		filepath.Join("/home", user, "lgsm", "backups"),
 		filepath.Join("/home", user, "backup"),
 		filepath.Join("/home", user, "backups"),
 	}
+
+	// In mock mode, also include the mock directory
+	if im.isMock {
+		mockDir := filepath.Join(".", ".mock_backups", srv.ID)
+		dirs = append([]string{mockDir}, dirs...)
+	}
+
+	// Read backupdir from config files (priority: <script>.cfg -> common.cfg -> _default.cfg)
+	configDir := filepath.Join("/home", user, "lgsm", "config-lgsm", srv.Script)
+	filesToTry := []string{
+		filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script)),
+		filepath.Join(configDir, "common.cfg"),
+		filepath.Join(configDir, "_default.cfg"),
+	}
+
+	backupDirRegex := regexp.MustCompile(`^\s*backupdir\s*=\s*["']?([^"']+)["']?`)
+
+	for _, fp := range filesToTry {
+		file, err := os.Open(fp)
+		if err != nil {
+			continue
+		}
+		
+		scanner := bufio.NewScanner(file)
+		var customDir string
+		for scanner.Scan() {
+			matches := backupDirRegex.FindStringSubmatch(scanner.Text())
+			if len(matches) > 1 {
+				customDir = strings.TrimSpace(matches[1])
+				break
+			}
+		}
+		file.Close()
+
+		if customDir != "" {
+			// Resolve variables in customDir:
+			customDir = strings.ReplaceAll(customDir, "${lgsmdir}", filepath.Join("/home", user, "lgsm"))
+			customDir = strings.ReplaceAll(customDir, "$lgsmdir", filepath.Join("/home", user, "lgsm"))
+			customDir = strings.ReplaceAll(customDir, "${rootdir}", filepath.Join("/home", user))
+			customDir = strings.ReplaceAll(customDir, "$rootdir", filepath.Join("/home", user))
+			customDir = strings.ReplaceAll(customDir, "${username}", user)
+			customDir = strings.ReplaceAll(customDir, "$username", user)
+			customDir = strings.ReplaceAll(customDir, "${selfname}", srv.Script)
+			customDir = strings.ReplaceAll(customDir, "$selfname", srv.Script)
+
+			customDir = filepath.Clean(customDir)
+
+			// Prepend to directories list so it is searched first
+			dirs = append([]string{customDir}, dirs...)
+			break
+		}
+	}
+
+	// Remove duplicates and keep order
+	seen := make(map[string]bool)
+	var uniqueDirs []string
+	for _, d := range dirs {
+		if !seen[d] {
+			seen[d] = true
+			uniqueDirs = append(uniqueDirs, d)
+		}
+	}
+
+	return uniqueDirs
 }
 
-func getBackupFilePath(user string, filename string) (string, error) {
+func (im *InstanceManager) getBackupFilePath(srv *GameServerInstance, filename string) (string, error) {
 	if strings.Contains(filename, "/") || strings.Contains(filename, "\\") || strings.Contains(filename, "..") {
 		return "", fmt.Errorf("invalid backup filename")
 	}
@@ -1781,7 +1848,25 @@ func getBackupFilePath(user string, filename string) (string, error) {
 		return "", fmt.Errorf("invalid backup file extension")
 	}
 
-	dirs := getBackupDirs(user)
+	// In mock mode, if it's one of the default mock files, return dummy or actual if exists
+	if im.isMock {
+		mockPath := filepath.Join(".", ".mock_backups", srv.ID, filename)
+		if _, err := os.Stat(mockPath); err == nil {
+			return mockPath, nil
+		}
+		// If it's a default mock file but doesn't exist, we can create/write a dummy one
+		if strings.HasSuffix(filename, "-backup-2026-07-08-120000.tar.gz") || strings.HasSuffix(filename, "-backup-2026-07-09-080000.tar.gz") {
+			mockDir := filepath.Join(".", ".mock_backups", srv.ID)
+			_ = os.MkdirAll(mockDir, 0755)
+			destPath := filepath.Join(mockDir, filename)
+			if _, err := os.Stat(destPath); err != nil {
+				_ = os.WriteFile(destPath, []byte("Mock backup file content"), 0644)
+			}
+			return destPath, nil
+		}
+	}
+
+	dirs := im.getBackupDirsForServer(srv)
 	for _, dir := range dirs {
 		path := filepath.Join(dir, filename)
 		if _, err := os.Stat(path); err == nil {
@@ -1811,9 +1896,12 @@ func (im *InstanceManager) ListBackups(serverID string) ([]BackupFile, error) {
 		return nil, fmt.Errorf("server not found")
 	}
 
+	var backups []BackupFile
+
 	if isMock {
 		now := time.Now()
-		return []BackupFile{
+		// Default mock files
+		backups = []BackupFile{
 			{
 				Name: fmt.Sprintf("%s-backup-2026-07-08-120000.tar.gz", srv.Script),
 				Size: 1024 * 1024 * 150,
@@ -1826,11 +1914,58 @@ func (im *InstanceManager) ListBackups(serverID string) ([]BackupFile, error) {
 				Date: now.Add(-2 * time.Hour),
 				Path: fmt.Sprintf("mock://backup/%s-backup-2026-07-09-080000.tar.gz", srv.Script),
 			},
-		}, nil
+		}
+
+		// Read files in mock directory too
+		mockDir := filepath.Join(".", ".mock_backups", srv.ID)
+		if entries, err := os.ReadDir(mockDir); err == nil {
+			for _, entry := range entries {
+				// Don't duplicate default ones
+				if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".tar.gz") {
+					if entry.Name() == fmt.Sprintf("%s-backup-2026-07-08-120000.tar.gz", srv.Script) ||
+						entry.Name() == fmt.Sprintf("%s-backup-2026-07-09-080000.tar.gz", srv.Script) {
+						continue
+					}
+					info, err := entry.Info()
+					if err != nil {
+						continue
+					}
+					backups = append(backups, BackupFile{
+						Name: entry.Name(),
+						Size: info.Size(),
+						Date: info.ModTime(),
+						Path: filepath.Join(mockDir, entry.Name()),
+					})
+				}
+			}
+		}
+
+		// Add memory-only mock backups if any
+		im.mu.Lock()
+		if uploaded, ok := im.mockBackups[serverID]; ok {
+			for _, b := range uploaded {
+				// Don't duplicate if already listed from directory scan
+				found := false
+				for _, existing := range backups {
+					if existing.Name == b.Name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					backups = append(backups, b)
+				}
+			}
+		}
+		im.mu.Unlock()
+
+		sort.Slice(backups, func(i, j int) bool {
+			return backups[i].Date.After(backups[j].Date)
+		})
+		return backups, nil
 	}
 
-	var backups []BackupFile
-	dirs := getBackupDirs(srv.User)
+	dirs := im.getBackupDirsForServer(srv)
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -1880,11 +2015,26 @@ func (im *InstanceManager) DeleteBackup(serverID, fileName string) error {
 	}
 
 	if isMock {
+		im.mu.Lock()
+		if im.mockBackups != nil {
+			var list []BackupFile
+			for _, b := range im.mockBackups[serverID] {
+				if b.Name != fileName {
+					list = append(list, b)
+				}
+			}
+			im.mockBackups[serverID] = list
+		}
+		im.mu.Unlock()
+
+		mockPath := filepath.Join(".", ".mock_backups", serverID, fileName)
+		_ = os.Remove(mockPath)
+
 		fmt.Printf("[MOCK DELETE] Deleted backup %s for %s\n", fileName, serverID)
 		return nil
 	}
 
-	filePath, err := getBackupFilePath(srv.User, fileName)
+	filePath, err := im.getBackupFilePath(srv, fileName)
 	if err != nil {
 		return err
 	}
@@ -1912,13 +2062,111 @@ func (im *InstanceManager) GetBackupPath(serverID, fileName string) (string, err
 		return "", fmt.Errorf("server not found")
 	}
 
+	return im.getBackupFilePath(srv, fileName)
+}
+
+func (im *InstanceManager) UploadBackup(serverID string, filename string, fileReader io.Reader) error {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
 	if isMock {
-		dummyPath := filepath.Join(".", "mock-backup.tar.gz")
-		_ = os.WriteFile(dummyPath, []byte("Mock backup file content"), 0644)
-		return dummyPath, nil
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
 	}
 
-	return getBackupFilePath(srv.User, fileName)
+	if !strings.HasSuffix(filename, ".tar.gz") {
+		return fmt.Errorf("invalid backup file extension, only .tar.gz is allowed")
+	}
+	if strings.Contains(filename, "/") || strings.Contains(filename, "\\") || strings.Contains(filename, "..") {
+		return fmt.Errorf("invalid backup filename")
+	}
+
+	if isMock {
+		mockDir := filepath.Join(".", ".mock_backups", serverID)
+		if err := os.MkdirAll(mockDir, 0755); err != nil {
+			return err
+		}
+		destPath := filepath.Join(mockDir, filename)
+		out, err := os.Create(destPath)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		_, err = io.Copy(out, fileReader)
+		if err != nil {
+			return err
+		}
+
+		fileInfo, err := os.Stat(destPath)
+		if err != nil {
+			return err
+		}
+
+		im.mu.Lock()
+		defer im.mu.Unlock()
+		if im.mockBackups == nil {
+			im.mockBackups = make(map[string][]BackupFile)
+		}
+
+		var list []BackupFile
+		for _, b := range im.mockBackups[serverID] {
+			if b.Name != filename {
+				list = append(list, b)
+			}
+		}
+
+		list = append(list, BackupFile{
+			Name: filename,
+			Size: fileInfo.Size(),
+			Date: fileInfo.ModTime(),
+			Path: destPath,
+		})
+		im.mockBackups[serverID] = list
+		return nil
+	}
+
+	dirs := im.getBackupDirsForServer(srv)
+	var targetDir string
+	for _, dir := range dirs {
+		if _, err := os.Stat(dir); err == nil {
+			targetDir = dir
+			break
+		}
+	}
+	if targetDir == "" {
+		targetDir = dirs[0]
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			return err
+		}
+		_ = exec.Command("chown", fmt.Sprintf("%s:%s", srv.User, srv.User), targetDir).Run()
+	}
+
+	destPath := filepath.Join(targetDir, filename)
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, fileReader)
+	if err != nil {
+		return err
+	}
+
+	_ = exec.Command("chown", fmt.Sprintf("%s:%s", srv.User, srv.User), destPath).Run()
+
+	return nil
 }
 
 func getCrontab(user string) (string, error) {
@@ -2212,7 +2460,7 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 		})
 	}
 
-	filePath, err := getBackupFilePath(srv.User, fileName)
+	filePath, err := im.getBackupFilePath(srv, fileName)
 	if err != nil {
 		updateStatus(oldStatus)
 		sendSSE("message", map[string]interface{}{"type": "log", "text": "Error finding backup: " + err.Error()})
@@ -2265,4 +2513,305 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 		logLine(Msg(lang, "Restore process completed successfully.", "Wiederherstellung erfolgreich abgeschlossen."))
 		sendSSE("message", map[string]interface{}{"type": "exit", "code": 0})
 	}()
+}
+
+type AlertSettings struct {
+	DiscordEnabled  bool   `json:"discord_enabled"`
+	DiscordWebhook  string `json:"discord_webhook"`
+	TelegramEnabled bool   `json:"telegram_enabled"`
+	TelegramToken   string `json:"telegram_token"`
+	TelegramChatID  string `json:"telegram_chatid"`
+	EmailEnabled    bool   `json:"email_enabled"`
+	EmailSMTP       string `json:"email_smtp"`
+	EmailPort       string `json:"email_port"`
+	EmailUser       string `json:"email_user"`
+	EmailPass       string `json:"email_pass"`
+	EmailDest       string `json:"email_dest"`
+}
+
+func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, error) {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return AlertSettings{}, fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		return AlertSettings{
+			DiscordEnabled:  true,
+			DiscordWebhook:  "https://discord.com/api/webhooks/mock",
+			TelegramEnabled: false,
+		}, nil
+	}
+
+	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	commonPath := filepath.Join(configDir, "common.cfg")
+	instancePath := filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script))
+
+	settings := AlertSettings{}
+
+	parseFile := func(path string) {
+		contentBytes, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		lines := strings.Split(string(contentBytes), "\n")
+		re := regexp.MustCompile(`^\s*(discordalert|discordwebhook|telegramalert|telegramtoken|telegramchatid|emailalert|emailserver|emailport|emailuser|emailpassword|emaildest)\s*=\s*["']?([^"'\s#]*)["']?`)
+		for _, line := range lines {
+			matches := re.FindStringSubmatch(line)
+			if len(matches) > 2 {
+				key := matches[1]
+				val := matches[2]
+				switch key {
+				case "discordalert":
+					settings.DiscordEnabled = (val == "on")
+				case "discordwebhook":
+					settings.DiscordWebhook = val
+				case "telegramalert":
+					settings.TelegramEnabled = (val == "on")
+				case "telegramtoken":
+					settings.TelegramToken = val
+				case "telegramchatid":
+					settings.TelegramChatID = val
+				case "emailalert":
+					settings.EmailEnabled = (val == "on")
+				case "emailserver":
+					settings.EmailSMTP = val
+				case "emailport":
+					settings.EmailPort = val
+				case "emailuser":
+					settings.EmailUser = val
+				case "emailpassword":
+					settings.EmailPass = val
+				case "emaildest":
+					settings.EmailDest = val
+				}
+			}
+		}
+	}
+
+	parseFile(commonPath)
+	parseFile(instancePath)
+
+	return settings, nil
+}
+
+func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSettings) error {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		fmt.Printf("[MOCK SAVE ALERTS] Saved alerts settings %+v for %s\n", settings, serverID)
+		return nil
+	}
+
+	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	instancePath := filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script))
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+
+	var content string
+	if contentBytes, err := os.ReadFile(instancePath); err == nil {
+		content = string(contentBytes)
+	}
+
+	lines := strings.Split(content, "\n")
+	updated := make(map[string]bool)
+
+	valMap := map[string]string{
+		"discordalert":   "off",
+		"discordwebhook": settings.DiscordWebhook,
+		"telegramalert":  "off",
+		"telegramtoken":  settings.TelegramToken,
+		"telegramchatid": settings.TelegramChatID,
+		"emailalert":     "off",
+		"emailserver":    settings.EmailSMTP,
+		"emailport":      settings.EmailPort,
+		"emailuser":      settings.EmailUser,
+		"emailpassword":  settings.EmailPass,
+		"emaildest":      settings.EmailDest,
+	}
+	if settings.DiscordEnabled {
+		valMap["discordalert"] = "on"
+	}
+	if settings.TelegramEnabled {
+		valMap["telegramalert"] = "on"
+	}
+	if settings.EmailEnabled {
+		valMap["emailalert"] = "on"
+	}
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		for key, val := range valMap {
+			re := regexp.MustCompile(fmt.Sprintf(`^\s*%s\s*=`, key))
+			if re.MatchString(trimmed) {
+				lines[i] = fmt.Sprintf("%s=\"%s\"", key, val)
+				updated[key] = true
+			}
+		}
+	}
+
+	for key, val := range valMap {
+		if !updated[key] {
+			lines = append(lines, fmt.Sprintf("%s=\"%s\"", key, val))
+		}
+	}
+
+	newContent := strings.Join(lines, "\n")
+	err := os.WriteFile(instancePath, []byte(newContent), 0644)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (im *InstanceManager) InstallSystemdService(serverID string) error {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
+	}
+
+	systemdCode := fmt.Sprintf(`[Unit]
+Description=LinuxGSM %s Server
+After=network.target
+
+[Service]
+Type=simple
+User=%s
+WorkingDirectory=/home/%s
+ExecStart=/home/%s/%s start
+ExecStop=/home/%s/%s stop
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target`, srv.Name, srv.User, srv.User, srv.User, srv.Script, srv.User, srv.Script)
+
+	if isMock {
+		fmt.Printf("[MOCK SYSTEMD] Installing service for %s:\n%s\n", serverID, systemdCode)
+		return nil
+	}
+
+	servicePath := filepath.Join("/etc/systemd/system", fmt.Sprintf("linuxgsm-%s.service", srv.ID))
+	err := os.WriteFile(servicePath, []byte(systemdCode), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write service file: %v", err)
+	}
+
+	_ = exec.Command("systemctl", "daemon-reload").Run()
+	err = exec.Command("systemctl", "enable", "--now", fmt.Sprintf("linuxgsm-%s", srv.ID)).Run()
+	if err != nil {
+		return fmt.Errorf("failed to enable systemd service: %v", err)
+	}
+
+	return nil
+}
+
+func (im *InstanceManager) InstallCronjobs(serverID string) error {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
+	}
+
+	cronLines := []string{
+		fmt.Sprintf("*/5 * * * * /home/%s/%s monitor > /dev/null 2>&1", srv.User, srv.Script),
+		fmt.Sprintf("*/30 * * * * /home/%s/%s update > /dev/null 2>&1", srv.User, srv.Script),
+		fmt.Sprintf("30 4 * * * /home/%s/%s force-update > /dev/null 2>&1", srv.User, srv.Script),
+		fmt.Sprintf("0 0 * * 0 /home/%s/%s update-lgsm > /dev/null 2>&1", srv.User, srv.Script),
+	}
+
+	if isMock {
+		fmt.Printf("[MOCK CRON] Installing cronjobs for %s:\n%s\n", serverID, strings.Join(cronLines, "\n"))
+		return nil
+	}
+
+	crontabStr, err := getCrontab(srv.User)
+	if err != nil {
+		return fmt.Errorf("failed to read crontab: %v", err)
+	}
+
+	lines := strings.Split(crontabStr, "\n")
+	var newLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, srv.Script) && (strings.Contains(trimmed, "monitor") || strings.Contains(trimmed, "update") || strings.Contains(trimmed, "force-update") || strings.Contains(trimmed, "update-lgsm")) {
+			continue
+		}
+		newLines = append(newLines, line)
+	}
+
+	newLines = append(newLines, fmt.Sprintf("# LinuxGSM %s Geplante Wartungsaufgaben", srv.Name))
+	newLines = append(newLines, cronLines...)
+
+	newCrontab := strings.Join(newLines, "\n")
+	err = saveCrontab(srv.User, newCrontab)
+	if err != nil {
+		return fmt.Errorf("failed to save crontab: %v", err)
+	}
+
+	return nil
 }

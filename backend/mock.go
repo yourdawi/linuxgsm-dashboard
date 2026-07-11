@@ -207,6 +207,66 @@ func StreamMockAction(w http.ResponseWriter, r *http.Request, action string, ser
 		logLine("Config:      /home/"+serverID+"/lgsm/config-lgsm/"+serverID+"/common.cfg", 50)
 		logLine("", 10)
 		logLine("==================================================================", 10)
+
+	case "update-lgsm":
+		updateStatusCallback("updating")
+		logLine(fmt.Sprintf("[%s] Checking for LinuxGSM Updates...", time.Now().Format("15:04:05")), 100)
+		logLine("Fetching latest release from GitHub...", 300)
+		logLine("Comparing local core modules with remote repository...", 200)
+		logLine("Updating core files: [==============================>] 100%", 400)
+		logLine("LinuxGSM core successfully updated to latest version.", 200)
+		updateStatusCallback("stopped")
+
+	case "force-update":
+		updateStatusCallback("updating")
+		logLine(fmt.Sprintf("[%s] Triggering forced update for %s...", time.Now().Format("15:04:05"), serverID), 100)
+		logLine("Stopping server for update check...", 200)
+		updateStatusCallback("stopped")
+		logLine("Connecting to SteamCMD...", 300)
+		logLine("Validating depot cache files...", 200)
+		logLine("Downloading latest game assets... [=======>] 23%", 400)
+		logLine("Downloading latest game assets... [===============>] 58%", 300)
+		logLine("Downloading latest game assets... [========================>] 100%", 500)
+		logLine("Forced update successfully completed.", 200)
+		updateStatusCallback("running")
+
+	case "test-alert":
+		logLine(fmt.Sprintf("[%s] Triggering LinuxGSM alert test...", time.Now().Format("15:04:05")), 100)
+		logLine("Loading active alert channels...", 150)
+		logLine("Sending test notification to Discord Webhook... OK", 300)
+		logLine("Sending test notification to Telegram Chat... SKIPPED (not enabled)", 100)
+		logLine("Alert test execution finished successfully.", 200)
+
+	case "map-wipe":
+		logLine(fmt.Sprintf("[%s] Initiating Map Wipe for Rust Server %s...", time.Now().Format("15:04:05"), serverID), 100)
+		logLine("Stopping server to prevent file lock...", 200)
+		updateStatusCallback("stopped")
+		logLine("Locating map save files (.sav)...", 150)
+		logLine("Deleting procedurally generated map files... OK", 350)
+		logLine("Cleaning server user cache...", 100)
+		logLine("Map wipe successfully completed.", 200)
+		updateStatusCallback("running")
+
+	case "full-wipe":
+		logLine(fmt.Sprintf("[%s] Initiating FULL WIPE (Map + Blueprints) for Rust Server %s...", time.Now().Format("15:04:05"), serverID), 100)
+		logLine("Stopping server to prevent file lock...", 200)
+		updateStatusCallback("stopped")
+		logLine("Deleting procedurally generated map files (.sav)... OK", 300)
+		logLine("Deleting user blueprint database files (.db)... OK", 400)
+		logLine("Purging player save data...", 200)
+		logLine("Full wipe successfully completed. Server database is now clean.", 200)
+		updateStatusCallback("running")
+
+	case "change-password":
+		logLine(fmt.Sprintf("[%s] Resetting TeamSpeak 3 Server Query Password...", time.Now().Format("15:04:05")), 100)
+		logLine("Stopping TeamSpeak 3 instance to release database locks...", 250)
+		updateStatusCallback("stopped")
+		logLine("Regenerating serveradmin query credentials...", 300)
+		newPw := "TS3-MockAdminPassword-2026!"
+		logLine(fmt.Sprintf("New Server Query Password generated: %s", newPw), 150)
+		logLine("IMPORTANT: Make sure to save this password in a secure place!", 100)
+		logLine("Starting TeamSpeak 3 instance back up...", 200)
+		updateStatusCallback("running")
 	}
 
 	// Send exit status
