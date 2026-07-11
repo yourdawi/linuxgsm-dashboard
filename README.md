@@ -95,23 +95,31 @@ On first launch, it will:
 
 ## ✨ Features
 
-- 👥 **Multi-User Administration:** Create, update, and delete dashboard users with role-based access control. Assign specific game servers to non-admin users and restrict their permission scopes (`start`, `stop`, `restart`, `console`, `config`, `backup`).
-- 🔄 **One-Click Self-Updates:** Seamlessly search for and apply dashboard updates directly from the settings panel. The backend automatically downloads matching pre-compiled releases from GitHub, safe-swaps the active binary, and triggers a clean systemd restart.
-- 💾 **Backup Management:** View, download, delete, and restore server backups safely from a dedicated tab. Restores are streamed in real-time, automatically stopping the server during compression/extraction to prevent corruption and restarting it afterward.
-- ⚙️ **Backup Settings & Automation:** Configure backup retention policies (`maxbackups`, `maxbackupdays`, `stoponbackup`) directly in the server's instance configuration, and enable/disable automated backups by managing cronjob schedules in the gameserver user's crontab directly.
-- 🖥️ **Resource-Efficient Backend (Go):** Compiled static binary using only ~10-15MB RAM with embedded web assets for zero-dependency deployment.
-- 🛡️ **Interactive Server Console:** Real-time visual tmux pane updates paired with a **command input bar** to send RCON/console commands directly to the game server process (uses secure `tmux send-keys` escaping).
-- 👥 **Multi-Instance Scanning & Shebang Verification:** Scans system user home directories for all executable scripts and verifies their shebang and header comments to auto-detect any number of LinuxGSM instances (e.g. `gmodserver-1`, `gmodserver-2`) under a single user.
-- ⚙️ **Config File Editor:** Safe configuration editing within `/home/<user>/lgsm/config-lgsm/<script>/*.cfg` with path-traversal protection (hardened against folder prefix traversal attacks). Features a parsed **Form View** and a **Raw View** with bidirectional syncing.
-- 🔒 **Security Hardened Input Validation:** Every incoming API query (actions, installer scripts, username fields) is filtered against strict backend whitelist patterns before execution, blocking all potential shell command injection vectors.
-- 🛡️ **Systemd Security Sandboxing:** Hardened systemd daemon configuration featuring isolated sandboxing (`ProtectSystem=true`, `PrivateTmp=true`, and a restricted `CapabilityBoundingSet` limiting root powers to only the necessary set of capabilities).
-- 📊 **Host & Process resource tracking:** Real-time CPU, RAM, and Disk host gauges, custom canvas historical graphs, and user process metrics mapping.
-- ➕ **Game Installer & Scraper:** Dynamically crawls all supported LinuxGSM servers and icon logos from `linuxgsm.com/servers/` using a lightweight regex HTML parser in Go, caches game listings and download images locally, and streams unattended installations in real-time.
-- 🌗 **Dark/Light Mode:** Dual premium color systems driven by CSS custom properties, togglable from the sidebar footer and persisted in local storage.
-- 🌐 **Multilingual Support (i18n):** Full support for English (default) and German across the entire single page application.
-- 🌐 **External Port Checker:** Test reachability of game server ports from the outside world. Parses configured ports directly from LinuxGSM configs.
-- 📝 **Automation Generators:** Customized copy-pasteable `systemd` service files and `crontab` lists generated per server inside the Settings view.
-- ❌ **Game Server Deletion:** Cleanly delete game server instances. Disables systemd, wipes crontabs, and removes either the specific script files (for shared users) or performs a full system user purge (`userdel -r`) for exclusive system users, protected by an interactive safety confirmation overlay.
+### 🎮 Core Server Management
+- 🖥️ **Interactive Server Console:** Real-time visual tmux pane updates paired with a **command input bar** to send console/RCON commands directly to the server (uses secure `tmux send-keys` escaping).
+- 🛠️ **Advanced Maintenance Actions:** Execute LinuxGSM actions like `update-lgsm` (update core), `force-update` (re-download files), and `test-alert` directly from the Live Console view.
+- 🎲 **Game-Specific Actions:** Dynamic panel displaying game-specific tasks (e.g., Map Wipes and Full Wipes for Rust, or Server Query Password resets for Teamspeak 3).
+- 👥 **Multi-Instance Scanning:** Scans system user home directories for all executable scripts and verifies their headers to auto-detect any number of LinuxGSM instances under a single user.
+- ❌ **Clean Server Deletion:** Safely removes instances. Wipes crontabs, disables systemd, and performs system user purges (`userdel -r`) with safety overlay confirmations.
+
+### 💾 Backups & Restoration
+- 💾 **Complete Backup Suite:** View, download, delete, and restore server backups. Restoration runs in real-time, automatically stopping and starting the server safely to prevent corruption.
+- 📤 **Backup Uploads:** Upload backup archives (`.tar.gz`) directly to server instances. Features automatic ownership adjustment (`chown`) to prevent LinuxGSM file permission errors.
+- ⚙️ **Backup Retention & Scheduling:** Configure retention limits (`maxbackups`, `maxbackupdays`, `stoponbackup`) and automate cronjob schedules by writing directly to the gameserver user's crontab.
+
+### ⚙️ Administration & Automation
+- 🔔 **Alerts & Notification Webhooks:** Configure Discord webhooks, Telegram bots, and E-Mail SMTP settings inside settings to write variables directly into Shell configuration files.
+- ⚡ **One-Click Systemd & Cron Installation:** Automatically register sandboxed Systemd boot autostarts and maintenance cronjob routines into the crontab with one click.
+- 📝 **Bidirectional Config Editor:** Safe configuration editing within `/home/<user>/lgsm/config-lgsm/<script>/*.cfg` featuring a parsed **Form View** and a **Raw View** with path-traversal protection.
+- 👥 **Multi-User Administration:** Create/update/delete dashboard users with role-based access control (RBAC) and restricted server-level permissions (`start`, `stop`, `restart`, `console`, `config`, `backup`).
+- 🔄 **One-Click Self-Updates:** Safe, automated dashboard self-updates from the UI. Swaps the binary and triggers a clean systemd restart.
+
+### 🛡️ Hardened Security & Efficiency
+- 🖥️ **Resource-Efficient Backend (Go):** Compiled static binary consuming only ~10-15MB RAM with embedded web assets for zero-dependency deployment.
+- 🛡️ **Systemd Security Sandboxing:** Hardened systemd daemon configuration featuring isolated sandboxing (`ProtectSystem=true`, `PrivateTmp=true`, and a restricted `CapabilityBoundingSet` limiting root powers).
+- 🔒 **Security Hardened Input Validation:** Filters all incoming API queries against strict backend whitelist patterns, blocking shell command injection vectors.
+- 📊 **Host & Process Monitoring:** Real-time CPU, RAM, and Disk host gauges, custom canvas historical graphs, and user process metrics mapping.
+- 🌓 **Dark/Light Mode & Multilingual (i18n):** Togglable dual color modes and complete German/English translations.
 
 ---
 

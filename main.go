@@ -19,7 +19,7 @@ import (
 )
 
 // Version represents the current version of the dashboard
-var Version = "1.0.2"
+var Version = "1.0.3"
 
 //go:embed ui/*
 var uiFS embed.FS
@@ -53,7 +53,7 @@ func isValidGameCmd(c string) bool {
 // Helper to validate action against whitelist
 func isValidAction(a string) bool {
 	switch a {
-	case "start", "stop", "restart", "update", "details", "backup", "validate":
+	case "start", "stop", "restart", "update", "details", "backup", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe", "change-password":
 		return true
 	}
 	return false
@@ -813,7 +813,7 @@ func main() {
 					http.Error(w, "Forbidden - Missing restart permission", http.StatusForbidden)
 					return
 				}
-			case "update", "validate":
+			case "update", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe", "change-password":
 				if user.Role != "admin" {
 					http.Error(w, "Forbidden - Administrator action", http.StatusForbidden)
 					return
@@ -997,6 +997,39 @@ func main() {
 				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 				return
 
+			case "upload": // POST /api/servers/{id}/backups/upload
+				if r.Method != http.MethodPost {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				// Allow large uploads up to 32MB in memory, rest goes to disk automatically
+				err := r.ParseMultipartForm(32 << 20)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					json.NewEncoder(w).Encode(map[string]string{"error": "Failed to parse multipart form: " + err.Error()})
+					return
+				}
+				file, header, err := r.FormFile("backup")
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					json.NewEncoder(w).Encode(map[string]string{"error": "Missing backup file parameter: " + err.Error()})
+					return
+				}
+				defer file.Close()
+
+				err = instMgr.UploadBackup(serverID, header.Filename, file)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				return
+
 			case "download": // GET /api/servers/{id}/backups/download?file=xxx
 				if r.Method != http.MethodGet {
 					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1067,6 +1100,80 @@ func main() {
 				http.NotFound(w, r)
 				return
 			}
+
+		case "alerts":
+			if r.Method == http.MethodGet {
+				settings, err := instMgr.GetAlertSettings(serverID)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(settings)
+				return
+			} else if r.Method == http.MethodPost {
+				var payload backend.AlertSettings
+				err := json.NewDecoder(r.Body).Decode(&payload)
+				if err != nil {
+					http.Error(w, "Invalid payload", http.StatusBadRequest)
+					return
+				}
+				err = instMgr.SaveAlertSettings(serverID, payload)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				return
+			} else {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+
+		case "systemd":
+			if len(parts) >= 6 && parts[5] == "install" && r.Method == http.MethodPost {
+				if user.Role != "admin" {
+					http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+					return
+				}
+				err := instMgr.InstallSystemdService(serverID)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				return
+			}
+			http.NotFound(w, r)
+			return
+
+		case "cron":
+			if len(parts) >= 6 && parts[5] == "install" && r.Method == http.MethodPost {
+				if user.Role != "admin" {
+					http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+					return
+				}
+				err := instMgr.InstallCronjobs(serverID)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				return
+			}
+			http.NotFound(w, r)
+			return
 
 		default:
 			http.NotFound(w, r)

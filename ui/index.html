@@ -365,6 +365,19 @@
                             <button id="console-btn-validate" class="btn btn-secondary" disabled>
                                 <span data-i18n="btn-validate">Validieren</span>
                             </button>
+                            <button id="console-btn-update-lgsm" class="btn btn-secondary" disabled>
+                                <span data-i18n="btn-update-lgsm">LGSM Updaten</span>
+                            </button>
+                            <button id="console-btn-force-update" class="btn btn-secondary" disabled>
+                                <span data-i18n="btn-force-update">Force Update</span>
+                            </button>
+                            <button id="console-btn-test-alert" class="btn btn-secondary" disabled>
+                                <span data-i18n="btn-test-alert">Alert Testen</span>
+                            </button>
+                        </div>
+
+                        <!-- Game-specific Actions Panel -->
+                        <div id="console-game-actions" class="console-actions mt-3 hidden" style="border-top: 1px solid var(--border-color); padding-top: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;">
                         </div>
 
                         <div class="console-mode-toggle">
@@ -525,13 +538,81 @@
                                     <h4 style="margin-bottom:0.5rem; text-transform:none;" data-i18n="settings-tools-systemd-title">Systemd-Dienst (Autostart bei Boot)</h4>
                                     <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="settings-tools-systemd-desc">Erstelle eine Datei unter <code>/etc/systemd/system/lgsm-[server].service</code> als root und füge folgenden Inhalt ein:</p>
                                     <pre class="code-block-template" id="template-systemd" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:1rem; border-radius:8px; font-family:var(--font-mono); font-size:0.8rem; overflow-x:auto; user-select:all; line-height:1.4;">Lädt...</pre>
+                                    <button id="settings-tools-btn-systemd" class="btn btn-primary btn-sm mt-2" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
+                                        <span data-i18n="settings-tools-btn-systemd">Dienst automatisch installieren & aktivieren</span>
+                                    </button>
                                 </div>
                                 <!-- Cronjob Card -->
                                 <div class="tool-subcard">
                                     <h4 data-i18n="settings-tools-cron-title">Cronjobs (Geplante Wartungsaufgaben)</h4>
                                     <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="settings-tools-cron-desc">Füge diese Zeilen in die Crontab des Serverbenutzers (oder über <code>crontab -e</code> als root) ein:</p>
                                     <pre class="code-block-template" id="template-cron" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:1rem; border-radius:8px; font-family:var(--font-mono); font-size:0.8rem; overflow-x:auto; user-select:all; line-height:1.4;">Lädt...</pre>
+                                    <button id="settings-tools-btn-cron" class="btn btn-primary btn-sm mt-2" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                                        <span data-i18n="settings-tools-btn-cron">Cronjobs in Crontab schreiben</span>
+                                    </button>
                                 </div>
+                            </div>
+
+                            <!-- Alert Settings Panel -->
+                            <div id="alerts-settings-panel" class="glass-panel mt-4" style="padding: 1.5rem;">
+                                <h3 style="margin-top: 0; margin-bottom: 1rem; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                                    <span data-i18n="alerts-settings-title">Benachrichtigungs-Einstellungen</span>
+                                </h3>
+                                <form id="alerts-settings-form">
+                                    <!-- Discord -->
+                                    <div class="form-group mb-3">
+                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                            <input type="checkbox" id="alerts-setting-discord-enabled" disabled>
+                                            <span>Discord-Alerts</span>
+                                        </label>
+                                        <div id="alerts-setting-discord-container" class="hidden mt-2">
+                                            <label for="alerts-setting-discord-webhook" style="font-size:0.85rem;" data-i18n="alerts-discord-webhook-label">Discord Webhook URL</label>
+                                            <input type="url" id="alerts-setting-discord-webhook" class="form-control mt-1" placeholder="https://discord.com/api/webhooks/..." disabled>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Telegram -->
+                                    <div class="form-group mt-3 mb-3">
+                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                            <input type="checkbox" id="alerts-setting-telegram-enabled" disabled>
+                                            <span>Telegram-Alerts</span>
+                                        </label>
+                                        <div id="alerts-setting-telegram-container" class="hidden mt-2">
+                                            <label for="alerts-setting-telegram-token" style="font-size:0.85rem;">Telegram Bot Token</label>
+                                            <input type="text" id="alerts-setting-telegram-token" class="form-control mt-1" placeholder="123456789:ABCdefGhI..." disabled>
+                                            <label for="alerts-setting-telegram-chatid" style="font-size:0.85rem;" class="mt-2">Telegram Chat ID</label>
+                                            <input type="text" id="alerts-setting-telegram-chatid" class="form-control mt-1" placeholder="123456789" disabled>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Email -->
+                                    <div class="form-group mt-3 mb-3">
+                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                            <input type="checkbox" id="alerts-setting-email-enabled" disabled>
+                                            <span>E-Mail-Alerts</span>
+                                        </label>
+                                        <div id="alerts-setting-email-container" class="hidden mt-2">
+                                            <label for="alerts-setting-email-smtp" style="font-size:0.85rem;">SMTP Server</label>
+                                            <input type="text" id="alerts-setting-email-smtp" class="form-control mt-1" placeholder="mail.smtp.com" disabled>
+                                            <label for="alerts-setting-email-port" style="font-size:0.85rem;" class="mt-2">SMTP Port</label>
+                                            <input type="number" id="alerts-setting-email-port" class="form-control mt-1" placeholder="25" disabled>
+                                            <label for="alerts-setting-email-user" style="font-size:0.85rem;" class="mt-2">SMTP Benutzer</label>
+                                            <input type="text" id="alerts-setting-email-user" class="form-control mt-1" placeholder="user@smtp.com" disabled>
+                                            <label for="alerts-setting-email-pass" style="font-size:0.85rem;" class="mt-2">SMTP Passwort</label>
+                                            <input type="password" id="alerts-setting-email-pass" class="form-control mt-1" placeholder="••••••••" disabled>
+                                            <label for="alerts-setting-email-dest" style="font-size:0.85rem;" class="mt-2">Empfänger E-Mail</label>
+                                            <input type="email" id="alerts-setting-email-dest" class="form-control mt-1" placeholder="dest@email.com" disabled>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="form-actions mt-4" style="display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center;">
+                                        <div id="alerts-settings-message" class="info-message" style="margin-right: auto; align-self: center; font-size: 0.8rem; text-align: left;"></div>
+                                        <button type="submit" class="btn btn-primary" id="alerts-settings-save-btn" disabled data-i18n="btn-save">Speichern</button>
+                                    </div>
+                                </form>
                             </div>
                         </div>
                     </div>
@@ -560,10 +641,28 @@
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"></path></svg>
                                 <span data-i18n="menu-backups">Backups</span>
                             </h3>
-                            <button id="backups-btn-create" class="btn btn-success btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
-                                <span data-i18n="backups-btn-create">Backup erstellen</span>
-                            </button>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <input type="file" id="backups-input-upload" accept=".tar.gz" style="display: none;">
+                                <button id="backups-btn-upload" class="btn btn-secondary btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"></path></svg>
+                                    <span data-i18n="backups-btn-upload">Backup hochladen</span>
+                                </button>
+                                <button id="backups-btn-create" class="btn btn-success btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+                                    <span data-i18n="backups-btn-create">Backup erstellen</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Backup Upload Progress Bar -->
+                        <div id="backups-upload-progress-container" class="hidden" style="margin-bottom: 1rem; padding: 0.75rem; border-radius: 8px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border-color);">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.35rem;">
+                                <span id="backups-upload-filename" style="font-weight: 500; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 70%; color: var(--text-primary);">backup.tar.gz</span>
+                                <span id="backups-upload-percentage" style="font-weight: bold; color: var(--primary);">0%</span>
+                            </div>
+                            <div style="width: 100%; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden;">
+                                <div id="backups-upload-progress-bar" style="width: 0%; height: 100%; background: var(--primary); transition: width 0.1s ease;"></div>
+                            </div>
                         </div>
 
                         <div class="table-responsive">
