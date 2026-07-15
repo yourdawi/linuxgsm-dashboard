@@ -423,7 +423,8 @@ RestartSec=5
 # Security Sandboxing
 ProtectSystem=true
 ProtectHome=false
-PrivateTmp=true
+# PrivateTmp must be false so tmux sockets can be shared between the daemon and gameserver users
+PrivateTmp=false
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
