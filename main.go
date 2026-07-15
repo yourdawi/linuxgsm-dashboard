@@ -19,7 +19,7 @@ import (
 )
 
 // Version represents the current version of the dashboard
-var Version = "1.0.3"
+var Version = "1.0.2"
 
 //go:embed ui/*
 var uiFS embed.FS
@@ -189,6 +189,55 @@ func triggerSelfUpdateByGit(tagName string) error {
 	return nil
 }
 
+// Helper to migrate systemd service file from PrivateTmp=true to PrivateTmp=false retroactively
+func migrateSystemdService() {
+	if runtime.GOOS == "windows" {
+		return
+	}
+
+	servicePath := "/etc/systemd/system/lgsm-dashboard.service"
+	if _, err := os.Stat(servicePath); os.IsNotExist(err) {
+		return
+	}
+
+	contentBytes, err := os.ReadFile(servicePath)
+	if err != nil {
+		fmt.Printf("[SYS WARNING] Failed to read systemd service file for migration: %v\n", err)
+		return
+	}
+
+	content := string(contentBytes)
+	if strings.Contains(content, "PrivateTmp=true") {
+		fmt.Println("[SYS] Found legacy PrivateTmp=true in systemd service file. Migrating to PrivateTmp=false...")
+
+		// Replace PrivateTmp=true with PrivateTmp=false and comment
+		replacement := "# PrivateTmp must be false so tmux sockets can be shared between the daemon and gameserver users\nPrivateTmp=false"
+		newContent := strings.Replace(content, "PrivateTmp=true", replacement, 1)
+
+		err = os.WriteFile(servicePath, []byte(newContent), 0644)
+		if err != nil {
+			fmt.Printf("[SYS ERROR] Failed to write updated systemd service file: %v\n", err)
+			return
+		}
+
+		// Reload systemd daemon
+		cmdReload := exec.Command("systemctl", "daemon-reload")
+		if err := cmdReload.Run(); err != nil {
+			fmt.Printf("[SYS ERROR] Failed to run systemctl daemon-reload: %v\n", err)
+			return
+		}
+
+		fmt.Println("[SYS] systemd service migrated successfully. Restarting service to apply changes...")
+
+		// Restart service asynchronously to load the new namespace
+		cmdRestart := exec.Command("systemctl", "restart", "lgsm-dashboard")
+		_ = cmdRestart.Start()
+
+		// Exit immediately to allow systemd to restart us in the new mount namespace
+		os.Exit(0)
+	}
+}
+
 func main() {
 	// CLI Flags
 	portFlag := flag.Int("port", 0, "Port to run the dashboard on (overrides config)")
@@ -204,6 +253,11 @@ func main() {
 		} else {
 			fmt.Println("[SYS] Mock mode active (Windows test mode).")
 		}
+	}
+
+	// Trigger retroactive migration if not in mock mode
+	if !isMock {
+		migrateSystemdService()
 	}
 
 	// Initialize Auth Manager
