@@ -524,7 +524,8 @@ func readLastNLines(logPath string, n int, lang string) ([]string, error) {
 	var lines []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+		clean := stripAnsi(scanner.Text())
+		lines = append(lines, clean)
 		if len(lines) > n {
 			lines = lines[1:]
 		}
@@ -1219,10 +1220,13 @@ func mapScriptToGameName(scriptName string) string {
 }
 
 func stripAnsi(str string) string {
-	// Regular expression to strip ANSI escape codes
-	const ansi = "[\u001B\u009B][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]"
-	re := regexp.MustCompile(ansi)
-	return re.ReplaceAllString(str, "")
+	// Regular expression to strip ANSI escape codes and VT100 control codes
+	reAnsi := regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
+	clean := reAnsi.ReplaceAllString(str, "")
+
+	// Secondary check for CSI / OSC control characters
+	reControl := regexp.MustCompile(`[\x00-\x09\x0b-\x1f\x7f]`)
+	return reControl.ReplaceAllString(clean, "")
 }
 
 func isLinuxGSMScript(filePath string) bool {

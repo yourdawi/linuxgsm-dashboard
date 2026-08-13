@@ -1801,20 +1801,20 @@ async function loadFirewallStatus() {
             const data = await res.json();
             if (!data.hasPermission) {
                 el.firewallStatusBadge.className = 'badge badge-warning';
-                el.firewallStatusBadge.textContent = 'Eingeschränkt (Keine Root-Rechte)';
+                el.firewallStatusBadge.textContent = t('firewall-status-restricted');
             } else if (data.active) {
                 el.firewallStatusBadge.className = 'badge badge-success';
-                el.firewallStatusBadge.textContent = `Aktiv (${data.tool.toUpperCase()})`;
+                el.firewallStatusBadge.textContent = `${t('firewall-status-active')} (${data.tool.toUpperCase()})`;
             } else {
                 el.firewallStatusBadge.className = 'badge badge-secondary';
-                el.firewallStatusBadge.textContent = `Inaktiv (${data.tool})`;
+                el.firewallStatusBadge.textContent = `${t('firewall-status-inactive')} (${data.tool})`;
             }
 
             el.firewallMessageText.textContent = data.message || '';
 
             if (data.rules && data.rules.length > 0) {
                 el.firewallRulesBox.classList.remove('hidden');
-                el.firewallRulesBox.innerHTML = `<strong>Erkannte Regeln / Offene Ports:</strong><br>` + data.rules.map(r => escapeHtml(r)).join('<br>');
+                el.firewallRulesBox.innerHTML = `<strong>${t('firewall-rules-header')}:</strong><br>` + data.rules.map(r => escapeHtml(r)).join('<br>');
             } else {
                 el.firewallRulesBox.classList.add('hidden');
             }
@@ -1823,7 +1823,7 @@ async function loadFirewallStatus() {
         console.error('Firewall status error:', e);
         if (el.firewallStatusBadge) {
             el.firewallStatusBadge.className = 'badge badge-secondary';
-            el.firewallStatusBadge.textContent = 'Unbekannt';
+            el.firewallStatusBadge.textContent = t('firewall-status-unknown');
         }
     }
 }
@@ -1924,7 +1924,7 @@ async function handleConsoleInputSubmit(e) {
 
 function populateSettingsServerSelect() {
     const current = el.settingsServerSelect.value;
-    el.settingsServerSelect.innerHTML = '<option value="">-- Server wählen --</option>';
+    el.settingsServerSelect.innerHTML = `<option value="">${t('settings-tools-select-default')}</option>`;
     
     state.servers.forEach(server => {
         const opt = document.createElement('option');
@@ -2307,6 +2307,20 @@ const i18n = {
         "btn-update-lgsm": "Update LGSM",
         "btn-force-update": "Force Update",
         "btn-test-alert": "Test Alert",
+        "btn-check-update": "Check Update",
+        "btn-mods-install": "Install Mods",
+        "btn-mods-update": "Update Mods",
+        "btn-fastdl": "FastDL Sync",
+        "btn-postdetails": "Support Log (Termbin)",
+        "firewall-title": "Firewall Inspector & Privilege Probe",
+        "firewall-desc": "Checks active host firewall (UFW/Firewalld) status and dashboard root execution rights.",
+        "firewall-label-status": "Status & Privileges:",
+        "firewall-status-checking": "Checking...",
+        "firewall-status-restricted": "Restricted (No Root Privileges)",
+        "firewall-status-active": "Active",
+        "firewall-status-inactive": "Inactive",
+        "firewall-status-unknown": "Unknown",
+        "firewall-rules-header": "Detected Rules / Open Ports",
         "alerts-settings-title": "Notification Alerts Settings",
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Install & Enable Service",
@@ -2548,6 +2562,20 @@ const i18n = {
         "btn-update-lgsm": "LGSM Updaten",
         "btn-force-update": "Force Update",
         "btn-test-alert": "Alert Testen",
+        "btn-check-update": "Update prüfen",
+        "btn-mods-install": "Mods Installieren",
+        "btn-mods-update": "Mods Updaten",
+        "btn-fastdl": "FastDL Sync",
+        "btn-postdetails": "Support Log (Termbin)",
+        "firewall-title": "Firewall Inspector & Rechte-Prüfung",
+        "firewall-desc": "Prüft den Firewall-Status (UFW/Firewalld) und Root-Berechtigungen des Dashboards.",
+        "firewall-label-status": "Status & Rechte:",
+        "firewall-status-checking": "Prüfe...",
+        "firewall-status-restricted": "Eingeschränkt (Keine Root-Rechte)",
+        "firewall-status-active": "Aktiv",
+        "firewall-status-inactive": "Inaktiv",
+        "firewall-status-unknown": "Unbekannt",
+        "firewall-rules-header": "Erkannte Regeln / Offene Ports",
         "alerts-settings-title": "Benachrichtigungs-Einstellungen",
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Dienst automatisch installieren & aktivieren",
