@@ -157,10 +157,33 @@
                     </div>
                 </header>
 
-                <div class="filter-bar">
-                    <div class="search-box">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                        <input type="text" id="search-servers" placeholder="Server filtern..." data-i18n-placeholder="dash-search-placeholder">
+                <div class="filter-bar" style="flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; flex: 1;">
+                        <div class="search-box" style="flex: 1; min-width: 200px;">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                            <input type="text" id="search-servers" placeholder="Server filtern..." data-i18n-placeholder="dash-search-placeholder">
+                        </div>
+                        <select id="filter-tag-select" class="form-control" style="width: auto; padding: 0.4rem 0.8rem; font-size: 0.85rem;">
+                            <option value="">Alle Clusters / Tags</option>
+                        </select>
+                    </div>
+                    <div class="bulk-actions-toolbar" style="display: flex; gap: 0.5rem; align-items: center; background: rgba(0,0,0,0.2); padding: 0.25rem 0.5rem; border-radius: 8px; border: 1px solid var(--border-color);">
+                        <span style="font-size: 0.8rem; font-weight: 600;" data-i18n="bulk-label">Massen-Aktionen:</span>
+                        <button id="btn-bulk-start" class="btn btn-success btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                            <span>Start</span>
+                        </button>
+                        <button id="btn-bulk-stop" class="btn btn-danger btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+                            <span>Stop</span>
+                        </button>
+                        <button id="btn-bulk-restart" class="btn btn-warning btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+                            <span>Restart</span>
+                        </button>
+                        <button id="btn-bulk-update" class="btn btn-secondary btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                            <span>Update</span>
+                        </button>
                     </div>
                     <button id="btn-refresh-dashboard" class="btn btn-secondary">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
@@ -587,6 +610,47 @@
                                         <span data-i18n="settings-tools-btn-cron">Cronjobs in Crontab schreiben</span>
                                     </button>
                                 </div>
+                            </div>
+
+                            <!-- Visual Crontab Scheduler -->
+                            <div class="tool-subcard mt-4" id="settings-tools-cron-builder" style="border-top: 1px solid var(--border-color); padding-top: 1rem;">
+                                <h4 style="margin-bottom:0.5rem;" data-i18n="cron-builder-title">Visueller Crontab-Scheduler</h4>
+                                <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="cron-builder-desc">Konfiguriere automatische Intervall-Aufgaben für diesen Server.</p>
+                                <form id="cron-builder-form" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+                                    <div>
+                                        <label style="font-size:0.85rem;" data-i18n="cron-monitor-label">Crash-Monitoring Intervall</label>
+                                        <select id="cron-monitor-select" class="form-control mt-1">
+                                            <option value="5">Alle 5 Minuten</option>
+                                            <option value="10">Alle 10 Minuten</option>
+                                            <option value="15">Alle 15 Minuten</option>
+                                            <option value="">Deaktiviert</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label style="font-size:0.85rem;" data-i18n="cron-update-label">Auto-Update Check Intervall</label>
+                                        <select id="cron-update-select" class="form-control mt-1">
+                                            <option value="30">Alle 30 Minuten</option>
+                                            <option value="60">Jede Stunde</option>
+                                            <option value="">Deaktiviert</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label style="font-size:0.85rem;" data-i18n="cron-restart-label">Täglicher Neustart / Force-Update</label>
+                                        <input type="time" id="cron-restart-time" class="form-control mt-1" value="04:30">
+                                    </div>
+                                    <div>
+                                        <label style="font-size:0.85rem;" data-i18n="cron-core-label">Wöchentliches LGSM Update</label>
+                                        <select id="cron-core-select" class="form-control mt-1">
+                                            <option value="0">Sonntags um 00:00 Uhr</option>
+                                            <option value="1">Montags um 00:00 Uhr</option>
+                                            <option value="">Deaktiviert</option>
+                                        </select>
+                                    </div>
+                                    <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem;">
+                                        <span id="cron-builder-message" class="info-message" style="font-size: 0.8rem;"></span>
+                                        <button type="submit" class="btn btn-success btn-sm" id="btn-save-cron-schedule" data-i18n="btn-save-schedule">Zeitplan in Crontab speichern</button>
+                                    </div>
+                                </form>
                             </div>
 
                             <!-- Alert Settings Panel -->
@@ -1094,6 +1158,36 @@
             <div class="modal-footer" style="justify-content: flex-end; padding: 1rem 1.5rem; display: flex; gap: 0.5rem;">
                 <button id="modal-user-close" class="btn btn-secondary" data-i18n="btn-cancel">Abbrechen</button>
                 <button id="modal-user-submit" class="btn btn-primary" data-i18n="btn-save">Speichern</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Active Players -->
+    <div id="modal-players" class="modal-overlay hidden">
+        <div class="modal-card glass-panel" style="max-width: 600px; width: 90%;">
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 id="modal-players-title" style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+                    <span data-i18n="modal-players-title">👥 Live-Spielerliste</span>
+                </h3>
+                <button id="modal-players-close" class="btn-close">&times;</button>
+            </div>
+            <div class="modal-body mt-3">
+                <div id="modal-players-info" class="text-muted mb-3" style="font-size: 0.85rem;"></div>
+                <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="col-player-name">Spieler</th>
+                                <th data-i18n="col-player-score">Score</th>
+                                <th data-i18n="col-player-time">Spieldauer</th>
+                                <th data-i18n="col-player-actions">Aktionen</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modal-players-tbody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
