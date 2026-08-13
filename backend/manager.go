@@ -34,6 +34,29 @@ type BackupSettings struct {
 	AutoBackupCron    string `json:"autobackup_cron"`
 }
 
+type PlayerInfo struct {
+	Name  string `json:"name"`
+	Score int    `json:"score"`
+	Time  string `json:"time"`
+}
+
+type QueryInfo struct {
+	Online     bool         `json:"online"`
+	Map        string       `json:"map"`
+	NumPlayers int          `json:"numplayers"`
+	MaxPlayers int          `json:"maxplayers"`
+	Bots       int          `json:"bots"`
+	Ping       int          `json:"ping"`
+	Players    []PlayerInfo `json:"players"`
+}
+
+type CronSchedule struct {
+	MonitorInterval string `json:"monitor_interval"`
+	UpdateInterval  string `json:"update_interval"`
+	RestartTime     string `json:"restart_time"`
+	CoreUpdateDay   string `json:"core_update_day"`
+}
+
 type GameServerInstance struct {
 	ID          string      `json:"id"`     // Username
 	Name        string      `json:"name"`   // Game Name
@@ -46,11 +69,14 @@ type GameServerInstance struct {
 	RAM         float64     `json:"ram"`    // Process RAM usage in GB
 	PIDs        []int       `json:"pids,omitempty"`
 	ParsedPorts []PortProbe `json:"parsed_ports,omitempty"`
+	Tag         string      `json:"tag,omitempty"`
+	QueryData   QueryInfo   `json:"query_data"`
 }
 
 type ConfigFile struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	Layer string `json:"layer"` // "default" | "common" | "instance" | "secrets"
 }
 
 type InstanceManager struct {
@@ -86,6 +112,20 @@ func NewInstanceManager(isMock bool) *InstanceManager {
 				Status: "running",
 				Port:   7777,
 				Game:   "ark",
+				Tag:    "Production",
+				QueryData: QueryInfo{
+					Online:     true,
+					Map:        "TheIsland",
+					NumPlayers: 18,
+					MaxPlayers: 70,
+					Bots:       0,
+					Ping:       24,
+					Players: []PlayerInfo{
+						{Name: "Survivalist_Dan", Score: 1450, Time: "2h 15m"},
+						{Name: "AlphaTrex99", Score: 980, Time: "1h 40m"},
+						{Name: "RaptorRider", Score: 620, Time: "35m"},
+					},
+				},
 				ParsedPorts: []PortProbe{
 					{Port: 7777, Protocol: "UDP", Description: "Game"},
 					{Port: 27015, Protocol: "UDP", Description: "Query"},
@@ -99,6 +139,13 @@ func NewInstanceManager(isMock bool) *InstanceManager {
 				Status: "stopped",
 				Port:   2456,
 				Game:   "valheim",
+				Tag:    "Cluster A",
+				QueryData: QueryInfo{
+					Online:     false,
+					Map:        "Valheim_PVP",
+					NumPlayers: 0,
+					MaxPlayers: 10,
+				},
 				ParsedPorts: []PortProbe{
 					{Port: 2456, Protocol: "UDP", Description: "Game"},
 					{Port: 2457, Protocol: "UDP", Description: "Query"},
@@ -405,31 +452,57 @@ func (im *InstanceManager) GetConsole(serverID string, mode string, lang string)
 	}
 
 	if isMock {
-		if srv.Status != "running" {
-			return []string{Msg(lang, "[MOCK] Server is offline. tmux session is not active.", "[MOCK] Server ist offline. tmux Sitzung nicht aktiv.")}, nil
+		switch mode {
+		case "script":
+			return []string{
+				"=== [MOCK] LINUXGSM SCRIPT LOG ===",
+				"[ INFO ] LinuxGSM core version: v24.1.0",
+				"[ INFO ] Checking dependencies... OK",
+				"[ INFO ] Running command: ./script status",
+				"[ OK ] Server is currently running.",
+			}, nil
+		case "game":
+			return []string{
+				"=== [MOCK] GAME ENGINE LOG ===",
+				"[Engine] Engine initialized successfully.",
+				"[Network] Listening on port 7777 (UDP)",
+				"[World] Map 'world_default' loaded in 1.42s.",
+				"[Chat] Admin: Welcome to the server!",
+			}, nil
+		case "console":
+			return []string{
+				"=== [MOCK] CONSOLE LOG FILE ===",
+				"Console logging enabled.",
+				"Initializing server instance...",
+				"Server tickrate locked at 60 FPS.",
+			}, nil
+		default: // tmux
+			if srv.Status != "running" {
+				return []string{Msg(lang, "[MOCK] Server is offline. tmux session is not active.", "[MOCK] Server ist offline. tmux Sitzung nicht aktiv.")}, nil
+			}
+			return []string{
+				"=== [MOCK] TMUX LIVE SCREEN ===",
+				fmt.Sprintf("Status: running on port %d", srv.Port),
+				fmt.Sprintf("OS: Mock OS (Windows) | Engine ID: %s", srv.Game),
+				"SteamCMD client version 1.0.0 init...",
+				"Initializing GameEngine Loop...",
+				"Master Server registration: SUCCESS",
+				"Active players: 3/32",
+				"Tickrate: 30.1 Hz",
+				"LOG: player [Admin] connected.",
+				"LOG: player [Gamer1] connected.",
+				"LOG: autosave triggered. Map saved.",
+			}, nil
 		}
-		return []string{
-			"=== MOCK CONSOLE OUTPUT ===",
-			fmt.Sprintf("Status: running on port %d", srv.Port),
-			fmt.Sprintf("OS: Mock OS (Windows) | Engine ID: %s", srv.Game),
-			"SteamCMD client version 1.0.0 init...",
-			"Initializing GameEngine Loop...",
-			"Master Server registration: SUCCESS",
-			"Active players: 3/32",
-			"Tickrate: 30.1 Hz",
-			"LOG: player [Admin] connected.",
-			"LOG: player [Gamer1] connected.",
-			"LOG: autosave triggered. Map saved.",
-		}, nil
 	}
 
-	if mode == "tmux" {
+	switch mode {
+	case "tmux":
 		socketName, sessionName, ok := findLinuxGSMTmuxTarget(srv.User, srv.Script)
 		if !ok {
 			return []string{Msg(lang, "Server is offline. tmux session is not active.", "Server ist offline. tmux Sitzung nicht aktiv.")}, nil
 		}
 
-		// Capture tmux pane from the same socket/session pair that LinuxGSM uses.
 		cmd := exec.Command("runuser", "-u", srv.User, "--", "tmux", "-L", socketName, "capture-pane", "-t", sessionName, "-p")
 		var out bytes.Buffer
 		cmd.Stdout = &out
@@ -440,34 +513,71 @@ func (im *InstanceManager) GetConsole(serverID string, mode string, lang string)
 
 		lines := strings.Split(out.String(), "\n")
 		return lines, nil
-	} else {
-		// Read log file: look for logs under /home/<user>/log/console/<script>-console.log
-		logPath := filepath.Join("/home", srv.User, "log", "console", fmt.Sprintf("%s-console.log", srv.Script))
-		file, err := os.Open(logPath)
-		if err != nil {
-			// fallback check in lgsm log directory
-			logPath = filepath.Join("/home", srv.User, "log", "script", fmt.Sprintf("%s-script.log", srv.Script))
-			file, err = os.Open(logPath)
-			if err != nil {
-				return []string{
-					Msg(lang, "Log file could not be opened.", "Logdatei konnte nicht geöffnet werden."),
-					Msg(lang, "Searched path: ", "Gesuchter Pfad: ") + logPath,
-				}, nil
-			}
-		}
-		defer file.Close()
 
-		// Get last 100 lines
-		var lines []string
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
-			if len(lines) > 100 {
-				lines = lines[1:]
+	case "script":
+		logPath := filepath.Join("/home", srv.User, "log", "script", fmt.Sprintf("%s-script.log", srv.Script))
+		return readLastNLines(logPath, 150, lang)
+
+	case "game":
+		// Look in /home/<user>/log/game/ directory or serverfiles
+		gameLogDir := filepath.Join("/home", srv.User, "log", "game")
+		var logFile string
+		if entries, err := os.ReadDir(gameLogDir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					logFile = filepath.Join(gameLogDir, e.Name())
+					break
+				}
 			}
 		}
-		return lines, nil
+		if logFile == "" {
+			// Fallback: look for common engine logs
+			candidates := []string{
+				filepath.Join("/home", srv.User, "serverfiles", "logs"),
+				filepath.Join("/home", srv.User, "serverfiles", "server.log"),
+				filepath.Join("/home", srv.User, "serverfiles", "logs", "latest.log"),
+			}
+			for _, c := range candidates {
+				if _, err := os.Stat(c); err == nil {
+					logFile = c
+					break
+				}
+			}
+		}
+		if logFile == "" {
+			return []string{
+				Msg(lang, "Game engine log file not found.", "Spiele-Engine Logdatei nicht gefunden."),
+				Msg(lang, "Checked directory: ", "Geprüfter Ordner: ") + gameLogDir,
+			}, nil
+		}
+		return readLastNLines(logFile, 150, lang)
+
+	default: // "console" or default
+		logPath := filepath.Join("/home", srv.User, "log", "console", fmt.Sprintf("%s-console.log", srv.Script))
+		return readLastNLines(logPath, 150, lang)
 	}
+}
+
+func readLastNLines(logPath string, n int, lang string) ([]string, error) {
+	file, err := os.Open(logPath)
+	if err != nil {
+		return []string{
+			Msg(lang, "Log file could not be opened.", "Logdatei konnte nicht geöffnet werden."),
+			Msg(lang, "Path: ", "Pfad: ") + logPath,
+		}, nil
+	}
+	defer file.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		clean := stripAnsi(scanner.Text())
+		lines = append(lines, clean)
+		if len(lines) > n {
+			lines = lines[1:]
+		}
+	}
+	return lines, nil
 }
 
 func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error) {
@@ -492,11 +602,12 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 
 	if isMock {
 		return []ConfigFile{
-			{Name: "common.cfg", Path: "mock://common.cfg"},
-			{Name: fmt.Sprintf("%s.cfg", srv.Script), Path: fmt.Sprintf("mock://%s.cfg", srv.Script)},
-			{Name: "serverfiles/server.properties", Path: "mock://serverfiles/server.properties"},
-			{Name: "serverfiles/server.cfg", Path: "mock://serverfiles/server.cfg"},
-			{Name: "serverfiles/settings.json", Path: "mock://serverfiles/settings.json"},
+			{Name: "_default.cfg", Path: "mock://_default.cfg", Layer: "default"},
+			{Name: "common.cfg", Path: "mock://common.cfg", Layer: "common"},
+			{Name: fmt.Sprintf("%s.cfg", srv.Script), Path: fmt.Sprintf("mock://%s.cfg", srv.Script), Layer: "instance"},
+			{Name: "secrets-mock.cfg", Path: "mock://secrets-mock.cfg", Layer: "secrets"},
+			{Name: "serverfiles/server.properties", Path: "mock://serverfiles/server.properties", Layer: "instance"},
+			{Name: "serverfiles/server.cfg", Path: "mock://serverfiles/server.cfg", Layer: "instance"},
 		}, nil
 	}
 
@@ -507,9 +618,18 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 	if files, err := os.ReadDir(configDir); err == nil {
 		for _, f := range files {
 			if !f.IsDir() && strings.HasSuffix(f.Name(), ".cfg") {
+				layer := "instance"
+				if f.Name() == "_default.cfg" {
+					layer = "default"
+				} else if f.Name() == "common.cfg" {
+					layer = "common"
+				} else if strings.HasPrefix(f.Name(), "secrets-") {
+					layer = "secrets"
+				}
 				configs = append(configs, ConfigFile{
-					Name: f.Name(),
-					Path: filepath.Join(configDir, f.Name()),
+					Name:  f.Name(),
+					Path:  filepath.Join(configDir, f.Name()),
+					Layer: layer,
 				})
 			}
 		}
@@ -519,6 +639,9 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 	serverfilesDir := filepath.Join("/home", srv.User, "serverfiles")
 	if _, err := os.Stat(serverfilesDir); err == nil {
 		found := findConfigsInDir(filepath.Join("/home", srv.User), serverfilesDir, 0)
+		for i := range found {
+			found[i].Layer = "instance"
+		}
 		configs = append(configs, found...)
 	}
 
@@ -527,8 +650,14 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 
 func isPathWithinDirectories(path string, allowedDirs ...string) bool {
 	cleanPath := filepath.Clean(path)
+	if evalPath, err := filepath.EvalSymlinks(cleanPath); err == nil {
+		cleanPath = evalPath
+	}
 	for _, allowed := range allowedDirs {
 		cleanAllowed := filepath.Clean(allowed)
+		if evalAllowed, err := filepath.EvalSymlinks(cleanAllowed); err == nil {
+			cleanAllowed = evalAllowed
+		}
 		if cleanPath == cleanAllowed || strings.HasPrefix(cleanPath, cleanAllowed+string(filepath.Separator)) {
 			return true
 		}
@@ -1151,10 +1280,13 @@ func mapScriptToGameName(scriptName string) string {
 }
 
 func stripAnsi(str string) string {
-	// Regular expression to strip ANSI escape codes
-	const ansi = "[\u001B\u009B][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]"
-	re := regexp.MustCompile(ansi)
-	return re.ReplaceAllString(str, "")
+	// Regular expression to strip ANSI escape codes and VT100 control codes
+	reAnsi := regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
+	clean := reAnsi.ReplaceAllString(str, "")
+
+	// Secondary check for CSI / OSC control characters
+	reControl := regexp.MustCompile(`[\x00-\x09\x0b-\x1f\x7f]`)
+	return reControl.ReplaceAllString(clean, "")
 }
 
 func isLinuxGSMScript(filePath string) bool {
@@ -1182,8 +1314,11 @@ func isLinuxGSMScript(filePath string) bool {
 }
 
 func getGameFromScriptName(scriptName string) string {
-	clean := strings.Split(scriptName, "-")[0]
-	return strings.TrimSuffix(clean, "server")
+	reInstance := regexp.MustCompile(`-\d+$`)
+	clean := reInstance.ReplaceAllString(scriptName, "")
+	clean = strings.TrimSuffix(clean, "server")
+	clean = strings.TrimSuffix(clean, "-")
+	return clean
 }
 
 func (im *InstanceManager) SendConsoleCommand(serverID string, command string) error {
@@ -2523,17 +2658,38 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 }
 
 type AlertSettings struct {
-	DiscordEnabled  bool   `json:"discord_enabled"`
-	DiscordWebhook  string `json:"discord_webhook"`
-	TelegramEnabled bool   `json:"telegram_enabled"`
-	TelegramToken   string `json:"telegram_token"`
-	TelegramChatID  string `json:"telegram_chatid"`
-	EmailEnabled    bool   `json:"email_enabled"`
-	EmailSMTP       string `json:"email_smtp"`
-	EmailPort       string `json:"email_port"`
-	EmailUser       string `json:"email_user"`
-	EmailPass       string `json:"email_pass"`
-	EmailDest       string `json:"email_dest"`
+	DiscordEnabled      bool   `json:"discord_enabled"`
+	DiscordWebhook      string `json:"discord_webhook"`
+	TelegramEnabled     bool   `json:"telegram_enabled"`
+	TelegramToken       string `json:"telegram_token"`
+	TelegramChatID      string `json:"telegram_chatid"`
+	EmailEnabled        bool   `json:"email_enabled"`
+	EmailSMTP           string `json:"email_smtp"`
+	EmailPort           string `json:"email_port"`
+	EmailUser           string `json:"email_user"`
+	EmailPass           string `json:"email_pass"`
+	EmailDest           string `json:"email_dest"`
+	MatrixEnabled       bool   `json:"matrix_enabled"`
+	MatrixHomeserver    string `json:"matrix_homeserver"`
+	MatrixRoomID        string `json:"matrix_roomid"`
+	MatrixAccessToken   string `json:"matrix_accesstoken"`
+	NtfyEnabled         bool   `json:"ntfy_enabled"`
+	NtfyURL             string `json:"ntfy_url"`
+	NtfyTopic           string `json:"ntfy_topic"`
+	NtfyAuthToken       string `json:"ntfy_authtoken"`
+	SlackEnabled        bool   `json:"slack_enabled"`
+	SlackWebhook        string `json:"slack_webhook"`
+	PushoverEnabled     bool   `json:"pushover_enabled"`
+	PushoverToken       string `json:"pushover_token"`
+	PushoverUser        string `json:"pushover_user"`
+	PushbulletEnabled   bool   `json:"pushbullet_enabled"`
+	PushbulletToken     string `json:"pushbullet_token"`
+	PushbulletChannel   string `json:"pushbullet_channel"`
+	IftttEnabled        bool   `json:"ifttt_enabled"`
+	IftttKey            string `json:"ifttt_key"`
+	IftttEvent          string `json:"ifttt_event"`
+	RocketchatEnabled   bool   `json:"rocketchat_enabled"`
+	RocketchatWebhook   string `json:"rocketchat_webhook"`
 }
 
 func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, error) {
@@ -2561,6 +2717,9 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 			DiscordEnabled:  true,
 			DiscordWebhook:  "https://discord.com/api/webhooks/mock",
 			TelegramEnabled: false,
+			NtfyEnabled:     true,
+			NtfyURL:         "https://ntfy.sh",
+			NtfyTopic:       "lgsm-alerts-mock",
 		}, nil
 	}
 
@@ -2576,11 +2735,11 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 			return
 		}
 		lines := strings.Split(string(contentBytes), "\n")
-		re := regexp.MustCompile(`^\s*(discordalert|discordwebhook|telegramalert|telegramtoken|telegramchatid|emailalert|emailserver|emailport|emailuser|emailpassword|emaildest)\s*=\s*["']?([^"'\s#]*)["']?`)
+		re := regexp.MustCompile(`^\s*([a-zA-Z0-9]+)\s*=\s*["']?([^"'\s#]*)["']?`)
 		for _, line := range lines {
 			matches := re.FindStringSubmatch(line)
 			if len(matches) > 2 {
-				key := matches[1]
+				key := strings.ToLower(matches[1])
 				val := matches[2]
 				switch key {
 				case "discordalert":
@@ -2605,6 +2764,48 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 					settings.EmailPass = val
 				case "emaildest":
 					settings.EmailDest = val
+				case "matrixalert":
+					settings.MatrixEnabled = (val == "on")
+				case "matrixhomeserver":
+					settings.MatrixHomeserver = val
+				case "matrixroomid":
+					settings.MatrixRoomID = val
+				case "matrixaccesstoken":
+					settings.MatrixAccessToken = val
+				case "ntfyalert":
+					settings.NtfyEnabled = (val == "on")
+				case "ntfyurl":
+					settings.NtfyURL = val
+				case "ntfytopic":
+					settings.NtfyTopic = val
+				case "ntfyauthtoken":
+					settings.NtfyAuthToken = val
+				case "slackalert":
+					settings.SlackEnabled = (val == "on")
+				case "slackwebhook":
+					settings.SlackWebhook = val
+				case "pushoveralert":
+					settings.PushoverEnabled = (val == "on")
+				case "pushovertoken":
+					settings.PushoverToken = val
+				case "pushoveruser":
+					settings.PushoverUser = val
+				case "pushbulletalert":
+					settings.PushbulletEnabled = (val == "on")
+				case "pushbullettoken":
+					settings.PushbulletToken = val
+				case "pushbulletchannel":
+					settings.PushbulletChannel = val
+				case "iftttalert":
+					settings.IftttEnabled = (val == "on")
+				case "iftttkey":
+					settings.IftttKey = val
+				case "iftttevent":
+					settings.IftttEvent = val
+				case "rocketchatalert":
+					settings.RocketchatEnabled = (val == "on")
+				case "rocketchatwebhook":
+					settings.RocketchatWebhook = val
 				}
 			}
 		}
@@ -2657,18 +2858,40 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 	updated := make(map[string]bool)
 
 	valMap := map[string]string{
-		"discordalert":   "off",
-		"discordwebhook": settings.DiscordWebhook,
-		"telegramalert":  "off",
-		"telegramtoken":  settings.TelegramToken,
-		"telegramchatid": settings.TelegramChatID,
-		"emailalert":     "off",
-		"emailserver":    settings.EmailSMTP,
-		"emailport":      settings.EmailPort,
-		"emailuser":      settings.EmailUser,
-		"emailpassword":  settings.EmailPass,
-		"emaildest":      settings.EmailDest,
+		"discordalert":      "off",
+		"discordwebhook":    settings.DiscordWebhook,
+		"telegramalert":     "off",
+		"telegramtoken":     settings.TelegramToken,
+		"telegramchatid":    settings.TelegramChatID,
+		"emailalert":        "off",
+		"emailserver":       settings.EmailSMTP,
+		"emailport":         settings.EmailPort,
+		"emailuser":         settings.EmailUser,
+		"emailpassword":     settings.EmailPass,
+		"emaildest":         settings.EmailDest,
+		"matrixalert":       "off",
+		"matrixhomeserver":  settings.MatrixHomeserver,
+		"matrixroomid":      settings.MatrixRoomID,
+		"matrixaccesstoken": settings.MatrixAccessToken,
+		"ntfyalert":         "off",
+		"ntfyurl":           settings.NtfyURL,
+		"ntfytopic":          settings.NtfyTopic,
+		"ntfyauthtoken":     settings.NtfyAuthToken,
+		"slackalert":        "off",
+		"slackwebhook":      settings.SlackWebhook,
+		"pushoveralert":     "off",
+		"pushovertoken":     settings.PushoverToken,
+		"pushoveruser":      settings.PushoverUser,
+		"pushbulletalert":   "off",
+		"pushbullettoken":   settings.PushbulletToken,
+		"pushbulletchannel": settings.PushbulletChannel,
+		"iftttalert":        "off",
+		"iftttkey":          settings.IftttKey,
+		"iftttevent":        settings.IftttEvent,
+		"rocketchatalert":   "off",
+		"rocketchatwebhook": settings.RocketchatWebhook,
 	}
+
 	if settings.DiscordEnabled {
 		valMap["discordalert"] = "on"
 	}
@@ -2677,6 +2900,27 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 	}
 	if settings.EmailEnabled {
 		valMap["emailalert"] = "on"
+	}
+	if settings.MatrixEnabled {
+		valMap["matrixalert"] = "on"
+	}
+	if settings.NtfyEnabled {
+		valMap["ntfyalert"] = "on"
+	}
+	if settings.SlackEnabled {
+		valMap["slackalert"] = "on"
+	}
+	if settings.PushoverEnabled {
+		valMap["pushoveralert"] = "on"
+	}
+	if settings.PushbulletEnabled {
+		valMap["pushbulletalert"] = "on"
+	}
+	if settings.IftttEnabled {
+		valMap["iftttalert"] = "on"
+	}
+	if settings.RocketchatEnabled {
+		valMap["rocketchatalert"] = "on"
 	}
 
 	for i, line := range lines {
@@ -2821,4 +3065,204 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 	}
 
 	return nil
+}
+
+func (im *InstanceManager) SetServerTag(serverID string, tag string) error {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+
+	if im.isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				im.mockServers[i].Tag = tag
+				return nil
+			}
+		}
+		return fmt.Errorf("server not found")
+	}
+
+	srv, ok := im.instances[serverID]
+	if !ok {
+		return fmt.Errorf("server %s not found", serverID)
+	}
+	srv.Tag = tag
+	return nil
+}
+
+func (im *InstanceManager) RunActionDirect(serverID, action string) error {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+
+	if srv == nil {
+		im.mu.Unlock()
+		return fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		if action == "start" {
+			srv.Status = "running"
+		} else if action == "stop" {
+			srv.Status = "stopped"
+		} else if action == "restart" {
+			srv.Status = "running"
+		}
+		im.mu.Unlock()
+		return nil
+	}
+	user := srv.User
+	script := srv.Script
+	im.mu.Unlock()
+
+	cmd := exec.Command("runuser", "-u", user, "--", fmt.Sprintf("/home/%s/%s", user, script), action)
+	return cmd.Start()
+}
+
+func (im *InstanceManager) RunBulkAction(action string, serverIDs []string) map[string]string {
+	results := make(map[string]string)
+	for _, id := range serverIDs {
+		err := im.RunActionDirect(id, action)
+		if err != nil {
+			results[id] = "error: " + err.Error()
+		} else {
+			results[id] = "ok"
+		}
+	}
+	return results
+}
+
+func (im *InstanceManager) GetCronSchedule(serverID string) (CronSchedule, error) {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return CronSchedule{}, fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		return CronSchedule{
+			MonitorInterval: "5",
+			UpdateInterval:  "30",
+			RestartTime:     "04:30",
+			CoreUpdateDay:   "0",
+		}, nil
+	}
+
+	crontabStr, err := getCrontab(srv.User)
+	if err != nil {
+		return CronSchedule{}, nil
+	}
+
+	sched := CronSchedule{}
+	for _, line := range strings.Split(crontabStr, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		action := fields[len(fields)-1]
+		if action == "monitor" {
+			if strings.HasPrefix(fields[0], "*/") {
+				sched.MonitorInterval = strings.TrimPrefix(fields[0], "*/")
+			}
+		} else if action == "update" {
+			if strings.HasPrefix(fields[0], "*/") {
+				sched.UpdateInterval = strings.TrimPrefix(fields[0], "*/")
+			}
+		} else if action == "restart" || action == "force-update" {
+			sched.RestartTime = fmt.Sprintf("%02s:%02s", fields[1], fields[0])
+		} else if action == "update-lgsm" {
+			sched.CoreUpdateDay = fields[4]
+		}
+	}
+	return sched, nil
+}
+
+func (im *InstanceManager) SaveCronSchedule(serverID string, sched CronSchedule) error {
+	im.mu.Lock()
+	isMock := im.isMock
+	var srv *GameServerInstance
+	if isMock {
+		for i := range im.mockServers {
+			if im.mockServers[i].ID == serverID {
+				srv = &im.mockServers[i]
+				break
+			}
+		}
+	} else {
+		srv = im.instances[serverID]
+	}
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
+	}
+
+	if isMock {
+		return nil
+	}
+
+	scriptPath := fmt.Sprintf("/home/%s/%s", srv.User, srv.Script)
+	var crons []string
+
+	if sched.MonitorInterval != "" {
+		crons = append(crons, fmt.Sprintf("*/%s * * * * %s monitor > /dev/null 2>&1", sched.MonitorInterval, scriptPath))
+	}
+	if sched.UpdateInterval != "" {
+		crons = append(crons, fmt.Sprintf("*/%s * * * * %s update > /dev/null 2>&1", sched.UpdateInterval, scriptPath))
+	}
+	if sched.RestartTime != "" {
+		parts := strings.Split(sched.RestartTime, ":")
+		if len(parts) == 2 {
+			crons = append(crons, fmt.Sprintf("%s %s * * * %s force-update > /dev/null 2>&1", parts[1], parts[0], scriptPath))
+		}
+	}
+	if sched.CoreUpdateDay != "" {
+		crons = append(crons, fmt.Sprintf("0 0 * * %s %s update-lgsm > /dev/null 2>&1", sched.CoreUpdateDay, scriptPath))
+	}
+
+	crontabStr, _ := getCrontab(srv.User)
+	lines := strings.Split(crontabStr, "\n")
+	var newLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, srv.Script) && (strings.Contains(trimmed, "monitor") || strings.Contains(trimmed, "update") || strings.Contains(trimmed, "force-update") || strings.Contains(trimmed, "update-lgsm")) {
+			continue
+		}
+		newLines = append(newLines, line)
+	}
+
+	newLines = append(newLines, fmt.Sprintf("# LinuxGSM %s Geplante Wartungsaufgaben", srv.Name))
+	newLines = append(newLines, crons...)
+
+	newCrontab := strings.Join(newLines, "\n")
+	return saveCrontab(srv.User, newCrontab)
 }
