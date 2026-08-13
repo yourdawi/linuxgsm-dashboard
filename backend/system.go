@@ -3,6 +3,7 @@ package backend
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -305,4 +306,133 @@ func GetProcessStatsForUser(username string) (cpu float64, ram float64, pids []i
 
 	totalRAMGB := totalRAMKB / 1024 / 1024 // Convert KB to GB
 	return totalCPU, totalRAMGB, pidList
+}
+
+type FirewallStatus struct {
+	Supported     bool     `json:"supported"`
+	Tool          string   `json:"tool"`
+	Active        bool     `json:"active"`
+	HasPermission bool     `json:"hasPermission"`
+	Message       string   `json:"message"`
+	Rules         []string `json:"rules"`
+}
+
+func GetFirewallStatus(isMock bool) FirewallStatus {
+	if isMock || runtime.GOOS == "windows" {
+		return FirewallStatus{
+			Supported:     false,
+			Tool:          "mock",
+			Active:        true,
+			HasPermission: true,
+			Message:       "Mock firewall status active (Windows test mode).",
+			Rules:         []string{"7777/udp (Game)", "27015/udp (Query)"},
+		}
+	}
+
+	hasRoot := (os.Geteuid() == 0)
+
+	// Check UFW
+	if ufwPath, err := exec.LookPath("ufw"); err == nil && ufwPath != "" {
+		cmd := exec.Command("ufw", "status")
+		out, _ := cmd.Output()
+		outStr := string(out)
+		isActive := strings.Contains(outStr, "Status: active")
+		var rules []string
+		if isActive {
+			for _, line := range strings.Split(outStr, "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "Status:") && !strings.HasPrefix(line, "To") && !strings.HasPrefix(line, "--") {
+					rules = append(rules, line)
+				}
+			}
+		}
+		msg := "UFW Firewall active."
+		if !isActive {
+			msg = "UFW Firewall is installed but inactive."
+		}
+		if !hasRoot {
+			msg += " Dashboard runs without root privileges (manual sudo commands required)."
+		}
+		return FirewallStatus{
+			Supported:     true,
+			Tool:          "ufw",
+			Active:        isActive,
+			HasPermission: hasRoot,
+			Message:       msg,
+			Rules:         rules,
+		}
+	}
+
+	// Check Firewalld
+	if fwdPath, err := exec.LookPath("firewall-cmd"); err == nil && fwdPath != "" {
+		cmd := exec.Command("firewall-cmd", "--state")
+		out, _ := cmd.Output()
+		isActive := strings.Contains(string(out), "running")
+		var rules []string
+		if isActive {
+			cmdPorts := exec.Command("firewall-cmd", "--list-ports")
+			pOut, _ := cmdPorts.Output()
+			rules = strings.Fields(string(pOut))
+		}
+		msg := "Firewalld active."
+		if !isActive {
+			msg = "Firewalld installed but inactive."
+		}
+		if !hasRoot {
+			msg += " Dashboard runs without root privileges (manual sudo commands required)."
+		}
+		return FirewallStatus{
+			Supported:     true,
+			Tool:          "firewalld",
+			Active:        isActive,
+			HasPermission: hasRoot,
+			Message:       msg,
+			Rules:         rules,
+		}
+	}
+
+	return FirewallStatus{
+		Supported:     true,
+		Tool:          "none",
+		Active:        false,
+		HasPermission: hasRoot,
+		Message:       "No active software firewall (UFW/Firewalld) detected on host.",
+		Rules:         nil,
+	}
+}
+
+func OpenFirewallPort(port int, protocol string, isMock bool) error {
+	if isMock {
+		return nil
+	}
+
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("firewall management is only supported on Linux")
+	}
+
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("insufficient permissions: dashboard is not running as root. Run manually: sudo ufw allow %d/%s", port, strings.ToLower(protocol))
+	}
+
+	proto := strings.ToLower(protocol)
+	if proto != "tcp" && proto != "udp" {
+		proto = "udp"
+	}
+
+	if ufwPath, err := exec.LookPath("ufw"); err == nil && ufwPath != "" {
+		rule := fmt.Sprintf("%d/%s", port, proto)
+		cmd := exec.Command("ufw", "allow", rule)
+		return cmd.Run()
+	}
+
+	if fwdPath, err := exec.LookPath("firewall-cmd"); err == nil && fwdPath != "" {
+		rule := fmt.Sprintf("%d/%s", port, proto)
+		cmd := exec.Command("firewall-cmd", "--permanent", "--add-port="+rule)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		return exec.Command("firewall-cmd", "--reload").Run()
+	}
+
+	return fmt.Errorf("no supported firewall tool (UFW/Firewalld) found to add rules")
 }

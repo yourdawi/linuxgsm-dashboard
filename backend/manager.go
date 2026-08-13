@@ -405,31 +405,57 @@ func (im *InstanceManager) GetConsole(serverID string, mode string, lang string)
 	}
 
 	if isMock {
-		if srv.Status != "running" {
-			return []string{Msg(lang, "[MOCK] Server is offline. tmux session is not active.", "[MOCK] Server ist offline. tmux Sitzung nicht aktiv.")}, nil
+		switch mode {
+		case "script":
+			return []string{
+				"=== [MOCK] LINUXGSM SCRIPT LOG ===",
+				"[ INFO ] LinuxGSM core version: v24.1.0",
+				"[ INFO ] Checking dependencies... OK",
+				"[ INFO ] Running command: ./script status",
+				"[ OK ] Server is currently running.",
+			}, nil
+		case "game":
+			return []string{
+				"=== [MOCK] GAME ENGINE LOG ===",
+				"[Engine] Engine initialized successfully.",
+				"[Network] Listening on port 7777 (UDP)",
+				"[World] Map 'world_default' loaded in 1.42s.",
+				"[Chat] Admin: Welcome to the server!",
+			}, nil
+		case "console":
+			return []string{
+				"=== [MOCK] CONSOLE LOG FILE ===",
+				"Console logging enabled.",
+				"Initializing server instance...",
+				"Server tickrate locked at 60 FPS.",
+			}, nil
+		default: // tmux
+			if srv.Status != "running" {
+				return []string{Msg(lang, "[MOCK] Server is offline. tmux session is not active.", "[MOCK] Server ist offline. tmux Sitzung nicht aktiv.")}, nil
+			}
+			return []string{
+				"=== [MOCK] TMUX LIVE SCREEN ===",
+				fmt.Sprintf("Status: running on port %d", srv.Port),
+				fmt.Sprintf("OS: Mock OS (Windows) | Engine ID: %s", srv.Game),
+				"SteamCMD client version 1.0.0 init...",
+				"Initializing GameEngine Loop...",
+				"Master Server registration: SUCCESS",
+				"Active players: 3/32",
+				"Tickrate: 30.1 Hz",
+				"LOG: player [Admin] connected.",
+				"LOG: player [Gamer1] connected.",
+				"LOG: autosave triggered. Map saved.",
+			}, nil
 		}
-		return []string{
-			"=== MOCK CONSOLE OUTPUT ===",
-			fmt.Sprintf("Status: running on port %d", srv.Port),
-			fmt.Sprintf("OS: Mock OS (Windows) | Engine ID: %s", srv.Game),
-			"SteamCMD client version 1.0.0 init...",
-			"Initializing GameEngine Loop...",
-			"Master Server registration: SUCCESS",
-			"Active players: 3/32",
-			"Tickrate: 30.1 Hz",
-			"LOG: player [Admin] connected.",
-			"LOG: player [Gamer1] connected.",
-			"LOG: autosave triggered. Map saved.",
-		}, nil
 	}
 
-	if mode == "tmux" {
+	switch mode {
+	case "tmux":
 		socketName, sessionName, ok := findLinuxGSMTmuxTarget(srv.User, srv.Script)
 		if !ok {
 			return []string{Msg(lang, "Server is offline. tmux session is not active.", "Server ist offline. tmux Sitzung nicht aktiv.")}, nil
 		}
 
-		// Capture tmux pane from the same socket/session pair that LinuxGSM uses.
 		cmd := exec.Command("runuser", "-u", srv.User, "--", "tmux", "-L", socketName, "capture-pane", "-t", sessionName, "-p")
 		var out bytes.Buffer
 		cmd.Stdout = &out
@@ -440,34 +466,70 @@ func (im *InstanceManager) GetConsole(serverID string, mode string, lang string)
 
 		lines := strings.Split(out.String(), "\n")
 		return lines, nil
-	} else {
-		// Read log file: look for logs under /home/<user>/log/console/<script>-console.log
-		logPath := filepath.Join("/home", srv.User, "log", "console", fmt.Sprintf("%s-console.log", srv.Script))
-		file, err := os.Open(logPath)
-		if err != nil {
-			// fallback check in lgsm log directory
-			logPath = filepath.Join("/home", srv.User, "log", "script", fmt.Sprintf("%s-script.log", srv.Script))
-			file, err = os.Open(logPath)
-			if err != nil {
-				return []string{
-					Msg(lang, "Log file could not be opened.", "Logdatei konnte nicht geöffnet werden."),
-					Msg(lang, "Searched path: ", "Gesuchter Pfad: ") + logPath,
-				}, nil
-			}
-		}
-		defer file.Close()
 
-		// Get last 100 lines
-		var lines []string
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
-			if len(lines) > 100 {
-				lines = lines[1:]
+	case "script":
+		logPath := filepath.Join("/home", srv.User, "log", "script", fmt.Sprintf("%s-script.log", srv.Script))
+		return readLastNLines(logPath, 150, lang)
+
+	case "game":
+		// Look in /home/<user>/log/game/ directory or serverfiles
+		gameLogDir := filepath.Join("/home", srv.User, "log", "game")
+		var logFile string
+		if entries, err := os.ReadDir(gameLogDir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					logFile = filepath.Join(gameLogDir, e.Name())
+					break
+				}
 			}
 		}
-		return lines, nil
+		if logFile == "" {
+			// Fallback: look for common engine logs
+			candidates := []string{
+				filepath.Join("/home", srv.User, "serverfiles", "logs"),
+				filepath.Join("/home", srv.User, "serverfiles", "server.log"),
+				filepath.Join("/home", srv.User, "serverfiles", "logs", "latest.log"),
+			}
+			for _, c := range candidates {
+				if _, err := os.Stat(c); err == nil {
+					logFile = c
+					break
+				}
+			}
+		}
+		if logFile == "" {
+			return []string{
+				Msg(lang, "Game engine log file not found.", "Spiele-Engine Logdatei nicht gefunden."),
+				Msg(lang, "Checked directory: ", "Geprüfter Ordner: ") + gameLogDir,
+			}, nil
+		}
+		return readLastNLines(logFile, 150, lang)
+
+	default: // "console" or default
+		logPath := filepath.Join("/home", srv.User, "log", "console", fmt.Sprintf("%s-console.log", srv.Script))
+		return readLastNLines(logPath, 150, lang)
 	}
+}
+
+func readLastNLines(logPath string, n int, lang string) ([]string, error) {
+	file, err := os.Open(logPath)
+	if err != nil {
+		return []string{
+			Msg(lang, "Log file could not be opened.", "Logdatei konnte nicht geöffnet werden."),
+			Msg(lang, "Path: ", "Pfad: ") + logPath,
+		}, nil
+	}
+	defer file.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		if len(lines) > n {
+			lines = lines[1:]
+		}
+	}
+	return lines, nil
 }
 
 func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error) {
@@ -527,8 +589,14 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 
 func isPathWithinDirectories(path string, allowedDirs ...string) bool {
 	cleanPath := filepath.Clean(path)
+	if evalPath, err := filepath.EvalSymlinks(cleanPath); err == nil {
+		cleanPath = evalPath
+	}
 	for _, allowed := range allowedDirs {
 		cleanAllowed := filepath.Clean(allowed)
+		if evalAllowed, err := filepath.EvalSymlinks(cleanAllowed); err == nil {
+			cleanAllowed = evalAllowed
+		}
 		if cleanPath == cleanAllowed || strings.HasPrefix(cleanPath, cleanAllowed+string(filepath.Separator)) {
 			return true
 		}
@@ -1182,8 +1250,11 @@ func isLinuxGSMScript(filePath string) bool {
 }
 
 func getGameFromScriptName(scriptName string) string {
-	clean := strings.Split(scriptName, "-")[0]
-	return strings.TrimSuffix(clean, "server")
+	reInstance := regexp.MustCompile(`-\d+$`)
+	clean := reInstance.ReplaceAllString(scriptName, "")
+	clean = strings.TrimSuffix(clean, "server")
+	clean = strings.TrimSuffix(clean, "-")
+	return clean
 }
 
 func (im *InstanceManager) SendConsoleCommand(serverID string, command string) error {
@@ -2523,17 +2594,38 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 }
 
 type AlertSettings struct {
-	DiscordEnabled  bool   `json:"discord_enabled"`
-	DiscordWebhook  string `json:"discord_webhook"`
-	TelegramEnabled bool   `json:"telegram_enabled"`
-	TelegramToken   string `json:"telegram_token"`
-	TelegramChatID  string `json:"telegram_chatid"`
-	EmailEnabled    bool   `json:"email_enabled"`
-	EmailSMTP       string `json:"email_smtp"`
-	EmailPort       string `json:"email_port"`
-	EmailUser       string `json:"email_user"`
-	EmailPass       string `json:"email_pass"`
-	EmailDest       string `json:"email_dest"`
+	DiscordEnabled      bool   `json:"discord_enabled"`
+	DiscordWebhook      string `json:"discord_webhook"`
+	TelegramEnabled     bool   `json:"telegram_enabled"`
+	TelegramToken       string `json:"telegram_token"`
+	TelegramChatID      string `json:"telegram_chatid"`
+	EmailEnabled        bool   `json:"email_enabled"`
+	EmailSMTP           string `json:"email_smtp"`
+	EmailPort           string `json:"email_port"`
+	EmailUser           string `json:"email_user"`
+	EmailPass           string `json:"email_pass"`
+	EmailDest           string `json:"email_dest"`
+	MatrixEnabled       bool   `json:"matrix_enabled"`
+	MatrixHomeserver    string `json:"matrix_homeserver"`
+	MatrixRoomID        string `json:"matrix_roomid"`
+	MatrixAccessToken   string `json:"matrix_accesstoken"`
+	NtfyEnabled         bool   `json:"ntfy_enabled"`
+	NtfyURL             string `json:"ntfy_url"`
+	NtfyTopic           string `json:"ntfy_topic"`
+	NtfyAuthToken       string `json:"ntfy_authtoken"`
+	SlackEnabled        bool   `json:"slack_enabled"`
+	SlackWebhook        string `json:"slack_webhook"`
+	PushoverEnabled     bool   `json:"pushover_enabled"`
+	PushoverToken       string `json:"pushover_token"`
+	PushoverUser        string `json:"pushover_user"`
+	PushbulletEnabled   bool   `json:"pushbullet_enabled"`
+	PushbulletToken     string `json:"pushbullet_token"`
+	PushbulletChannel   string `json:"pushbullet_channel"`
+	IftttEnabled        bool   `json:"ifttt_enabled"`
+	IftttKey            string `json:"ifttt_key"`
+	IftttEvent          string `json:"ifttt_event"`
+	RocketchatEnabled   bool   `json:"rocketchat_enabled"`
+	RocketchatWebhook   string `json:"rocketchat_webhook"`
 }
 
 func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, error) {
@@ -2561,6 +2653,9 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 			DiscordEnabled:  true,
 			DiscordWebhook:  "https://discord.com/api/webhooks/mock",
 			TelegramEnabled: false,
+			NtfyEnabled:     true,
+			NtfyURL:         "https://ntfy.sh",
+			NtfyTopic:       "lgsm-alerts-mock",
 		}, nil
 	}
 
@@ -2576,11 +2671,11 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 			return
 		}
 		lines := strings.Split(string(contentBytes), "\n")
-		re := regexp.MustCompile(`^\s*(discordalert|discordwebhook|telegramalert|telegramtoken|telegramchatid|emailalert|emailserver|emailport|emailuser|emailpassword|emaildest)\s*=\s*["']?([^"'\s#]*)["']?`)
+		re := regexp.MustCompile(`^\s*([a-zA-Z0-9]+)\s*=\s*["']?([^"'\s#]*)["']?`)
 		for _, line := range lines {
 			matches := re.FindStringSubmatch(line)
 			if len(matches) > 2 {
-				key := matches[1]
+				key := strings.ToLower(matches[1])
 				val := matches[2]
 				switch key {
 				case "discordalert":
@@ -2605,6 +2700,48 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 					settings.EmailPass = val
 				case "emaildest":
 					settings.EmailDest = val
+				case "matrixalert":
+					settings.MatrixEnabled = (val == "on")
+				case "matrixhomeserver":
+					settings.MatrixHomeserver = val
+				case "matrixroomid":
+					settings.MatrixRoomID = val
+				case "matrixaccesstoken":
+					settings.MatrixAccessToken = val
+				case "ntfyalert":
+					settings.NtfyEnabled = (val == "on")
+				case "ntfyurl":
+					settings.NtfyURL = val
+				case "ntfytopic":
+					settings.NtfyTopic = val
+				case "ntfyauthtoken":
+					settings.NtfyAuthToken = val
+				case "slackalert":
+					settings.SlackEnabled = (val == "on")
+				case "slackwebhook":
+					settings.SlackWebhook = val
+				case "pushoveralert":
+					settings.PushoverEnabled = (val == "on")
+				case "pushovertoken":
+					settings.PushoverToken = val
+				case "pushoveruser":
+					settings.PushoverUser = val
+				case "pushbulletalert":
+					settings.PushbulletEnabled = (val == "on")
+				case "pushbullettoken":
+					settings.PushbulletToken = val
+				case "pushbulletchannel":
+					settings.PushbulletChannel = val
+				case "iftttalert":
+					settings.IftttEnabled = (val == "on")
+				case "iftttkey":
+					settings.IftttKey = val
+				case "iftttevent":
+					settings.IftttEvent = val
+				case "rocketchatalert":
+					settings.RocketchatEnabled = (val == "on")
+				case "rocketchatwebhook":
+					settings.RocketchatWebhook = val
 				}
 			}
 		}
@@ -2657,18 +2794,40 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 	updated := make(map[string]bool)
 
 	valMap := map[string]string{
-		"discordalert":   "off",
-		"discordwebhook": settings.DiscordWebhook,
-		"telegramalert":  "off",
-		"telegramtoken":  settings.TelegramToken,
-		"telegramchatid": settings.TelegramChatID,
-		"emailalert":     "off",
-		"emailserver":    settings.EmailSMTP,
-		"emailport":      settings.EmailPort,
-		"emailuser":      settings.EmailUser,
-		"emailpassword":  settings.EmailPass,
-		"emaildest":      settings.EmailDest,
+		"discordalert":      "off",
+		"discordwebhook":    settings.DiscordWebhook,
+		"telegramalert":     "off",
+		"telegramtoken":     settings.TelegramToken,
+		"telegramchatid":    settings.TelegramChatID,
+		"emailalert":        "off",
+		"emailserver":       settings.EmailSMTP,
+		"emailport":         settings.EmailPort,
+		"emailuser":         settings.EmailUser,
+		"emailpassword":     settings.EmailPass,
+		"emaildest":         settings.EmailDest,
+		"matrixalert":       "off",
+		"matrixhomeserver":  settings.MatrixHomeserver,
+		"matrixroomid":      settings.MatrixRoomID,
+		"matrixaccesstoken": settings.MatrixAccessToken,
+		"ntfyalert":         "off",
+		"ntfyurl":           settings.NtfyURL,
+		"ntfytopic":          settings.NtfyTopic,
+		"ntfyauthtoken":     settings.NtfyAuthToken,
+		"slackalert":        "off",
+		"slackwebhook":      settings.SlackWebhook,
+		"pushoveralert":     "off",
+		"pushovertoken":     settings.PushoverToken,
+		"pushoveruser":      settings.PushoverUser,
+		"pushbulletalert":   "off",
+		"pushbullettoken":   settings.PushbulletToken,
+		"pushbulletchannel": settings.PushbulletChannel,
+		"iftttalert":        "off",
+		"iftttkey":          settings.IftttKey,
+		"iftttevent":        settings.IftttEvent,
+		"rocketchatalert":   "off",
+		"rocketchatwebhook": settings.RocketchatWebhook,
 	}
+
 	if settings.DiscordEnabled {
 		valMap["discordalert"] = "on"
 	}
@@ -2677,6 +2836,27 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 	}
 	if settings.EmailEnabled {
 		valMap["emailalert"] = "on"
+	}
+	if settings.MatrixEnabled {
+		valMap["matrixalert"] = "on"
+	}
+	if settings.NtfyEnabled {
+		valMap["ntfyalert"] = "on"
+	}
+	if settings.SlackEnabled {
+		valMap["slackalert"] = "on"
+	}
+	if settings.PushoverEnabled {
+		valMap["pushoveralert"] = "on"
+	}
+	if settings.PushbulletEnabled {
+		valMap["pushbulletalert"] = "on"
+	}
+	if settings.IftttEnabled {
+		valMap["iftttalert"] = "on"
+	}
+	if settings.RocketchatEnabled {
+		valMap["rocketchatalert"] = "on"
 	}
 
 	for i, line := range lines {

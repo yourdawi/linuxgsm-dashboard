@@ -107,6 +107,8 @@ const el = {
     consoleBtnValidate: document.getElementById('console-btn-validate'),
     consoleModeTmux: document.getElementById('console-mode-tmux'),
     consoleModeLog: document.getElementById('console-mode-log'),
+    consoleModeScript: document.getElementById('console-mode-script'),
+    consoleModeGame: document.getElementById('console-mode-game'),
     terminalTitleText: document.getElementById('terminal-title-text'),
     terminalOutput: document.getElementById('terminal-output'),
     terminalAutoscroll: document.getElementById('terminal-autoscroll'),
@@ -215,6 +217,11 @@ const el = {
     // Extensions elements
     consoleBtnUpdateLgsm: document.getElementById('console-btn-update-lgsm'),
     consoleBtnForceUpdate: document.getElementById('console-btn-force-update'),
+    consoleBtnCheckUpdate: document.getElementById('console-btn-check-update'),
+    consoleBtnModsInstall: document.getElementById('console-btn-mods-install'),
+    consoleBtnModsUpdate: document.getElementById('console-btn-mods-update'),
+    consoleBtnFastdl: document.getElementById('console-btn-fastdl'),
+    consoleBtnPostdetails: document.getElementById('console-btn-postdetails'),
     consoleBtnTestAlert: document.getElementById('console-btn-test-alert'),
     consoleGameActions: document.getElementById('console-game-actions'),
     
@@ -235,13 +242,52 @@ const el = {
     alertsSettingEmailDest: document.getElementById('alerts-setting-email-dest'),
     alertsSettingEmailContainer: document.getElementById('alerts-setting-email-container'),
     
+    alertsSettingNtfyEnabled: document.getElementById('alerts-setting-ntfy-enabled'),
+    alertsSettingNtfyUrl: document.getElementById('alerts-setting-ntfy-url'),
+    alertsSettingNtfyTopic: document.getElementById('alerts-setting-ntfy-topic'),
+    alertsSettingNtfyToken: document.getElementById('alerts-setting-ntfy-token'),
+    alertsSettingNtfyContainer: document.getElementById('alerts-setting-ntfy-container'),
+    
+    alertsSettingSlackEnabled: document.getElementById('alerts-setting-slack-enabled'),
+    alertsSettingSlackWebhook: document.getElementById('alerts-setting-slack-webhook'),
+    alertsSettingSlackContainer: document.getElementById('alerts-setting-slack-container'),
+    
+    alertsSettingMatrixEnabled: document.getElementById('alerts-setting-matrix-enabled'),
+    alertsSettingMatrixHomeserver: document.getElementById('alerts-setting-matrix-homeserver'),
+    alertsSettingMatrixRoomid: document.getElementById('alerts-setting-matrix-roomid'),
+    alertsSettingMatrixToken: document.getElementById('alerts-setting-matrix-token'),
+    alertsSettingMatrixContainer: document.getElementById('alerts-setting-matrix-container'),
+    
+    alertsSettingPushoverEnabled: document.getElementById('alerts-setting-pushover-enabled'),
+    alertsSettingPushoverToken: document.getElementById('alerts-setting-pushover-token'),
+    alertsSettingPushoverUser: document.getElementById('alerts-setting-pushover-user'),
+    alertsSettingPushoverContainer: document.getElementById('alerts-setting-pushover-container'),
+    
+    alertsSettingPushbulletEnabled: document.getElementById('alerts-setting-pushbullet-enabled'),
+    alertsSettingPushbulletToken: document.getElementById('alerts-setting-pushbullet-token'),
+    alertsSettingPushbulletChannel: document.getElementById('alerts-setting-pushbullet-channel'),
+    alertsSettingPushbulletContainer: document.getElementById('alerts-setting-pushbullet-container'),
+    
+    alertsSettingIftttEnabled: document.getElementById('alerts-setting-ifttt-enabled'),
+    alertsSettingIftttKey: document.getElementById('alerts-setting-ifttt-key'),
+    alertsSettingIftttEvent: document.getElementById('alerts-setting-ifttt-event'),
+    alertsSettingIftttContainer: document.getElementById('alerts-setting-ifttt-container'),
+    
+    alertsSettingRocketchatEnabled: document.getElementById('alerts-setting-rocketchat-enabled'),
+    alertsSettingRocketchatWebhook: document.getElementById('alerts-setting-rocketchat-webhook'),
+    alertsSettingRocketchatContainer: document.getElementById('alerts-setting-rocketchat-container'),
+    
     alertsSettingsPanel: document.getElementById('alerts-settings-panel'),
     alertsSettingsSaveBtn: document.getElementById('alerts-settings-save-btn'),
     alertsSettingsMessage: document.getElementById('alerts-settings-message'),
     alertsSettingsForm: document.getElementById('alerts-settings-form'),
     
     settingsToolsBtnSystemd: document.getElementById('settings-tools-btn-systemd'),
-    settingsToolsBtnCron: document.getElementById('settings-tools-btn-cron')
+    settingsToolsBtnCron: document.getElementById('settings-tools-btn-cron'),
+
+    firewallStatusBadge: document.getElementById('firewall-status-badge'),
+    firewallMessageText: document.getElementById('firewall-message-text'),
+    firewallRulesBox: document.getElementById('firewall-rules-box')
 };
 
 // -------------------------------------------------------------
@@ -277,12 +323,19 @@ function initApp() {
     el.consoleBtnDetails.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'details'));
     el.consoleBtnBackup.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'backup'));
     el.consoleBtnValidate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'validate'));
+    if (el.consoleBtnCheckUpdate) el.consoleBtnCheckUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'check-update'));
     el.consoleBtnUpdateLgsm.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'update-lgsm'));
     el.consoleBtnForceUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'force-update'));
+    if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'mods-install'));
+    if (el.consoleBtnModsUpdate) el.consoleBtnModsUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'mods-update'));
+    if (el.consoleBtnFastdl) el.consoleBtnFastdl.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'fastdl'));
+    if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'postdetails'));
     el.consoleBtnTestAlert.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'test-alert'));
     
     el.consoleModeTmux.addEventListener('click', () => switchConsoleMode('tmux'));
     el.consoleModeLog.addEventListener('click', () => switchConsoleMode('log'));
+    if (el.consoleModeScript) el.consoleModeScript.addEventListener('click', () => switchConsoleMode('script'));
+    if (el.consoleModeGame) el.consoleModeGame.addEventListener('click', () => switchConsoleMode('game'));
     el.terminalClear.addEventListener('click', () => el.terminalOutput.innerHTML = '');
     el.consoleInputForm.addEventListener('submit', handleConsoleInputSubmit);
     
@@ -314,6 +367,13 @@ function initApp() {
     el.alertsSettingDiscordEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingDiscordEnabled, el.alertsSettingDiscordContainer));
     el.alertsSettingTelegramEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingTelegramEnabled, el.alertsSettingTelegramContainer));
     el.alertsSettingEmailEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingEmailEnabled, el.alertsSettingEmailContainer));
+    if (el.alertsSettingNtfyEnabled) el.alertsSettingNtfyEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingNtfyEnabled, el.alertsSettingNtfyContainer));
+    if (el.alertsSettingSlackEnabled) el.alertsSettingSlackEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingSlackEnabled, el.alertsSettingSlackContainer));
+    if (el.alertsSettingMatrixEnabled) el.alertsSettingMatrixEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingMatrixEnabled, el.alertsSettingMatrixContainer));
+    if (el.alertsSettingPushoverEnabled) el.alertsSettingPushoverEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingPushoverEnabled, el.alertsSettingPushoverContainer));
+    if (el.alertsSettingPushbulletEnabled) el.alertsSettingPushbulletEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletContainer));
+    if (el.alertsSettingIftttEnabled) el.alertsSettingIftttEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingIftttEnabled, el.alertsSettingIftttContainer));
+    if (el.alertsSettingRocketchatEnabled) el.alertsSettingRocketchatEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatContainer));
     
     el.backupsSettingAutoBackupEnabled.addEventListener('change', () => {
         if (el.backupsSettingAutoBackupEnabled.checked) {
@@ -1046,8 +1106,13 @@ function updateConsoleViewButtons() {
         el.consoleBtnDetails.disabled = true;
         el.consoleBtnBackup.disabled = true;
         el.consoleBtnValidate.disabled = true;
+        if (el.consoleBtnCheckUpdate) el.consoleBtnCheckUpdate.disabled = true;
         el.consoleBtnUpdateLgsm.disabled = true;
         el.consoleBtnForceUpdate.disabled = true;
+        if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.disabled = true;
+        if (el.consoleBtnModsUpdate) el.consoleBtnModsUpdate.disabled = true;
+        if (el.consoleBtnFastdl) el.consoleBtnFastdl.disabled = true;
+        if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.disabled = true;
         el.consoleBtnTestAlert.disabled = true;
         el.consoleInputField.disabled = true;
         el.consoleInputSubmit.disabled = true;
@@ -1068,8 +1133,13 @@ function updateConsoleViewButtons() {
     el.consoleBtnDetails.disabled = isBusy;
     el.consoleBtnBackup.disabled = isBusy;
     el.consoleBtnValidate.disabled = isBusy;
+    if (el.consoleBtnCheckUpdate) el.consoleBtnCheckUpdate.disabled = isBusy;
     el.consoleBtnUpdateLgsm.disabled = isBusy;
     el.consoleBtnForceUpdate.disabled = isBusy;
+    if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.disabled = isBusy;
+    if (el.consoleBtnModsUpdate) el.consoleBtnModsUpdate.disabled = isBusy;
+    if (el.consoleBtnFastdl) el.consoleBtnFastdl.disabled = isBusy;
+    if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.disabled = isBusy;
     el.consoleBtnTestAlert.disabled = isBusy;
     el.consoleInputField.disabled = !isRunning || isBusy;
     el.consoleInputSubmit.disabled = !isRunning || isBusy;
@@ -1080,20 +1150,30 @@ function updateConsoleViewButtons() {
     if (isAdmin || canBackup) {
         el.consoleBtnDetails.classList.remove('hidden');
         el.consoleBtnBackup.classList.remove('hidden');
+        if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.classList.remove('hidden');
     } else {
         el.consoleBtnDetails.classList.add('hidden');
         el.consoleBtnBackup.classList.add('hidden');
+        if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.classList.add('hidden');
     }
     
     if (isAdmin) {
         el.consoleBtnValidate.classList.remove('hidden');
+        if (el.consoleBtnCheckUpdate) el.consoleBtnCheckUpdate.classList.remove('hidden');
         el.consoleBtnUpdateLgsm.classList.remove('hidden');
         el.consoleBtnForceUpdate.classList.remove('hidden');
+        if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.classList.remove('hidden');
+        if (el.consoleBtnModsUpdate) el.consoleBtnModsUpdate.classList.remove('hidden');
+        if (el.consoleBtnFastdl) el.consoleBtnFastdl.classList.remove('hidden');
         el.consoleBtnTestAlert.classList.remove('hidden');
     } else {
         el.consoleBtnValidate.classList.add('hidden');
+        if (el.consoleBtnCheckUpdate) el.consoleBtnCheckUpdate.classList.add('hidden');
         el.consoleBtnUpdateLgsm.classList.add('hidden');
         el.consoleBtnForceUpdate.classList.add('hidden');
+        if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.classList.add('hidden');
+        if (el.consoleBtnModsUpdate) el.consoleBtnModsUpdate.classList.add('hidden');
+        if (el.consoleBtnFastdl) el.consoleBtnFastdl.classList.add('hidden');
         el.consoleBtnTestAlert.classList.add('hidden');
     }
     
@@ -1705,8 +1785,46 @@ async function loadSettingsInfo() {
         
         // Populate tools dropdown
         populateSettingsServerSelect();
+
+        // Check Firewall Status & Rights
+        loadFirewallStatus();
     } catch (e) {
         console.error(e);
+    }
+}
+
+async function loadFirewallStatus() {
+    if (!el.firewallStatusBadge) return;
+    try {
+        const res = await apiFetch('/api/system/firewall');
+        if (res.status === 200) {
+            const data = await res.json();
+            if (!data.hasPermission) {
+                el.firewallStatusBadge.className = 'badge badge-warning';
+                el.firewallStatusBadge.textContent = 'Eingeschränkt (Keine Root-Rechte)';
+            } else if (data.active) {
+                el.firewallStatusBadge.className = 'badge badge-success';
+                el.firewallStatusBadge.textContent = `Aktiv (${data.tool.toUpperCase()})`;
+            } else {
+                el.firewallStatusBadge.className = 'badge badge-secondary';
+                el.firewallStatusBadge.textContent = `Inaktiv (${data.tool})`;
+            }
+
+            el.firewallMessageText.textContent = data.message || '';
+
+            if (data.rules && data.rules.length > 0) {
+                el.firewallRulesBox.classList.remove('hidden');
+                el.firewallRulesBox.innerHTML = `<strong>Erkannte Regeln / Offene Ports:</strong><br>` + data.rules.map(r => escapeHtml(r)).join('<br>');
+            } else {
+                el.firewallRulesBox.classList.add('hidden');
+            }
+        }
+    } catch (e) {
+        console.error('Firewall status error:', e);
+        if (el.firewallStatusBadge) {
+            el.firewallStatusBadge.className = 'badge badge-secondary';
+            el.firewallStatusBadge.textContent = 'Unbekannt';
+        }
     }
 }
 
@@ -3730,22 +3848,65 @@ async function loadAlertSettings() {
         if (res.status === 200) {
             const data = await res.json();
             
-            el.alertsSettingDiscordEnabled.checked = data.discord_enabled;
+            el.alertsSettingDiscordEnabled.checked = !!data.discord_enabled;
             el.alertsSettingDiscordWebhook.value = data.discord_webhook || '';
             toggleContainer(el.alertsSettingDiscordEnabled, el.alertsSettingDiscordContainer);
             
-            el.alertsSettingTelegramEnabled.checked = data.telegram_enabled;
+            el.alertsSettingTelegramEnabled.checked = !!data.telegram_enabled;
             el.alertsSettingTelegramToken.value = data.telegram_token || '';
             el.alertsSettingTelegramChatid.value = data.telegram_chatid || '';
             toggleContainer(el.alertsSettingTelegramEnabled, el.alertsSettingTelegramContainer);
             
-            el.alertsSettingEmailEnabled.checked = data.email_enabled;
+            el.alertsSettingEmailEnabled.checked = !!data.email_enabled;
             el.alertsSettingEmailSmtp.value = data.email_smtp || '';
             el.alertsSettingEmailPort.value = data.email_port || '';
             el.alertsSettingEmailUser.value = data.email_user || '';
             el.alertsSettingEmailPass.value = data.email_pass || '';
             el.alertsSettingEmailDest.value = data.email_dest || '';
             toggleContainer(el.alertsSettingEmailEnabled, el.alertsSettingEmailContainer);
+            
+            if (el.alertsSettingNtfyEnabled) {
+                el.alertsSettingNtfyEnabled.checked = !!data.ntfy_enabled;
+                el.alertsSettingNtfyUrl.value = data.ntfy_url || '';
+                el.alertsSettingNtfyTopic.value = data.ntfy_topic || '';
+                el.alertsSettingNtfyToken.value = data.ntfy_authtoken || '';
+                toggleContainer(el.alertsSettingNtfyEnabled, el.alertsSettingNtfyContainer);
+            }
+            if (el.alertsSettingSlackEnabled) {
+                el.alertsSettingSlackEnabled.checked = !!data.slack_enabled;
+                el.alertsSettingSlackWebhook.value = data.slack_webhook || '';
+                toggleContainer(el.alertsSettingSlackEnabled, el.alertsSettingSlackContainer);
+            }
+            if (el.alertsSettingMatrixEnabled) {
+                el.alertsSettingMatrixEnabled.checked = !!data.matrix_enabled;
+                el.alertsSettingMatrixHomeserver.value = data.matrix_homeserver || '';
+                el.alertsSettingMatrixRoomid.value = data.matrix_roomid || '';
+                el.alertsSettingMatrixToken.value = data.matrix_accesstoken || '';
+                toggleContainer(el.alertsSettingMatrixEnabled, el.alertsSettingMatrixContainer);
+            }
+            if (el.alertsSettingPushoverEnabled) {
+                el.alertsSettingPushoverEnabled.checked = !!data.pushover_enabled;
+                el.alertsSettingPushoverToken.value = data.pushover_token || '';
+                el.alertsSettingPushoverUser.value = data.pushover_user || '';
+                toggleContainer(el.alertsSettingPushoverEnabled, el.alertsSettingPushoverContainer);
+            }
+            if (el.alertsSettingPushbulletEnabled) {
+                el.alertsSettingPushbulletEnabled.checked = !!data.pushbullet_enabled;
+                el.alertsSettingPushbulletToken.value = data.pushbullet_token || '';
+                el.alertsSettingPushbulletChannel.value = data.pushbullet_channel || '';
+                toggleContainer(el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletContainer);
+            }
+            if (el.alertsSettingIftttEnabled) {
+                el.alertsSettingIftttEnabled.checked = !!data.ifttt_enabled;
+                el.alertsSettingIftttKey.value = data.ifttt_key || '';
+                el.alertsSettingIftttEvent.value = data.ifttt_event || '';
+                toggleContainer(el.alertsSettingIftttEnabled, el.alertsSettingIftttContainer);
+            }
+            if (el.alertsSettingRocketchatEnabled) {
+                el.alertsSettingRocketchatEnabled.checked = !!data.rocketchat_enabled;
+                el.alertsSettingRocketchatWebhook.value = data.rocketchat_webhook || '';
+                toggleContainer(el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatContainer);
+            }
         }
     } catch (err) {
         console.error('Error loading alert settings:', err);
@@ -3763,22 +3924,60 @@ async function saveAlertSettings(e) {
     el.alertsSettingsSaveBtn.disabled = true;
     
     try {
+        const payload = {
+            discord_enabled: el.alertsSettingDiscordEnabled.checked,
+            discord_webhook: el.alertsSettingDiscordWebhook.value.trim(),
+            telegram_enabled: el.alertsSettingTelegramEnabled.checked,
+            telegram_token: el.alertsSettingTelegramToken.value.trim(),
+            telegram_chatid: el.alertsSettingTelegramChatid.value.trim(),
+            email_enabled: el.alertsSettingEmailEnabled.checked,
+            email_smtp: el.alertsSettingEmailSmtp.value.trim(),
+            email_port: el.alertsSettingEmailPort.value.trim(),
+            email_user: el.alertsSettingEmailUser.value.trim(),
+            email_pass: el.alertsSettingEmailPass.value.trim(),
+            email_dest: el.alertsSettingEmailDest.value.trim()
+        };
+
+        if (el.alertsSettingNtfyEnabled) {
+            payload.ntfy_enabled = el.alertsSettingNtfyEnabled.checked;
+            payload.ntfy_url = el.alertsSettingNtfyUrl.value.trim();
+            payload.ntfy_topic = el.alertsSettingNtfyTopic.value.trim();
+            payload.ntfy_authtoken = el.alertsSettingNtfyToken.value.trim();
+        }
+        if (el.alertsSettingSlackEnabled) {
+            payload.slack_enabled = el.alertsSettingSlackEnabled.checked;
+            payload.slack_webhook = el.alertsSettingSlackWebhook.value.trim();
+        }
+        if (el.alertsSettingMatrixEnabled) {
+            payload.matrix_enabled = el.alertsSettingMatrixEnabled.checked;
+            payload.matrix_homeserver = el.alertsSettingMatrixHomeserver.value.trim();
+            payload.matrix_roomid = el.alertsSettingMatrixRoomid.value.trim();
+            payload.matrix_accesstoken = el.alertsSettingMatrixToken.value.trim();
+        }
+        if (el.alertsSettingPushoverEnabled) {
+            payload.pushover_enabled = el.alertsSettingPushoverEnabled.checked;
+            payload.pushover_token = el.alertsSettingPushoverToken.value.trim();
+            payload.pushover_user = el.alertsSettingPushoverUser.value.trim();
+        }
+        if (el.alertsSettingPushbulletEnabled) {
+            payload.pushbullet_enabled = el.alertsSettingPushbulletEnabled.checked;
+            payload.pushbullet_token = el.alertsSettingPushbulletToken.value.trim();
+            payload.pushbullet_channel = el.alertsSettingPushbulletChannel.value.trim();
+        }
+        if (el.alertsSettingIftttEnabled) {
+            payload.ifttt_enabled = el.alertsSettingIftttEnabled.checked;
+            payload.ifttt_key = el.alertsSettingIftttKey.value.trim();
+            payload.ifttt_event = el.alertsSettingIftttEvent.value.trim();
+        }
+        if (el.alertsSettingRocketchatEnabled) {
+            payload.rocketchat_enabled = el.alertsSettingRocketchatEnabled.checked;
+            payload.rocketchat_webhook = el.alertsSettingRocketchatWebhook.value.trim();
+        }
+
         const res = await apiFetch(`/api/servers/${serverId}/alerts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                discord_enabled: el.alertsSettingDiscordEnabled.checked,
-                discord_webhook: el.alertsSettingDiscordWebhook.value.trim(),
-                telegram_enabled: el.alertsSettingTelegramEnabled.checked,
-                telegram_token: el.alertsSettingTelegramToken.value.trim(),
-                telegram_chatid: el.alertsSettingTelegramChatid.value.trim(),
-                email_enabled: el.alertsSettingEmailEnabled.checked,
-                email_smtp: el.alertsSettingEmailSmtp.value.trim(),
-                email_port: el.alertsSettingEmailPort.value.trim(),
-                email_user: el.alertsSettingEmailUser.value.trim(),
-                email_pass: el.alertsSettingEmailPass.value.trim(),
-                email_dest: el.alertsSettingEmailDest.value.trim()
-            })
+            body: JSON.stringify(payload)
         });
         
         el.alertsSettingsSaveBtn.disabled = false;
@@ -3804,34 +4003,32 @@ async function saveAlertSettings(e) {
 }
 
 function resetSettingsAlerts() {
-    el.alertsSettingDiscordEnabled.disabled = true;
-    el.alertsSettingDiscordEnabled.checked = false;
-    el.alertsSettingDiscordWebhook.disabled = true;
-    el.alertsSettingDiscordWebhook.value = '';
-    el.alertsSettingDiscordContainer.classList.add('hidden');
-    
-    el.alertsSettingTelegramEnabled.disabled = true;
-    el.alertsSettingTelegramEnabled.checked = false;
-    el.alertsSettingTelegramToken.disabled = true;
-    el.alertsSettingTelegramToken.value = '';
-    el.alertsSettingTelegramChatid.disabled = true;
-    el.alertsSettingTelegramChatid.value = '';
-    el.alertsSettingTelegramContainer.classList.add('hidden');
-    
-    el.alertsSettingEmailEnabled.disabled = true;
-    el.alertsSettingEmailEnabled.checked = false;
-    el.alertsSettingEmailSmtp.disabled = true;
-    el.alertsSettingEmailSmtp.value = '';
-    el.alertsSettingEmailPort.disabled = true;
-    el.alertsSettingEmailPort.value = '';
-    el.alertsSettingEmailUser.disabled = true;
-    el.alertsSettingEmailUser.value = '';
-    el.alertsSettingEmailPass.disabled = true;
-    el.alertsSettingEmailPass.value = '';
-    el.alertsSettingEmailDest.disabled = true;
-    el.alertsSettingEmailDest.value = '';
-    el.alertsSettingEmailContainer.classList.add('hidden');
-    
+    const alertsFields = [
+        [el.alertsSettingDiscordEnabled, el.alertsSettingDiscordWebhook, el.alertsSettingDiscordContainer],
+        [el.alertsSettingTelegramEnabled, el.alertsSettingTelegramToken, el.alertsSettingTelegramContainer, el.alertsSettingTelegramChatid],
+        [el.alertsSettingEmailEnabled, el.alertsSettingEmailSmtp, el.alertsSettingEmailContainer, el.alertsSettingEmailPort, el.alertsSettingEmailUser, el.alertsSettingEmailPass, el.alertsSettingEmailDest],
+        [el.alertsSettingNtfyEnabled, el.alertsSettingNtfyUrl, el.alertsSettingNtfyContainer, el.alertsSettingNtfyTopic, el.alertsSettingNtfyToken],
+        [el.alertsSettingSlackEnabled, el.alertsSettingSlackWebhook, el.alertsSettingSlackContainer],
+        [el.alertsSettingMatrixEnabled, el.alertsSettingMatrixHomeserver, el.alertsSettingMatrixContainer, el.alertsSettingMatrixRoomid, el.alertsSettingMatrixToken],
+        [el.alertsSettingPushoverEnabled, el.alertsSettingPushoverToken, el.alertsSettingPushoverContainer, el.alertsSettingPushoverUser],
+        [el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletToken, el.alertsSettingPushbulletContainer, el.alertsSettingPushbulletChannel],
+        [el.alertsSettingIftttEnabled, el.alertsSettingIftttKey, el.alertsSettingIftttContainer, el.alertsSettingIftttEvent],
+        [el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatWebhook, el.alertsSettingRocketchatContainer]
+    ];
+
+    alertsFields.forEach(group => {
+        group.forEach(elem => {
+            if (!elem) return;
+            if (elem.tagName === 'INPUT') {
+                elem.disabled = true;
+                if (elem.type === 'checkbox') elem.checked = false;
+                else elem.value = '';
+            } else if (elem.classList && elem.classList.contains('mt-2')) {
+                elem.classList.add('hidden');
+            }
+        });
+    });
+
     el.alertsSettingsSaveBtn.disabled = true;
     el.alertsSettingsMessage.textContent = '';
 }

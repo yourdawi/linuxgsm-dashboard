@@ -267,6 +267,64 @@ func StreamMockAction(w http.ResponseWriter, r *http.Request, action string, ser
 		logLine("IMPORTANT: Make sure to save this password in a secure place!", 100)
 		logLine("Starting TeamSpeak 3 instance back up...", 200)
 		updateStatusCallback("running")
+
+	case "check-update":
+		logLine(fmt.Sprintf("[%s] Running light update check for %s...", time.Now().Format("15:04:05"), serverID), 100)
+		logLine("Querying Steam API for latest build ID...", 200)
+		logLine("Local build ID: 1048576, Remote build ID: 1048576", 150)
+		logLine("[ OK ] No update available. Your server is up to date.", 100)
+
+	case "mods-install":
+		logLine(fmt.Sprintf("[%s] Fetching available mods for %s...", time.Now().Format("15:04:05"), serverID), 100)
+		logLine("Connecting to mod repository...", 200)
+		logLine("Available mods: Oxide, SourceMod, Metamod, AMX Mod X", 150)
+		logLine("Installing Oxide Mod (v2.0.5)...", 300)
+		logLine("Extracting zip archive to serverfiles... [100%]", 400)
+		logLine("Updating lgsm/mods/installed-mods.txt...", 100)
+		logLine("[ OK ] Mod installed successfully!", 100)
+
+	case "mods-update":
+		logLine(fmt.Sprintf("[%s] Checking for mod updates...", time.Now().Format("15:04:05")), 100)
+		logLine("Reading lgsm/mods/installed-mods.txt...", 100)
+		logLine("Found installed mods: Oxide", 100)
+		logLine("Updating Oxide Mod to latest release...", 300)
+		logLine("[ OK ] All mods updated successfully!", 100)
+
+	case "mods-remove":
+		logLine(fmt.Sprintf("[%s] Removing installed mod...", time.Now().Format("15:04:05")), 100)
+		logLine("Reading file list lgsm/mods/oxide-files.txt...", 150)
+		logLine("Removing mod files while preserving whitelisted configs...", 250)
+		logLine("[ OK ] Mod removed successfully.", 100)
+
+	case "fastdl":
+		logLine(fmt.Sprintf("[%s] Generating FastDL compressed web files for %s...", time.Now().Format("15:04:05"), serverID), 100)
+		logLine("Scanning maps, sound, materials, and models...", 200)
+		logLine("Compressing files with bzip2...", 300)
+		logLine("Writing web directory: /home/"+serverID+"/public_html/fastdl", 200)
+		logLine("[ OK ] FastDL generation complete! 14 files compressed.", 100)
+
+	case "map-compressor":
+		logLine(fmt.Sprintf("[%s] Running map compressor for Unreal Engine...", time.Now().Format("15:04:05")), 100)
+		logLine("Scanning map files (.unr, .ut2)...", 200)
+		logLine("Compressing maps to .uz2 archives...", 300)
+		logLine("[ OK ] Maps compressed successfully.", 100)
+
+	case "postdetails":
+		logLine(fmt.Sprintf("[%s] Generating server details dump for support...", time.Now().Format("15:04:05")), 100)
+		logLine("Gathering system info, logs, and server stats...", 200)
+		logLine("Posting payload to termbin.com...", 300)
+		logLine("Support details posted: https://termbin.com/mock-termbin-link", 100)
+
+	case "skeleton":
+		logLine(fmt.Sprintf("[%s] Generating default skeleton configs for %s...", time.Now().Format("15:04:05"), serverID), 100)
+		logLine("Writing template files into lgsm/config-lgsm/"+serverID+"...", 200)
+		logLine("[ OK ] Skeleton config files created successfully.", 100)
+
+	case "debug":
+		logLine(fmt.Sprintf("[%s] Launching interactive debug mode...", time.Now().Format("15:04:05")), 100)
+		logLine("Checking environment and GLIBC versions...", 150)
+		logLine("Server stdout stream capture active.", 100)
+		logLine("[ DEBUG ] Game engine init routine finished cleanly.", 100)
 	}
 
 	// Send exit status

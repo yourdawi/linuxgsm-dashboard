@@ -97,18 +97,20 @@ On first launch, it will:
 
 ### 🎮 Core Server Management
 - 🖥️ **Interactive Server Console:** Real-time visual tmux pane updates paired with a **command input bar** to send console/RCON commands directly to the server (uses secure `tmux send-keys` escaping).
-- 🛠️ **Advanced Maintenance Actions:** Execute LinuxGSM actions like `update-lgsm` (update core), `force-update` (re-download files), and `test-alert` directly from the Live Console view.
+- 📜 **Multi-Log Viewer:** Toggle between 4 log modes directly in the console view: **Tmux Live Pane**, **Console Log**, **Script Activity Log** (`log/script/`), and **Game Engine Log** (`log/game/`).
+- 🛠️ **Expanded LinuxGSM Action Suite:** Execute LinuxGSM actions like `check-update`, `update-lgsm`, `force-update`, `mods-install`, `mods-update`, `fastdl` (Bzip2 FastDL generator), `postdetails` (termbin log upload), `test-alert`, and `debug` directly from the Live Console view.
 - 🎲 **Game-Specific Actions:** Dynamic panel displaying game-specific tasks (e.g., Map Wipes and Full Wipes for Rust, or Server Query Password resets for Teamspeak 3).
 - 👥 **Multi-Instance Scanning:** Scans system user home directories for all executable scripts and verifies their headers to auto-detect any number of LinuxGSM instances under a single user.
 - ❌ **Clean Server Deletion:** Safely removes instances. Wipes crontabs, disables systemd, and performs system user purges (`userdel -r`) with safety overlay confirmations.
 
-### 💾 Backups & Restoration
+### 💾 Backups & Server Migration
 - 💾 **Complete Backup Suite:** View, download, delete, and restore server backups. Restoration runs in real-time, automatically stopping and starting the server safely to prevent corruption.
-- 📤 **Backup Uploads:** Upload backup archives (`.tar.gz`) directly to server instances. Features automatic ownership adjustment (`chown`) to prevent LinuxGSM file permission errors.
+- 📤 **Backup Uploads & Migration Import/Export:** Download backup `.tar.gz` archives as standalone migration packages to transfer instances across hosts, or upload existing backups with automatic ownership adjustment (`chown`).
 - ⚙️ **Backup Retention & Scheduling:** Configure retention limits (`maxbackups`, `maxbackupdays`, `stoponbackup`) and automate cronjob schedules by writing directly to the gameserver user's crontab.
 
 ### ⚙️ Administration & Automation
-- 🔔 **Alerts & Notification Webhooks:** Configure Discord webhooks, Telegram bots, and E-Mail SMTP settings inside settings to write variables directly into Shell configuration files.
+- 🔔 **Complete 10-Channel Alert Suite:** Full webhook & credentials management for all 10 LinuxGSM notification channels: Discord, Telegram, E-Mail SMTP, Matrix, ntfy, Slack, Pushover, Pushbullet, IFTTT, and Rocket.Chat.
+- 🛡️ **Firewall Inspector & Privilege Probe:** Automatically inspects UFW and Firewalld status, detects open server ports, and checks dashboard root permissions. Provides copy-paste `sudo` commands when running in container/non-root mode.
 - ⚡ **One-Click Systemd & Cron Installation:** Automatically register sandboxed Systemd boot autostarts and maintenance cronjob routines into the crontab with one click.
 - 📝 **Bidirectional Config Editor:** Safe configuration editing within `/home/<user>/lgsm/config-lgsm/<script>/*.cfg` featuring a parsed **Form View** and a **Raw View** with path-traversal protection.
 - 👥 **Multi-User Administration:** Create/update/delete dashboard users with role-based access control (RBAC) and restricted server-level permissions (`start`, `stop`, `restart`, `console`, `config`, `backup`).
@@ -116,6 +118,7 @@ On first launch, it will:
 
 ### 🛡️ Hardened Security & Efficiency
 - 🖥️ **Resource-Efficient Backend (Go):** Compiled static binary consuming only ~10-15MB RAM with embedded web assets for zero-dependency deployment.
+- 🔒 **Symlink & Path Traversal Hardening:** Strict path validation using `filepath.EvalSymlinks` to prevent symlink traversal attacks outside allowed server directories.
 - 🛡️ **Systemd Security Sandboxing:** Hardened systemd daemon configuration featuring isolated sandboxing (`ProtectSystem=true`, `PrivateTmp=false` for shared tmux sockets, and a restricted `CapabilityBoundingSet` limiting root powers).
 - 🔒 **Security Hardened Input Validation:** Filters all incoming API queries against strict backend whitelist patterns, blocking shell command injection vectors.
 - 📊 **Host & Process Monitoring:** Real-time CPU, RAM, and Disk host gauges, custom canvas historical graphs, and user process metrics mapping.
