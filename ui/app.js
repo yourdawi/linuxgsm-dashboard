@@ -127,6 +127,8 @@ const el = {
     settingsPid: document.getElementById('settings-pid'),
     settingsMode: document.getElementById('settings-mode'),
     settingsServerSelect: document.getElementById('settings-server-select'),
+    settingsServerTagInput: document.getElementById('settings-server-tag-input'),
+    settingsServerTagSaveBtn: document.getElementById('settings-server-tag-save-btn'),
     settingsToolsArea: document.getElementById('settings-tools-area'),
     templateSystemd: document.getElementById('template-systemd'),
     templateCron: document.getElementById('template-cron'),
@@ -402,6 +404,7 @@ function initApp() {
     // Settings listeners
     el.settingsPasswordForm.addEventListener('submit', changePassword);
     el.settingsServerSelect.addEventListener('change', handleSettingsServerChange);
+    if (el.settingsServerTagSaveBtn) el.settingsServerTagSaveBtn.addEventListener('click', saveServerTagFromSettings);
     el.settingsToolsBtnSystemd.addEventListener('click', installSystemdService);
     el.settingsToolsBtnCron.addEventListener('click', installCronjobs);
     
@@ -1079,7 +1082,17 @@ function createServerCard(server) {
         }
     }
     
-    const tagBadgeHtml = server.tag ? `<span class="badge badge-secondary" style="font-size:0.7rem; margin-left:0.5rem;">🏷️ ${escapeHtml(server.tag)}</span>` : '';
+    let tagBadgeHtml = '';
+    if (isAdmin) {
+        tagBadgeHtml = `<span class="badge ${server.tag ? 'badge-secondary' : 'badge-secondary'}" 
+            style="font-size:0.7rem; margin-left:0.5rem; cursor:pointer; opacity: ${server.tag ? '1' : '0.6'}; border: 1px dashed rgba(255,255,255,0.3);" 
+            onclick="editServerTag('${server.id}', '${escapeJs(server.tag || '')}')" 
+            title="${state.language === 'de' ? 'Tag / Cluster bearbeiten' : 'Edit Tag / Cluster'}">
+            🏷️ ${server.tag ? escapeHtml(server.tag) : '+ Tag'}
+        </span>`;
+    } else if (server.tag) {
+        tagBadgeHtml = `<span class="badge badge-secondary" style="font-size:0.7rem; margin-left:0.5rem;">🏷️ ${escapeHtml(server.tag)}</span>`;
+    }
     
     let queryRowHtml = '';
     if (server.query_data) {
@@ -2091,6 +2104,10 @@ function handleSettingsServerChange() {
     const server = state.servers.find(s => s.id === serverID);
     if (!server) return;
     
+    if (el.settingsServerTagInput) {
+        el.settingsServerTagInput.value = server.tag || '';
+    }
+
     loadCronSchedule(serverID);
     
     // 1. Generate Systemd template
@@ -2132,22 +2149,30 @@ WantedBy=multi-user.target`;
     // 3. Configure alerts and load settings
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
     if (isAdmin) {
-        el.alertsSettingDiscordEnabled.disabled = false;
-        el.alertsSettingDiscordWebhook.disabled = false;
-        el.alertsSettingTelegramEnabled.disabled = false;
-        el.alertsSettingTelegramToken.disabled = false;
-        el.alertsSettingTelegramChatid.disabled = false;
-        el.alertsSettingEmailEnabled.disabled = false;
-        el.alertsSettingEmailSmtp.disabled = false;
-        el.alertsSettingEmailPort.disabled = false;
-        el.alertsSettingEmailUser.disabled = false;
-        el.alertsSettingEmailPass.disabled = false;
-        el.alertsSettingEmailDest.disabled = false;
-        el.alertsSettingsSaveBtn.disabled = false;
+        setAlertFieldsDisabled(false);
         loadAlertSettings();
     } else {
         resetSettingsAlerts();
     }
+}
+
+function setAlertFieldsDisabled(disabled) {
+    const alertElements = [
+        el.alertsSettingDiscordEnabled, el.alertsSettingDiscordWebhook,
+        el.alertsSettingTelegramEnabled, el.alertsSettingTelegramToken, el.alertsSettingTelegramChatid,
+        el.alertsSettingEmailEnabled, el.alertsSettingEmailSmtp, el.alertsSettingEmailPort, el.alertsSettingEmailUser, el.alertsSettingEmailPass, el.alertsSettingEmailDest,
+        el.alertsSettingNtfyEnabled, el.alertsSettingNtfyUrl, el.alertsSettingNtfyTopic, el.alertsSettingNtfyToken,
+        el.alertsSettingSlackEnabled, el.alertsSettingSlackWebhook,
+        el.alertsSettingMatrixEnabled, el.alertsSettingMatrixHomeserver, el.alertsSettingMatrixRoomid, el.alertsSettingMatrixToken,
+        el.alertsSettingPushoverEnabled, el.alertsSettingPushoverToken, el.alertsSettingPushoverUser,
+        el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletToken, el.alertsSettingPushbulletChannel,
+        el.alertsSettingIftttEnabled, el.alertsSettingIftttKey, el.alertsSettingIftttEvent,
+        el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatWebhook,
+        el.alertsSettingsSaveBtn
+    ];
+    alertElements.forEach(elem => {
+        if (elem) elem.disabled = disabled;
+    });
 }
 
 // -------------------------------------------------------------
@@ -4946,6 +4971,64 @@ function renderAuditTable(logs) {
 }
 
 if (el.auditBtnRefresh) el.auditBtnRefresh.addEventListener('click', loadAuditLogs);
+
+async function editServerTag(serverId, currentTag) {
+    const isDe = state.language === 'de';
+    const promptText = isDe 
+        ? 'Gib den Tag / Cluster-Namen für diesen Server ein (z. B. Cluster-1, Public, Event - oder leer lassen zum Entfernen):' 
+        : 'Enter tag / cluster name for this server (e.g. Cluster-1, Public, Event - or leave blank to remove):';
+    
+    const newTag = prompt(promptText, currentTag || '');
+    if (newTag === null) return;
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/tag`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag: newTag.trim() })
+        });
+        if (res.status === 200) {
+            const server = state.servers.find(s => s.id === serverId);
+            if (server) server.tag = newTag.trim();
+            renderServersGrid();
+            if (el.settingsServerSelect && el.settingsServerSelect.value === serverId && el.settingsServerTagInput) {
+                el.settingsServerTagInput.value = newTag.trim();
+            }
+        } else {
+            const data = await res.json();
+            alert((isDe ? 'Fehler beim Speichern des Tags: ' : 'Error saving tag: ') + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        console.error('Error setting tag:', e);
+        alert((isDe ? 'Fehler beim Speichern des Tags: ' : 'Error saving tag: ') + e.message);
+    }
+}
+
+async function saveServerTagFromSettings() {
+    const serverId = el.settingsServerSelect ? el.settingsServerSelect.value : '';
+    if (!serverId) return;
+    const tagVal = el.settingsServerTagInput ? el.settingsServerTagInput.value.trim() : '';
+    const isDe = state.language === 'de';
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/tag`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag: tagVal })
+        });
+        if (res.status === 200) {
+            const server = state.servers.find(s => s.id === serverId);
+            if (server) server.tag = tagVal;
+            renderServersGrid();
+            alert(isDe ? 'Server-Tag erfolgreich gespeichert!' : 'Server tag saved successfully!');
+        } else {
+            const data = await res.json();
+            alert((isDe ? 'Fehler beim Speichern: ' : 'Error saving: ') + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert((isDe ? 'Fehler beim Speichern: ' : 'Error saving: ') + e.message);
+    }
+}
 
 // Initialize Macros and File Manager
 initConsoleMacrosAndHistory();
