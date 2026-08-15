@@ -228,8 +228,8 @@ const el = {
     // File Manager & Audit Log elements
     menuFilesTab: document.getElementById('menu-files-tab'),
     menuAuditTab: document.getElementById('menu-audit-tab'),
-    sectionFiles: document.getElementById('section-files'),
-    sectionAudit: document.getElementById('section-audit'),
+    sectionFiles: document.getElementById('view-files'),
+    sectionAudit: document.getElementById('view-audit'),
     filesServerSelect: document.getElementById('files-server-select'),
     filesTableBody: document.getElementById('files-table-body'),
     filesEditorCard: document.getElementById('files-editor-card'),
@@ -537,7 +537,8 @@ function handleRouting() {
     if (state.currentUser) {
         const isAdmin = state.currentUser.role === 'admin';
         const hasBackup = state.currentUser.permissions && state.currentUser.permissions.includes('backup');
-        if (viewName === 'users' || viewName === 'installer') {
+        const hasFiles = state.currentUser.permissions && (state.currentUser.permissions.includes('files') || state.currentUser.permissions.includes('config'));
+        if (viewName === 'users' || viewName === 'installer' || viewName === 'audit') {
             if (!isAdmin) {
                 window.location.hash = '#dashboard';
                 return;
@@ -545,6 +546,12 @@ function handleRouting() {
         }
         if (viewName === 'backups') {
             if (!isAdmin && !hasBackup) {
+                window.location.hash = '#dashboard';
+                return;
+            }
+        }
+        if (viewName === 'files') {
+            if (!isAdmin && !hasFiles) {
                 window.location.hash = '#dashboard';
                 return;
             }

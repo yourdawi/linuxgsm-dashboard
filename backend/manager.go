@@ -604,6 +604,7 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 	// Execute command via runuser: runuser -l <user> -c "cd /home/<user> && ./<script> <action>"
 	execCmd := fmt.Sprintf("cd /home/%s && ./%s %s", srv.User, srv.Script, action)
 	cmd := exec.Command("runuser", "-l", srv.User, "-c", execCmd)
+	cmd.Stdin = strings.NewReader("y\ny\ny\n")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -2537,6 +2538,7 @@ func (im *InstanceManager) RunActionDirect(serverID, action string) error {
 	im.mu.Unlock()
 
 	cmd := exec.Command("runuser", "-u", user, "--", fmt.Sprintf("/home/%s/%s", user, script), action)
+	cmd.Stdin = strings.NewReader("y\ny\ny\n")
 	return cmd.Start()
 }
 
