@@ -908,27 +908,27 @@ function renderServersGridQuiet() {
     filtered.forEach(server => {
         const card = document.getElementById(`server-card-${server.id}`);
         if (card) {
-            // Update status badge
-            const badge = card.querySelector('.badge');
+            // Update status badge (using status-badge class to avoid collision with tag-badge)
+            const badge = card.querySelector('.status-badge') || card.querySelector('.card-header > .badge');
             const statusDot = card.querySelector('.status-dot');
             
             card.className = `server-card ${server.status}`;
             
             let statusText = server.status;
             if (server.status === 'running') {
-                badge.className = 'badge badge-success';
-                statusDot.className = 'status-dot status-online';
+                if (badge) badge.className = 'badge status-badge badge-success';
+                if (statusDot) statusDot.className = 'status-dot status-online';
                 statusText = t('status-online');
             } else if (server.status === 'stopped') {
-                badge.className = 'badge badge-danger';
-                statusDot.className = 'status-dot status-offline';
+                if (badge) badge.className = 'badge status-badge badge-danger';
+                if (statusDot) statusDot.className = 'status-dot status-offline';
                 statusText = t('status-offline');
             } else {
-                badge.className = 'badge badge-warning badge-pulse animate-pulse';
-                statusDot.className = 'status-dot status-busy';
+                if (badge) badge.className = 'badge status-badge badge-warning badge-pulse animate-pulse';
+                if (statusDot) statusDot.className = 'status-dot status-busy';
                 statusText = server.status === 'installing' ? t('status-installing') : t('status-updating');
             }
-            badge.innerHTML = `<span class="${statusDot.className}"></span> ${statusText}`;
+            if (badge) badge.innerHTML = `<span class="${statusDot ? statusDot.className : ''}"></span> ${statusText}`;
             
             // Update resource meters
             const cpuMeter = card.querySelector('.cpu-meter-fill');
@@ -1084,14 +1084,14 @@ function createServerCard(server) {
     
     let tagBadgeHtml = '';
     if (isAdmin) {
-        tagBadgeHtml = `<span class="badge ${server.tag ? 'badge-secondary' : 'badge-secondary'}" 
+        tagBadgeHtml = `<span class="badge tag-badge ${server.tag ? 'badge-secondary' : 'badge-secondary'}" 
             style="font-size:0.7rem; margin-left:0.5rem; cursor:pointer; opacity: ${server.tag ? '1' : '0.6'}; border: 1px dashed rgba(255,255,255,0.3);" 
             onclick="editServerTag('${server.id}', '${escapeJs(server.tag || '')}')" 
             title="${state.language === 'de' ? 'Tag / Cluster bearbeiten' : 'Edit Tag / Cluster'}">
             🏷️ ${server.tag ? escapeHtml(server.tag) : '+ Tag'}
         </span>`;
     } else if (server.tag) {
-        tagBadgeHtml = `<span class="badge badge-secondary" style="font-size:0.7rem; margin-left:0.5rem;">🏷️ ${escapeHtml(server.tag)}</span>`;
+        tagBadgeHtml = `<span class="badge tag-badge badge-secondary" style="font-size:0.7rem; margin-left:0.5rem;">🏷️ ${escapeHtml(server.tag)}</span>`;
     }
     
     let queryRowHtml = '';
@@ -1121,7 +1121,7 @@ function createServerCard(server) {
                     </div>
                 </div>
             </div>
-            <span class="badge ${badgeClass}">
+            <span class="badge status-badge ${badgeClass}">
                 <span class="status-dot ${dotClass}"></span>
                 ${statusText}
             </span>

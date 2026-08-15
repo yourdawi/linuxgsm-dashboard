@@ -205,8 +205,12 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 		}
 	}
 
-	// Keep track of active statuses like 'installing' or 'updating'
+	// Keep track of active statuses like 'installing' or 'updating' and retain tags
+	tagsMap := loadServerTags()
 	for k, v := range detected {
+		if t, ok := tagsMap[k]; ok {
+			v.Tag = t
+		}
 		if existing, ok := im.instances[k]; ok {
 			if existing.Status == "installing" || existing.Status == "updating" {
 				// Don't overwrite active operations statuses
@@ -217,6 +221,9 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 				v.ParsedPorts = existing.ParsedPorts
 				v.Name = existing.Name
 				v.Port = existing.Port
+			}
+			if existing.Tag != "" {
+				v.Tag = existing.Tag
 			}
 		}
 	}
@@ -2512,6 +2519,26 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 	return nil
 }
 
+const serverTagsFilePath = "server_tags.json"
+
+func loadServerTags() map[string]string {
+	tags := make(map[string]string)
+	data, err := os.ReadFile(serverTagsFilePath)
+	if err != nil {
+		return tags
+	}
+	_ = json.Unmarshal(data, &tags)
+	return tags
+}
+
+func saveServerTags(tags map[string]string) error {
+	data, err := json.MarshalIndent(tags, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(serverTagsFilePath, data, 0644)
+}
+
 func (im *InstanceManager) SetServerTag(serverID string, tag string) error {
 	im.mu.Lock()
 	defer im.mu.Unlock()
@@ -2521,6 +2548,15 @@ func (im *InstanceManager) SetServerTag(serverID string, tag string) error {
 		return fmt.Errorf("server %s not found", serverID)
 	}
 	srv.Tag = tag
+
+	tags := loadServerTags()
+	if tag == "" {
+		delete(tags, serverID)
+	} else {
+		tags[serverID] = tag
+	}
+	_ = saveServerTags(tags)
+
 	return nil
 }
 
