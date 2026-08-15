@@ -127,6 +127,8 @@ const el = {
     settingsPid: document.getElementById('settings-pid'),
     settingsMode: document.getElementById('settings-mode'),
     settingsServerSelect: document.getElementById('settings-server-select'),
+    settingsServerTagInput: document.getElementById('settings-server-tag-input'),
+    settingsServerTagSaveBtn: document.getElementById('settings-server-tag-save-btn'),
     settingsToolsArea: document.getElementById('settings-tools-area'),
     templateSystemd: document.getElementById('template-systemd'),
     templateCron: document.getElementById('template-cron'),
@@ -224,6 +226,29 @@ const el = {
     consoleBtnPostdetails: document.getElementById('console-btn-postdetails'),
     consoleBtnTestAlert: document.getElementById('console-btn-test-alert'),
     consoleGameActions: document.getElementById('console-game-actions'),
+    
+    // File Manager & Audit Log elements
+    menuFilesTab: document.getElementById('menu-files-tab'),
+    menuAuditTab: document.getElementById('menu-audit-tab'),
+    sectionFiles: document.getElementById('view-files'),
+    sectionAudit: document.getElementById('view-audit'),
+    filesServerSelect: document.getElementById('files-server-select'),
+    filesTableBody: document.getElementById('files-table-body'),
+    filesEditorCard: document.getElementById('files-editor-card'),
+    filesEditorTextarea: document.getElementById('files-editor-textarea'),
+    filesEditingFilename: document.getElementById('files-editing-filename'),
+    filesBtnSave: document.getElementById('files-btn-save'),
+    filesBtnCloseEditor: document.getElementById('files-btn-close-editor'),
+    filesBtnUpload: document.getElementById('files-btn-upload'),
+    filesInputUpload: document.getElementById('files-input-upload'),
+    filesBtnRefresh: document.getElementById('files-btn-refresh'),
+    filesBreadcrumb: document.getElementById('files-breadcrumb'),
+    auditTableBody: document.getElementById('audit-table-body'),
+    auditBtnRefresh: document.getElementById('audit-btn-refresh'),
+    modalMods: document.getElementById('modal-mods'),
+    modalModsList: document.getElementById('modal-mods-list'),
+    btnCloseModalMods: document.getElementById('btn-close-modal-mods'),
+    btnCloseModsModalFooter: document.getElementById('btn-close-mods-modal-footer'),
     
     alertsSettingDiscordEnabled: document.getElementById('alerts-setting-discord-enabled'),
     alertsSettingDiscordWebhook: document.getElementById('alerts-setting-discord-webhook'),
@@ -379,6 +404,7 @@ function initApp() {
     // Settings listeners
     el.settingsPasswordForm.addEventListener('submit', changePassword);
     el.settingsServerSelect.addEventListener('change', handleSettingsServerChange);
+    if (el.settingsServerTagSaveBtn) el.settingsServerTagSaveBtn.addEventListener('click', saveServerTagFromSettings);
     el.settingsToolsBtnSystemd.addEventListener('click', installSystemdService);
     el.settingsToolsBtnCron.addEventListener('click', installCronjobs);
     
@@ -514,7 +540,8 @@ function handleRouting() {
     if (state.currentUser) {
         const isAdmin = state.currentUser.role === 'admin';
         const hasBackup = state.currentUser.permissions && state.currentUser.permissions.includes('backup');
-        if (viewName === 'users' || viewName === 'installer') {
+        const hasFiles = state.currentUser.permissions && (state.currentUser.permissions.includes('files') || state.currentUser.permissions.includes('config'));
+        if (viewName === 'users' || viewName === 'installer' || viewName === 'audit') {
             if (!isAdmin) {
                 window.location.hash = '#dashboard';
                 return;
@@ -522,6 +549,12 @@ function handleRouting() {
         }
         if (viewName === 'backups') {
             if (!isAdmin && !hasBackup) {
+                window.location.hash = '#dashboard';
+                return;
+            }
+        }
+        if (viewName === 'files') {
+            if (!isAdmin && !hasFiles) {
                 window.location.hash = '#dashboard';
                 return;
             }
@@ -535,7 +568,7 @@ function handleRouting() {
     }
     
     // Hide all views, deactivate menu items
-    el.views.forEach(v => v.classList.add('hidden'));
+    document.querySelectorAll('.app-view').forEach(v => v.classList.add('hidden'));
     el.menuItems.forEach(item => {
         item.classList.remove('active');
         if (item.getAttribute('href') === hash) {
@@ -560,10 +593,12 @@ function handleRouting() {
         refreshMetrics();
         startMetricsPolling();
     } else if (viewName === 'console') {
-        populateConsoleDropdown();
-        if (state.selectedConsoleServer) {
-            startConsolePolling();
-        }
+        ensureServersLoaded().then(() => {
+            populateConsoleDropdown();
+            if (state.selectedConsoleServer) {
+                startConsolePolling();
+            }
+        });
     } else if (viewName === 'users') {
         loadUsersList();
     } else if (viewName === 'settings') {
@@ -571,7 +606,33 @@ function handleRouting() {
     } else if (viewName === 'installer') {
         loadGamesList();
     } else if (viewName === 'backups') {
-        populateBackupsDropdown();
+        ensureServersLoaded().then(() => {
+            populateBackupsDropdown();
+        });
+    } else if (viewName === 'files') {
+        ensureServersLoaded().then(() => {
+            updateFilesServerSelect();
+            if (!currentFilesServer && state.servers && state.servers.length > 0) {
+                currentFilesServer = state.servers[0].id;
+                if (el.filesServerSelect) el.filesServerSelect.value = currentFilesServer;
+            }
+            loadFilesTree();
+        });
+    } else if (viewName === 'audit') {
+        loadAuditLogs();
+    }
+}
+
+async function ensureServersLoaded() {
+    if (!state.servers || state.servers.length === 0) {
+        try {
+            const res = await apiFetch('/api/servers');
+            if (res.status === 200) {
+                state.servers = await res.json();
+            }
+        } catch (e) {
+            console.error('Failed to fetch servers:', e);
+        }
     }
 }
 
@@ -666,6 +727,30 @@ async function hideLogin() {
                 } else {
                     menuBackupsTab.classList.add('hidden');
                     if (window.location.hash === '#backups') {
+                        window.location.hash = '#dashboard';
+                    }
+                }
+            }
+
+            const menuFilesTab = document.getElementById('menu-files-tab');
+            if (menuFilesTab) {
+                if (state.currentUser && (state.currentUser.role === 'admin' || (state.currentUser.permissions && (state.currentUser.permissions.includes('files') || state.currentUser.permissions.includes('config'))))) {
+                    menuFilesTab.classList.remove('hidden');
+                } else {
+                    menuFilesTab.classList.add('hidden');
+                    if (window.location.hash === '#files') {
+                        window.location.hash = '#dashboard';
+                    }
+                }
+            }
+
+            const menuAuditTab = document.getElementById('menu-audit-tab');
+            if (menuAuditTab) {
+                if (state.currentUser && state.currentUser.role === 'admin') {
+                    menuAuditTab.classList.remove('hidden');
+                } else {
+                    menuAuditTab.classList.add('hidden');
+                    if (window.location.hash === '#audit') {
                         window.location.hash = '#dashboard';
                     }
                 }
@@ -823,27 +908,27 @@ function renderServersGridQuiet() {
     filtered.forEach(server => {
         const card = document.getElementById(`server-card-${server.id}`);
         if (card) {
-            // Update status badge
-            const badge = card.querySelector('.badge');
+            // Update status badge (using status-badge class to avoid collision with tag-badge)
+            const badge = card.querySelector('.status-badge') || card.querySelector('.card-header > .badge');
             const statusDot = card.querySelector('.status-dot');
             
             card.className = `server-card ${server.status}`;
             
             let statusText = server.status;
             if (server.status === 'running') {
-                badge.className = 'badge badge-success';
-                statusDot.className = 'status-dot status-online';
+                if (badge) badge.className = 'badge status-badge badge-success';
+                if (statusDot) statusDot.className = 'status-dot status-online';
                 statusText = t('status-online');
             } else if (server.status === 'stopped') {
-                badge.className = 'badge badge-danger';
-                statusDot.className = 'status-dot status-offline';
+                if (badge) badge.className = 'badge status-badge badge-danger';
+                if (statusDot) statusDot.className = 'status-dot status-offline';
                 statusText = t('status-offline');
             } else {
-                badge.className = 'badge badge-warning badge-pulse animate-pulse';
-                statusDot.className = 'status-dot status-busy';
+                if (badge) badge.className = 'badge status-badge badge-warning badge-pulse animate-pulse';
+                if (statusDot) statusDot.className = 'status-dot status-busy';
                 statusText = server.status === 'installing' ? t('status-installing') : t('status-updating');
             }
-            badge.innerHTML = `<span class="${statusDot.className}"></span> ${statusText}`;
+            if (badge) badge.innerHTML = `<span class="${statusDot ? statusDot.className : ''}"></span> ${statusText}`;
             
             // Update resource meters
             const cpuMeter = card.querySelector('.cpu-meter-fill');
@@ -997,7 +1082,17 @@ function createServerCard(server) {
         }
     }
     
-    const tagBadgeHtml = server.tag ? `<span class="badge badge-secondary" style="font-size:0.7rem; margin-left:0.5rem;">🏷️ ${escapeHtml(server.tag)}</span>` : '';
+    let tagBadgeHtml = '';
+    if (isAdmin) {
+        tagBadgeHtml = `<span class="badge tag-badge ${server.tag ? 'badge-secondary' : 'badge-secondary'}" 
+            style="font-size:0.7rem; margin-left:0.5rem; cursor:pointer; opacity: ${server.tag ? '1' : '0.6'}; border: 1px dashed rgba(255,255,255,0.3);" 
+            onclick="editServerTag('${server.id}', '${escapeJs(server.tag || '')}')" 
+            title="${state.language === 'de' ? 'Tag / Cluster bearbeiten' : 'Edit Tag / Cluster'}">
+            🏷️ ${server.tag ? escapeHtml(server.tag) : '+ Tag'}
+        </span>`;
+    } else if (server.tag) {
+        tagBadgeHtml = `<span class="badge tag-badge badge-secondary" style="font-size:0.7rem; margin-left:0.5rem;">🏷️ ${escapeHtml(server.tag)}</span>`;
+    }
     
     let queryRowHtml = '';
     if (server.query_data) {
@@ -1026,7 +1121,7 @@ function createServerCard(server) {
                     </div>
                 </div>
             </div>
-            <span class="badge ${badgeClass}">
+            <span class="badge status-badge ${badgeClass}">
                 <span class="status-dot ${dotClass}"></span>
                 ${statusText}
             </span>
@@ -1853,12 +1948,8 @@ async function loadSettingsInfo() {
             versionVal.nextElementSibling.textContent = data.version;
         }
 
-        renderSettingsMode(data);
-        if (data.mock) {
-            el.settingsMode.className = 'info-value highlight text-warning';
-        } else {
-            el.settingsMode.className = 'info-value highlight text-success';
-        }
+        renderSettingsMode();
+        el.settingsMode.className = 'info-value highlight text-success';
         
         if (state.currentUser && state.currentUser.role === 'admin') {
             checkDashboardUpdate(false);
@@ -1909,9 +2000,8 @@ async function loadFirewallStatus() {
     }
 }
 
-function renderSettingsMode(data) {
-    if (!data) return;
-    el.settingsMode.textContent = data.mock ? t('settings-mode-mock') : t('settings-mode-prod');
+function renderSettingsMode() {
+    el.settingsMode.textContent = t('settings-mode-prod');
 }
 
 async function changePassword(e) {
@@ -1972,26 +2062,6 @@ async function handleConsoleInputSubmit(e) {
         el.terminalOutput.scrollTop = el.terminalOutput.scrollHeight;
     }
     
-    // Mock simulation output
-    const isMock = state.servers.find(s => s.id === state.selectedConsoleServer)?.cpu !== undefined; // mock indicator
-    if (isMock) {
-        setTimeout(() => {
-            const resp = document.createElement('div');
-            resp.className = 'terminal-row text-success';
-            if (command === 'help') {
-                resp.textContent = '[Server Help] Available mock commands: status, save, help';
-            } else if (command === 'save') {
-                resp.textContent = '[Server] Autosave triggered. Map saved successfully.';
-            } else {
-                resp.textContent = `[Server] console executed: ${command}`;
-            }
-            el.terminalOutput.appendChild(resp);
-            if (el.terminalAutoscroll.checked) {
-                el.terminalOutput.scrollTop = el.terminalOutput.scrollHeight;
-            }
-        }, 300);
-    }
-    
     try {
         await apiFetch(`/api/servers/${state.selectedConsoleServer}/console/send`, {
             method: 'POST',
@@ -2034,6 +2104,10 @@ function handleSettingsServerChange() {
     const server = state.servers.find(s => s.id === serverID);
     if (!server) return;
     
+    if (el.settingsServerTagInput) {
+        el.settingsServerTagInput.value = server.tag || '';
+    }
+
     loadCronSchedule(serverID);
     
     // 1. Generate Systemd template
@@ -2075,22 +2149,30 @@ WantedBy=multi-user.target`;
     // 3. Configure alerts and load settings
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
     if (isAdmin) {
-        el.alertsSettingDiscordEnabled.disabled = false;
-        el.alertsSettingDiscordWebhook.disabled = false;
-        el.alertsSettingTelegramEnabled.disabled = false;
-        el.alertsSettingTelegramToken.disabled = false;
-        el.alertsSettingTelegramChatid.disabled = false;
-        el.alertsSettingEmailEnabled.disabled = false;
-        el.alertsSettingEmailSmtp.disabled = false;
-        el.alertsSettingEmailPort.disabled = false;
-        el.alertsSettingEmailUser.disabled = false;
-        el.alertsSettingEmailPass.disabled = false;
-        el.alertsSettingEmailDest.disabled = false;
-        el.alertsSettingsSaveBtn.disabled = false;
+        setAlertFieldsDisabled(false);
         loadAlertSettings();
     } else {
         resetSettingsAlerts();
     }
+}
+
+function setAlertFieldsDisabled(disabled) {
+    const alertElements = [
+        el.alertsSettingDiscordEnabled, el.alertsSettingDiscordWebhook,
+        el.alertsSettingTelegramEnabled, el.alertsSettingTelegramToken, el.alertsSettingTelegramChatid,
+        el.alertsSettingEmailEnabled, el.alertsSettingEmailSmtp, el.alertsSettingEmailPort, el.alertsSettingEmailUser, el.alertsSettingEmailPass, el.alertsSettingEmailDest,
+        el.alertsSettingNtfyEnabled, el.alertsSettingNtfyUrl, el.alertsSettingNtfyTopic, el.alertsSettingNtfyToken,
+        el.alertsSettingSlackEnabled, el.alertsSettingSlackWebhook,
+        el.alertsSettingMatrixEnabled, el.alertsSettingMatrixHomeserver, el.alertsSettingMatrixRoomid, el.alertsSettingMatrixToken,
+        el.alertsSettingPushoverEnabled, el.alertsSettingPushoverToken, el.alertsSettingPushoverUser,
+        el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletToken, el.alertsSettingPushbulletChannel,
+        el.alertsSettingIftttEnabled, el.alertsSettingIftttKey, el.alertsSettingIftttEvent,
+        el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatWebhook,
+        el.alertsSettingsSaveBtn
+    ];
+    alertElements.forEach(elem => {
+        if (elem) elem.disabled = disabled;
+    });
 }
 
 // -------------------------------------------------------------
@@ -2260,6 +2342,17 @@ function buildConfigForm(items) {
             descEl.textContent = item.comments;
             left.appendChild(descEl);
         }
+
+        if (['gslt', 'apikey', 'steamaccount', 'sv_setsteamaccount'].includes(item.key.toLowerCase())) {
+            const gsltBtn = document.createElement('a');
+            gsltBtn.href = 'https://steamcommunity.com/dev/managegameservers';
+            gsltBtn.target = '_blank';
+            gsltBtn.className = 'btn btn-secondary btn-xs mt-1';
+            gsltBtn.innerHTML = '🔑 Valve GSLT Portal ↗';
+            gsltBtn.style.display = 'inline-block';
+            gsltBtn.style.marginTop = '0.3rem';
+            left.appendChild(gsltBtn);
+        }
         
         formItem.appendChild(left);
         
@@ -2395,6 +2488,7 @@ const i18n = {
         "btn-mods-update": "Update Mods",
         "btn-fastdl": "FastDL Sync",
         "btn-postdetails": "Support Log (Termbin)",
+        "files-btn-upload": "Upload File",
         "firewall-title": "Firewall Inspector & Privilege Probe",
         "firewall-desc": "Checks active host firewall (UFW/Firewalld) status and dashboard root execution rights.",
         "firewall-label-status": "Status & Privileges:",
@@ -2418,6 +2512,19 @@ const i18n = {
         "col-player-score": "Score",
         "col-player-time": "Playtime",
         "col-player-actions": "Actions",
+        "perm-files": "File Manager",
+        "menu-files": "File Manager",
+        "menu-audit": "Audit Log",
+        "files-title": "File Manager",
+        "files-subtitle": "Browse, manage, and edit game server files inside serverfiles/.",
+        "files-select-default": "-- Select a server --",
+        "files-select-prompt": "Please select a server to browse files.",
+        "audit-title": "Security Audit Log",
+        "audit-subtitle": "Unfiltered log of administrative actions and user logins.",
+        "audit-empty": "No audit entries recorded.",
+        "modal-mods-title": "🔌 Installed Mods & Plugins",
+        "modal-mods-desc": "Manage installed addons and plugins for this server.",
+        "mods-loading": "Loading mods list...",
         "alerts-settings-title": "Notification Alerts Settings",
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Install & Enable Service",
@@ -2532,7 +2639,6 @@ const i18n = {
         "games-sync-success": "Successfully synced!",
         "games-sync-initializing": "Initializing crawler...",
         "overview-none": "None",
-        "settings-mode-mock": "DEMO MODE (Windows Mock)",
         "settings-mode-prod": "PRODUCTION (Linux Host)",
         "status-connecting": "Connecting...",
         "status-success": "Success",
@@ -2664,6 +2770,7 @@ const i18n = {
         "btn-mods-update": "Mods Updaten",
         "btn-fastdl": "FastDL Sync",
         "btn-postdetails": "Support Log (Termbin)",
+        "files-btn-upload": "Datei hochladen",
         "firewall-title": "Firewall Inspector & Rechte-Prüfung",
         "firewall-desc": "Prüft den Firewall-Status (UFW/Firewalld) und Root-Berechtigungen des Dashboards.",
         "firewall-label-status": "Status & Rechte:",
@@ -2687,6 +2794,19 @@ const i18n = {
         "col-player-score": "Score",
         "col-player-time": "Spieldauer",
         "col-player-actions": "Aktionen",
+        "perm-files": "Dateimanager",
+        "menu-files": "Dateimanager",
+        "menu-audit": "Audit-Log",
+        "files-title": "Dateimanager",
+        "files-subtitle": "Durchsuche, verwalte und bearbeite Spieldateien in serverfiles/.",
+        "files-select-default": "-- Server wählen --",
+        "files-select-prompt": "Bitte wähle einen Server aus, um Dateien anzuzeigen.",
+        "audit-title": "Sicherheits Audit-Log",
+        "audit-subtitle": "Ungefiltertes Protokoll aller administrativen Aktionen und System-Anmeldungen.",
+        "audit-empty": "Keine Audit-Einträge vorhanden.",
+        "modal-mods-title": "🔌 Installierte Mods & Plugins",
+        "modal-mods-desc": "Verwalte installierte Addons und Plugins für diesen Server.",
+        "mods-loading": "Lade Mod-Liste...",
         "alerts-settings-title": "Benachrichtigungs-Einstellungen",
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Dienst automatisch installieren & aktivieren",
@@ -2809,7 +2929,6 @@ const i18n = {
         "games-sync-success": "Erfolgreich synchronisiert!",
         "games-sync-initializing": "Initialisiere Crawler...",
         "overview-none": "Keine",
-        "settings-mode-mock": "MOCK / DEMO MODUS (Windows)",
         "settings-mode-prod": "PRODUKTION (Linux Root)",
         "status-connecting": "Verbinde...",
         "status-success": "Erfolgreich",
@@ -3309,6 +3428,8 @@ async function loadUsersList() {
                             if (p === 'restart') label = 'Restart';
                             if (p === 'console') label = 'Konsole';
                             if (p === 'config') label = 'Configs';
+                            if (p === 'files') label = 'Dateimanager';
+                            if (p === 'backup') label = 'Backups';
                         }
                         return `<span class="badge badge-pulse" style="font-size: 0.7rem; background: rgba(255,255,255,0.05); color: var(--text-color); border: 1px solid var(--border-color);">${label}</span>`;
                     }).join(' ') : 
@@ -3497,7 +3618,7 @@ async function saveUserForm() {
         const checkedPerms = document.querySelectorAll('#user-permissions-list input[type="checkbox"]:checked');
         checkedPerms.forEach(cb => permissions.push(cb.value));
     } else {
-        permissions = ['start', 'stop', 'restart', 'console', 'config', 'backup'];
+        permissions = ['start', 'stop', 'restart', 'console', 'config', 'files', 'backup'];
     }
     
     messageArea.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
@@ -4231,9 +4352,11 @@ async function installCronjobs() {
 }
 
 function renderConsoleGameActions(server) {
-    if (!server) {
-        el.consoleGameActions.classList.add('hidden');
-        el.consoleGameActions.innerHTML = '';
+    if (!server || !el.consoleGameActions) {
+        if (el.consoleGameActions) {
+            el.consoleGameActions.classList.add('hidden');
+            el.consoleGameActions.innerHTML = '';
+        }
         return;
     }
 
@@ -4246,40 +4369,142 @@ function renderConsoleGameActions(server) {
         return;
     }
 
-    if (server.game === 'rust') {
-        el.consoleGameActions.innerHTML = `
-            <button id="console-btn-map-wipe" class="btn btn-danger btn-sm" \${isBusy ? 'disabled' : ''}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-                <span>Map Wipe</span>
+    const game = (server.game || '').toLowerCase();
+    const disabledAttr = isBusy ? 'disabled' : '';
+    let buttonsHtml = '';
+    const clickHandlers = [];
+
+    const isDe = state.language === 'de';
+
+    // 1. Rust Specific Actions
+    if (game === 'rust') {
+        buttonsHtml += `
+            <button id="game-act-map-wipe" class="btn btn-danger btn-sm" ${disabledAttr}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+                <span>${isDe ? 'Map Wipe' : 'Map Wipe'}</span>
             </button>
-            <button id="console-btn-full-wipe" class="btn btn-danger btn-sm" \${isBusy ? 'disabled' : ''}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                <span>Full Wipe</span>
+            <button id="game-act-full-wipe" class="btn btn-danger btn-sm" ${disabledAttr}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                <span>${isDe ? 'Full Wipe' : 'Full Wipe'}</span>
+            </button>
+            <button id="game-act-map-compressor" class="btn btn-secondary btn-sm" ${disabledAttr}>
+                <span>📦 ${isDe ? 'Map Komprimieren' : 'Compress Map'}</span>
+            </button>
+            <button id="game-act-mods-install" class="btn btn-primary btn-sm" ${disabledAttr}>
+                <span>🔌 ${isDe ? 'Oxide / uMod Installieren' : 'Install Oxide / uMod'}</span>
+            </button>
+            <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
+                <span>🔄 ${isDe ? 'Oxide / uMod Updaten' : 'Update Oxide / uMod'}</span>
             </button>
         `;
+        clickHandlers.push(
+            { id: 'game-act-map-wipe', confirmMsg: isDe ? 'Map-Wipe durchführen? Alle Bauwerke werden gelöscht!' : 'Perform Map Wipe? All player structures will be deleted!', action: 'map-wipe' },
+            { id: 'game-act-full-wipe', confirmMsg: isDe ? 'Full-Wipe durchführen? Alle Bauwerke und Blueprints werden gelöscht!' : 'Perform Full Wipe? All map progress and blueprint data will be deleted!', action: 'full-wipe' },
+            { id: 'game-act-map-compressor', confirmMsg: isDe ? 'Map-Komprimierung ausführen?' : 'Run Map Compressor?', action: 'map-compressor' },
+            { id: 'game-act-mods-install', action: 'mods-install' },
+            { id: 'game-act-mods-update', action: 'mods-update' }
+        );
+    } 
+    // 2. TeamSpeak 3
+    else if (game === 'ts3') {
+        buttonsHtml += `
+            <button id="game-act-ts3-pw" class="btn btn-warning btn-sm" ${disabledAttr}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                <span>🔑 ${isDe ? 'Query Admin-Passwort zurücksetzen' : 'Reset Query Admin Password'}</span>
+            </button>
+        `;
+        clickHandlers.push({
+            id: 'game-act-ts3-pw',
+            confirmMsg: isDe ? 'Möchtest du das Query-Admin-Passwort zurücksetzen? Der Server startet danach neu.' : 'Reset TeamSpeak 3 Query Admin password? Server will restart.',
+            action: 'change-password'
+        });
+    }
+    // 3. Source Engine & FastDL Supported Games (CS2, CS:GO, TF2, CSS, GMod, CoD4, Sven Co-op, Xonotic, etc.)
+    else if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih', 'cod4', 'sven', 'xon'].includes(game)) {
+        buttonsHtml += `
+            <button id="game-act-fastdl" class="btn btn-primary btn-sm" ${disabledAttr}>
+                <span>⚡ ${isDe ? 'FastDL Web-Sync (Bzip2)' : 'FastDL Web Sync (Bzip2)'}</span>
+            </button>
+        `;
+        clickHandlers.push({ id: 'game-act-fastdl', action: 'fastdl' });
+
+        if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih'].includes(game)) {
+            buttonsHtml += `
+                <button id="game-act-mods-install" class="btn btn-secondary btn-sm" ${disabledAttr}>
+                    <span>🔌 ${isDe ? 'Metamod / SourceMod Installieren' : 'Install Metamod / SourceMod'}</span>
+                </button>
+                <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
+                    <span>🔄 ${isDe ? 'Metamod / SourceMod Updaten' : 'Update Metamod / SourceMod'}</span>
+                </button>
+            `;
+            clickHandlers.push(
+                { id: 'game-act-mods-install', action: 'mods-install' },
+                { id: 'game-act-mods-update', action: 'mods-update' }
+            );
+        }
+    }
+    // 4. Multi Theft Auto (MTA:SA)
+    else if (game === 'mta' || game === 'multitheftauto') {
+        buttonsHtml += `
+            <button id="game-act-mta-resources" class="btn btn-primary btn-sm" ${disabledAttr}>
+                <span>📦 ${isDe ? 'MTA Default Resources Installieren' : 'Install MTA Default Resources'}</span>
+            </button>
+        `;
+        clickHandlers.push({ id: 'game-act-mta-resources', action: 'install-default-resources' });
+    }
+    // 5. Mod & Workshop Games (Arma 3, Minecraft, 7DTD, Factorio, ARK, KF2, DST, Insurgency, Valheim, TrackMania)
+    else if (['arma3', 'mc', 'mcb', 'mct', 'sdtd', 'fct', 'ark', 'kf2', 'dst', 'inss', 'vh', 'valheim', 'tm2', 'tmf'].includes(game)) {
+        let modFrameworkLabel = isDe ? 'Mods / Plugins' : 'Mods / Plugins';
+        if (game === 'arma3') modFrameworkLabel = 'Arma 3 Mods / Workshop';
+        else if (['mc', 'mcb', 'mct'].includes(game)) modFrameworkLabel = 'Paper/Spigot/Fabric Plugins';
+        else if (game === 'sdtd') modFrameworkLabel = "Alloc's Server Fixes";
+        else if (game === 'fct') modFrameworkLabel = 'Factorio Mod Portal';
+        else if (game === 'ark') modFrameworkLabel = 'ARK Workshop Mods';
+        else if (game === 'kf2') modFrameworkLabel = 'KF2 Workshop Maps & Mutators';
+        else if (game === 'dst') modFrameworkLabel = 'DST Workshop Mods';
+        else if (game === 'inss') modFrameworkLabel = 'Mod.io Mods';
+        else if (['vh', 'valheim'].includes(game)) modFrameworkLabel = 'Valheim BepInEx Mods';
+        else if (['tm2', 'tmf'].includes(game)) modFrameworkLabel = 'TrackMania Plugins & Scripts';
+
+        buttonsHtml += `
+            <button id="game-act-mods-install" class="btn btn-primary btn-sm" ${disabledAttr}>
+                <span>🔌 ${isDe ? `${modFrameworkLabel} Installieren` : `Install ${modFrameworkLabel}`}</span>
+            </button>
+            <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
+                <span>🔄 ${isDe ? `${modFrameworkLabel} Updaten` : `Update ${modFrameworkLabel}`}</span>
+            </button>
+        `;
+        clickHandlers.push(
+            { id: 'game-act-mods-install', action: 'mods-install' },
+            { id: 'game-act-mods-update', action: 'mods-update' }
+        );
+    }
+    // 5. Unreal Tournament (UT2004, UT3, UT99)
+    else if (['ut2k4', 'ut3', 'ut99'].includes(game)) {
+        buttonsHtml += `
+            <button id="game-act-map-compressor" class="btn btn-secondary btn-sm" ${disabledAttr}>
+                <span>📦 ${isDe ? 'UT Map Komprimieren (Redirect)' : 'Compress UT Maps (Redirect)'}</span>
+            </button>
+        `;
+        clickHandlers.push({ id: 'game-act-map-compressor', action: 'map-compressor' });
+    }
+
+    if (buttonsHtml) {
+        el.consoleGameActions.innerHTML = buttonsHtml;
         el.consoleGameActions.classList.remove('hidden');
 
-        document.getElementById('console-btn-map-wipe').addEventListener('click', () => {
-            if (confirm(state.language === 'de' ? 'Bist du sicher, dass du ein Map-Wipe durchführen möchtest? Alle Kartendaten gehen verloren!' : 'Are you sure you want to perform a Map Wipe? All map progress will be deleted!')) {
-                runServerAction(server.id, 'map-wipe');
-            }
-        });
-        document.getElementById('console-btn-full-wipe').addEventListener('click', () => {
-            if (confirm(state.language === 'de' ? 'Bist du sicher, dass du ein Full-Wipe durchführen möchtest? Alle Karten- und Blueprint-Daten gehen verloren!' : 'Are you sure you want to perform a Full Wipe? All map and blueprint database progress will be deleted!')) {
-                runServerAction(server.id, 'full-wipe');
-            }
-        });
-    } else if (server.game === 'ts3') {
-        el.consoleGameActions.innerHTML = `
-            <button id="console-btn-ts3-pw" class="btn btn-warning btn-sm" \${isBusy ? 'disabled' : ''}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                <span>Query Passwort ändern</span>
-            </button>
-        `;
-        el.consoleGameActions.classList.remove('hidden');
-        document.getElementById('console-btn-ts3-pw').addEventListener('click', () => {
-            if (confirm(state.language === 'de' ? 'Möchtest du das Query-Admin-Passwort für diesen Teamspeak 3 Server zurücksetzen? Der Server startet danach neu.' : 'Do you want to reset the Query Admin password for this Teamspeak 3 Server? The server will restart.')) {
-                runServerAction(server.id, 'change-password');
+        clickHandlers.forEach(item => {
+            const btn = document.getElementById(item.id);
+            if (btn) {
+                btn.addEventListener('click', () => {
+                    if (item.confirmMsg) {
+                        if (confirm(item.confirmMsg)) {
+                            runServerAction(server.id, item.action);
+                        }
+                    } else {
+                        runServerAction(server.id, item.action);
+                    }
+                });
             }
         });
     } else {
@@ -4419,3 +4644,392 @@ async function handleCronBuilderSubmit(e) {
         el.cronBuilderMessage.textContent = err.message;
     }
 }
+
+// ----------------------------------------------------
+// Console Command History & Macros
+// ----------------------------------------------------
+let consoleHistory = [];
+let consoleHistoryIndex = -1;
+
+function initConsoleMacrosAndHistory() {
+    if (el.consoleInputField) {
+        el.consoleInputField.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowUp') {
+                if (consoleHistory.length > 0 && consoleHistoryIndex < consoleHistory.length - 1) {
+                    consoleHistoryIndex++;
+                    el.consoleInputField.value = consoleHistory[consoleHistory.length - 1 - consoleHistoryIndex];
+                }
+                e.preventDefault();
+            } else if (e.key === 'ArrowDown') {
+                if (consoleHistoryIndex > 0) {
+                    consoleHistoryIndex--;
+                    el.consoleInputField.value = consoleHistory[consoleHistory.length - 1 - consoleHistoryIndex];
+                } else if (consoleHistoryIndex === 0) {
+                    consoleHistoryIndex = -1;
+                    el.consoleInputField.value = '';
+                }
+                e.preventDefault();
+            }
+        });
+    }
+
+    document.querySelectorAll('.console-macro-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const cmd = btn.getAttribute('data-cmd');
+            if (cmd && el.consoleInputField) {
+                el.consoleInputField.value = cmd;
+                el.consoleInputField.focus();
+            }
+        });
+    });
+}
+
+// Push to console history upon submit
+if (el.consoleInputForm) {
+    el.consoleInputForm.addEventListener('submit', () => {
+        const val = el.consoleInputField.value.trim();
+        if (val) {
+            consoleHistory.push(val);
+            if (consoleHistory.length > 50) consoleHistory.shift();
+            consoleHistoryIndex = -1;
+        }
+    });
+}
+
+// ----------------------------------------------------
+// Installed Mods & Plugins Modal
+// ----------------------------------------------------
+function openModsModal(server) {
+    if (!el.modalMods) return;
+    el.modalMods.classList.remove('hidden');
+    el.modalModsList.innerHTML = `<div class="text-center text-muted py-3">${t('mods-loading')}</div>`;
+
+    fetch(`/api/servers/${server.id}/mods`)
+        .then(r => r.json())
+        .then(data => {
+            const installed = data.installed || [];
+            if (installed.length === 0) {
+                el.modalModsList.innerHTML = `
+                    <div class="alert alert-info">
+                        ${state.language === 'de' ? 'Keine aktiven Mods in lgsm/mods/installed-mods.txt registriert.' : 'No active mods registered in lgsm/mods/installed-mods.txt.'}
+                    </div>
+                `;
+            } else {
+                let html = '<ul class="list-group">';
+                installed.forEach(mod => {
+                    html += `<li class="list-group-item flex-between align-center"><span>🔌 <strong>${escapeHtml(mod)}</strong></span></li>`;
+                });
+                html += '</ul>';
+                el.modalModsList.innerHTML = html;
+            }
+        })
+        .catch(() => {
+            el.modalModsList.innerHTML = `<div class="alert alert-danger">${t('status-error')}</div>`;
+        });
+}
+
+if (el.btnCloseModalMods) el.btnCloseModalMods.addEventListener('click', () => el.modalMods.classList.add('hidden'));
+if (el.btnCloseModsModalFooter) el.btnCloseModsModalFooter.addEventListener('click', () => el.modalMods.classList.add('hidden'));
+
+// ----------------------------------------------------
+// Web File Manager
+// ----------------------------------------------------
+let currentFilesServer = '';
+let currentFilesSubpath = '';
+
+function initFileManager() {
+    if (!el.filesServerSelect) return;
+
+    el.filesServerSelect.addEventListener('change', () => {
+        currentFilesServer = el.filesServerSelect.value;
+        currentFilesSubpath = '';
+        loadFilesTree();
+    });
+
+    if (el.filesBtnRefresh) {
+        el.filesBtnRefresh.addEventListener('click', () => loadFilesTree());
+    }
+
+    if (el.filesBtnCloseEditor) {
+        el.filesBtnCloseEditor.addEventListener('click', () => {
+            el.filesEditorCard.classList.add('hidden');
+        });
+    }
+
+    if (el.filesBtnSave) {
+        el.filesBtnSave.addEventListener('click', saveFileContent);
+    }
+
+    if (el.filesBtnUpload && el.filesInputUpload) {
+        el.filesBtnUpload.addEventListener('click', () => {
+            if (!currentFilesServer) {
+                alert(t('files-select-prompt'));
+                return;
+            }
+            el.filesInputUpload.click();
+        });
+
+        el.filesInputUpload.addEventListener('change', async () => {
+            const file = el.filesInputUpload.files[0];
+            if (!file || !currentFilesServer) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('path', currentFilesSubpath);
+
+            try {
+                const res = await apiFetch(`/api/servers/${currentFilesServer}/files/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                if (res.status === 200) {
+                    alert(state.language === 'de' ? 'Datei erfolgreich hochgeladen!' : 'File uploaded successfully!');
+                    loadFilesTree();
+                } else {
+                    alert('Error uploading file');
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                el.filesInputUpload.value = '';
+            }
+        });
+    }
+}
+
+function updateFilesServerSelect() {
+    if (!el.filesServerSelect) return;
+    const currentVal = el.filesServerSelect.value;
+    el.filesServerSelect.innerHTML = `<option value="">${t('files-select-default')}</option>`;
+    state.servers.forEach(srv => {
+        const opt = document.createElement('option');
+        opt.value = srv.id;
+        opt.textContent = `${srv.name} (${srv.id})`;
+        el.filesServerSelect.appendChild(opt);
+    });
+    if (currentVal) el.filesServerSelect.value = currentVal;
+}
+
+async function loadFilesTree() {
+    if (!currentFilesServer) {
+        el.filesTableBody.innerHTML = `<tr><td colspan="4" class="text-muted text-center py-4">${t('files-select-prompt')}</td></tr>`;
+        return;
+    }
+
+    el.filesBreadcrumb.textContent = `/serverfiles/${currentFilesSubpath}`;
+    try {
+        const res = await apiFetch(`/api/servers/${currentFilesServer}/files?path=${encodeURIComponent(currentFilesSubpath)}`);
+        if (res.status === 200) {
+            const files = await res.json();
+            renderFilesTable(files);
+        } else {
+            el.filesTableBody.innerHTML = `<tr><td colspan="4" class="text-danger text-center py-4">Error loading files</td></tr>`;
+        }
+    } catch (e) {
+        console.error('File manager error:', e);
+        el.filesTableBody.innerHTML = `<tr><td colspan="4" class="text-danger text-center py-4">${e.message}</td></tr>`;
+    }
+}
+
+function renderFilesTable(files) {
+    el.filesTableBody.innerHTML = '';
+
+    if (currentFilesSubpath) {
+        const backTr = document.createElement('tr');
+        backTr.innerHTML = `
+            <td colspan="4" class="font-mono text-sm cursor-pointer hover:bg-black-10 py-2" onclick="navigateFilesUp()">
+                📁 <strong>.. (Parent Directory)</strong>
+            </td>
+        `;
+        el.filesTableBody.appendChild(backTr);
+    }
+
+    if (!files || files.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="4" class="text-muted text-center py-4">Empty Directory</td>`;
+        el.filesTableBody.appendChild(tr);
+        return;
+    }
+
+    files.forEach(f => {
+        const tr = document.createElement('tr');
+        const icon = f.is_dir ? '📁' : '📄';
+        const sizeText = f.is_dir ? '--' : formatBytes(f.size);
+
+        tr.innerHTML = `
+            <td>
+                <span class="font-mono cursor-pointer" onclick="${f.is_dir ? `openFileDir('${escapeHtml(f.path)}')` : `openFileEditor('${escapeHtml(f.path)}')`}">
+                    ${icon} <strong>${escapeHtml(f.name)}</strong>
+                </span>
+            </td>
+            <td class="text-sm text-muted">${sizeText}</td>
+            <td class="text-sm text-muted">${escapeHtml(f.mod_time)}</td>
+            <td>
+                ${f.is_dir ? '' : `
+                    <button class="btn btn-secondary btn-xs" onclick="openFileEditor('${escapeHtml(f.path)}')">Edit</button>
+                    <a href="/api/servers/${currentFilesServer}/files/download?path=${encodeURIComponent(f.path)}" class="btn btn-secondary btn-xs" download style="text-decoration:none;">Download</a>
+                `}
+            </td>
+        `;
+        el.filesTableBody.appendChild(tr);
+    });
+}
+
+function openFileDir(path) {
+    currentFilesSubpath = path;
+    loadFilesTree();
+}
+
+function navigateFilesUp() {
+    const parts = currentFilesSubpath.split('/').filter(Boolean);
+    parts.pop();
+    currentFilesSubpath = parts.join('/');
+    loadFilesTree();
+}
+
+let activeEditingFilePath = '';
+
+async function openFileEditor(path) {
+    if (!currentFilesServer) return;
+    activeEditingFilePath = path;
+    el.filesEditingFilename.textContent = path;
+    el.filesEditorCard.classList.remove('hidden');
+    el.filesEditorTextarea.value = 'Loading file content...';
+
+    try {
+        const res = await apiFetch(`/api/servers/${currentFilesServer}/files/content?path=${encodeURIComponent(path)}`);
+        if (res.status === 200) {
+            const text = await res.text();
+            el.filesEditorTextarea.value = text;
+        } else {
+            el.filesEditorTextarea.value = 'Error reading file content.';
+        }
+    } catch (e) {
+        el.filesEditorTextarea.value = 'Error: ' + e.message;
+    }
+}
+
+async function saveFileContent() {
+    if (!currentFilesServer || !activeEditingFilePath) return;
+    try {
+        const res = await apiFetch(`/api/servers/${currentFilesServer}/files`, {
+            method: 'POST',
+            body: JSON.stringify({
+                path: activeEditingFilePath,
+                content: el.filesEditorTextarea.value
+            })
+        });
+        if (res.status === 200) {
+            alert(state.language === 'de' ? 'Datei erfolgreich gespeichert!' : 'File saved successfully!');
+        } else {
+            alert('Error saving file');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+// ----------------------------------------------------
+// Security Audit Log
+// ----------------------------------------------------
+async function loadAuditLogs() {
+    if (!el.auditTableBody) return;
+    el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Loading audit logs...</td></tr>`;
+
+    try {
+        const res = await apiFetch('/api/system/audit');
+        if (res.status === 200) {
+            const logs = await res.json();
+            renderAuditTable(logs);
+        } else {
+            el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">Failed to load audit logs</td></tr>`;
+        }
+    } catch (e) {
+        el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">${e.message}</td></tr>`;
+    }
+}
+
+function renderAuditTable(logs) {
+    el.auditTableBody.innerHTML = '';
+    if (!logs || logs.length === 0) {
+        el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-muted text-center py-4">${t('audit-empty')}</td></tr>`;
+        return;
+    }
+
+    logs.forEach(log => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td class="font-mono text-sm">${escapeHtml(log.timestamp)}</td>
+            <td><strong>${escapeHtml(log.username)}</strong></td>
+            <td class="font-mono text-sm">${escapeHtml(log.ip)}</td>
+            <td><span class="badge badge-primary">${escapeHtml(log.action)}</span></td>
+            <td class="text-sm">${escapeHtml(log.details)}</td>
+            <td class="font-mono text-sm">${escapeHtml(log.server_id || '--')}</td>
+        `;
+        el.auditTableBody.appendChild(tr);
+    });
+}
+
+if (el.auditBtnRefresh) el.auditBtnRefresh.addEventListener('click', loadAuditLogs);
+
+async function editServerTag(serverId, currentTag) {
+    const isDe = state.language === 'de';
+    const promptText = isDe 
+        ? 'Gib den Tag / Cluster-Namen für diesen Server ein (z. B. Cluster-1, Public, Event - oder leer lassen zum Entfernen):' 
+        : 'Enter tag / cluster name for this server (e.g. Cluster-1, Public, Event - or leave blank to remove):';
+    
+    const newTag = prompt(promptText, currentTag || '');
+    if (newTag === null) return;
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/tag`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag: newTag.trim() })
+        });
+        if (res.status === 200) {
+            const server = state.servers.find(s => s.id === serverId);
+            if (server) server.tag = newTag.trim();
+            renderServersGrid();
+            if (el.settingsServerSelect && el.settingsServerSelect.value === serverId && el.settingsServerTagInput) {
+                el.settingsServerTagInput.value = newTag.trim();
+            }
+        } else {
+            const data = await res.json();
+            alert((isDe ? 'Fehler beim Speichern des Tags: ' : 'Error saving tag: ') + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        console.error('Error setting tag:', e);
+        alert((isDe ? 'Fehler beim Speichern des Tags: ' : 'Error saving tag: ') + e.message);
+    }
+}
+
+async function saveServerTagFromSettings() {
+    const serverId = el.settingsServerSelect ? el.settingsServerSelect.value : '';
+    if (!serverId) return;
+    const tagVal = el.settingsServerTagInput ? el.settingsServerTagInput.value.trim() : '';
+    const isDe = state.language === 'de';
+    
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/tag`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag: tagVal })
+        });
+        if (res.status === 200) {
+            const server = state.servers.find(s => s.id === serverId);
+            if (server) server.tag = tagVal;
+            renderServersGrid();
+            alert(isDe ? 'Server-Tag erfolgreich gespeichert!' : 'Server tag saved successfully!');
+        } else {
+            const data = await res.json();
+            alert((isDe ? 'Fehler beim Speichern: ' : 'Error saving: ') + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert((isDe ? 'Fehler beim Speichern: ' : 'Error saving: ') + e.message);
+    }
+}
+
+// Initialize Macros and File Manager
+initConsoleMacrosAndHistory();
+initFileManager();

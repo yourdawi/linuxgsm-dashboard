@@ -101,7 +101,7 @@ On first launch, it will:
 - 📜 **Multi-Log Viewer:** Toggle between 4 log modes directly in the console view: **Tmux Live Pane**, **Console Log**, **Script Activity Log** (`log/script/`), and **Game Engine Log** (`log/game/`).
 - 🛠️ **Expanded LinuxGSM Action Suite:** Execute LinuxGSM actions like `check-update`, `update-lgsm`, `force-update`, `mods-install`, `mods-update`, `fastdl` (Bzip2 FastDL generator), `postdetails` (termbin log upload), `test-alert`, and `debug` directly from the Live Console view.
 - 🏷️ **Multi-Instance Cluster Management & Mass Actions:** Assign cluster tags (`Production`, `Cluster A`) and filter servers by tag. Select multiple servers using checkboxes to execute **Bulk Start, Stop, Restart, and Update** commands simultaneously.
-- 🎲 **Game-Specific Actions:** Dynamic panel displaying game-specific tasks (e.g., Map Wipes and Full Wipes for Rust, or Server Query Password resets for Teamspeak 3).
+- 🎲 **Game-Specific Actions Panel:** Context-aware action buttons rendered strictly for supported game types: Rust (Map Wipe, Full Wipe, Map Compressor, Oxide/uMod), Source Engine Games (FastDL Web Sync, Metamod/SourceMod), TeamSpeak 3 (Query Password Reset), Arma 3, Minecraft, 7 Days to Die, Factorio, ARK, KF2, DST, and Insurgency (Mods/Plugins/Workshop Manager), and Unreal Tournament (Map Redirect Compressor).
 
 ### 💾 Backups & Server Migration
 - 💾 **Complete Backup Suite:** View, download, delete, and restore server backups. Restoration runs in real-time, automatically stopping and starting the server safely to prevent corruption.
@@ -125,15 +125,6 @@ On first launch, it will:
 - 📊 **Host & Process Monitoring:** Real-time CPU, RAM, and Disk host gauges, custom canvas historical graphs, and user process metrics mapping.
 - 🌓 **Dark/Light Mode & Multilingual (i18n):** Togglable dual color modes and complete German/English translations.
 
----
-
-## 💻 Local Testing & Mock Mode
-
-To test or develop the frontend locally on Windows/Linux without active LinuxGSM servers, execute it with the `-mock` CLI flag:
-```bash
-go run main.go -mock
-```
-This forces the application to bypass standard Linux system directories and generate a mock workspace with simulated server instances (`arkserver`, `valheimserver`), interactive command streams, config file folders, and dynamic CPU/RAM resource gauges.
 
 ---
 

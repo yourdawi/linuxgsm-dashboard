@@ -53,11 +53,7 @@ func NewSystemMetricsCollector() *SystemMetricsCollector {
 	return collector
 }
 
-func (s *SystemMetricsCollector) GetStats(servers []GameServerInstance, isMock bool) (*SystemStats, error) {
-	if isMock {
-		return GetMockSystemStats(servers), nil
-	}
-
+func (s *SystemMetricsCollector) GetStats(servers []GameServerInstance) (*SystemStats, error) {
 	hostStats := s.getHostStats()
 	serverStats := s.getServersStats(servers)
 
@@ -317,15 +313,15 @@ type FirewallStatus struct {
 	Rules         []string `json:"rules"`
 }
 
-func GetFirewallStatus(isMock bool) FirewallStatus {
-	if isMock || runtime.GOOS == "windows" {
+func GetFirewallStatus() FirewallStatus {
+	if runtime.GOOS == "windows" {
 		return FirewallStatus{
 			Supported:     false,
-			Tool:          "mock",
-			Active:        true,
-			HasPermission: true,
-			Message:       "Mock firewall status active (Windows test mode).",
-			Rules:         []string{"7777/udp (Game)", "27015/udp (Query)"},
+			Tool:          "none",
+			Active:        false,
+			HasPermission: false,
+			Message:       "Firewall management is supported on Linux systems.",
+			Rules:         nil,
 		}
 	}
 
@@ -401,11 +397,7 @@ func GetFirewallStatus(isMock bool) FirewallStatus {
 	}
 }
 
-func OpenFirewallPort(port int, protocol string, isMock bool) error {
-	if isMock {
-		return nil
-	}
-
+func OpenFirewallPort(port int, protocol string) error {
 	if runtime.GOOS == "windows" {
 		return fmt.Errorf("firewall management is only supported on Linux")
 	}

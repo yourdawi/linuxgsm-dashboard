@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"embed"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -53,7 +55,7 @@ func isValidGameCmd(c string) bool {
 // Helper to validate action against whitelist
 func isValidAction(a string) bool {
 	switch a {
-	case "start", "stop", "restart", "update", "details", "backup", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe", "change-password", "check-update", "mods-install", "mods-update", "mods-remove", "fastdl", "map-compressor", "postdetails", "skeleton", "debug":
+	case "start", "stop", "restart", "update", "details", "backup", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe", "change-password", "check-update", "mods-install", "mods-update", "mods-remove", "fastdl", "map-compressor", "postdetails", "skeleton", "debug", "install-default-resources":
 		return true
 	}
 	return false
@@ -241,24 +243,11 @@ func migrateSystemdService() {
 func main() {
 	// CLI Flags
 	portFlag := flag.Int("port", 0, "Port to run the dashboard on (overrides config)")
-	mockFlag := flag.Bool("mock", false, "Force mock mode (automatically true on Windows)")
 	configDirFlag := flag.String("config-dir", "./config", "Directory to store configuration files")
 	flag.Parse()
 
-	// Detect OS and warn if running on Windows without mock mode
-	isMock := *mockFlag
-	if runtime.GOOS == "windows" {
-		if !isMock {
-			fmt.Println("[WARNING] Application running on Windows with mock mode disabled. LinuxGSM commands will fail.")
-		} else {
-			fmt.Println("[SYS] Mock mode active (Windows test mode).")
-		}
-	}
-
-	// Trigger retroactive migration if not in mock mode
-	if !isMock {
-		migrateSystemdService()
-	}
+	// Retroactive migration
+	migrateSystemdService()
 
 	// Initialize Auth Manager
 	authMgr, err := backend.NewAuthManager(*configDirFlag)
@@ -274,7 +263,7 @@ func main() {
 	}
 
 	// Initialize Instance Manager
-	instMgr := backend.NewInstanceManager(isMock)
+	instMgr := backend.NewInstanceManager()
 
 	// Initialize System Metrics Collector
 	metricsCollector := backend.NewSystemMetricsCollector()
@@ -330,8 +319,11 @@ func main() {
 			Value:    sessionID,
 			Path:     "/",
 			HttpOnly: true,
-			Expires:  time.Now().Add(24 * time.Hour),
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   86400 * 7,
 		})
+
+		authMgr.LogAudit(creds.Username, r.RemoteAddr, "LOGIN", "User logged in successfully", "")
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -414,7 +406,7 @@ func main() {
 			servers = filtered
 		}
 
-		stats, err := metricsCollector.GetStats(servers, isMock)
+		stats, err := metricsCollector.GetStats(servers)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -447,7 +439,6 @@ func main() {
 		info := map[string]interface{}{
 			"os":      fmt.Sprintf("%s (%s)", runtime.GOOS, runtime.GOARCH),
 			"pid":     os.Getpid(),
-			"mock":    isMock,
 			"version": Version,
 			"user":    userClean,
 		}
@@ -463,7 +454,7 @@ func main() {
 			return
 		}
 
-		status := backend.GetFirewallStatus(isMock)
+		status := backend.GetFirewallStatus()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(status)
 	}))
@@ -492,7 +483,7 @@ func main() {
 			return
 		}
 
-		err = backend.OpenFirewallPort(payload.Port, payload.Protocol, isMock)
+		err = backend.OpenFirewallPort(payload.Port, payload.Protocol)
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -559,6 +550,17 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+
+	// GET /api/system/audit
+	http.HandleFunc("/api/system/audit", authMgr.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		user, err := getLoggedInUser(r, authMgr)
+		if err != nil || user.Role != "admin" {
+			http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(authMgr.GetAuditLogs())
 	}))
 
 	// GET /api/games/install
@@ -946,6 +948,7 @@ func main() {
 				}
 			}
 
+			authMgr.LogAudit(user.Username, r.RemoteAddr, "ACTION_"+strings.ToUpper(action), fmt.Sprintf("Executed action %s", action), serverID)
 			instMgr.RunAction(w, r, serverID, action, r.URL.Query().Get("lang"))
 
 		case "console":
@@ -1369,6 +1372,144 @@ func main() {
 			http.NotFound(w, r)
 			return
 
+		case "files":
+			if !hasUserPermission(user, "files") && !hasUserPermission(user, "config") {
+				http.Error(w, "Forbidden - Missing files permission", http.StatusForbidden)
+				return
+			}
+
+			if r.Method == http.MethodGet {
+				if len(parts) >= 6 && parts[5] == "download" {
+					relPath := r.URL.Query().Get("path")
+					if relPath == "" {
+						http.Error(w, "Missing file path", http.StatusBadRequest)
+						return
+					}
+					content, err := instMgr.GetServerFileContent(serverID, relPath)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					filename := filepath.Base(relPath)
+					w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+					w.Header().Set("Content-Type", "application/octet-stream")
+					w.Write([]byte(content))
+					return
+				}
+				if len(parts) >= 6 && parts[5] == "content" {
+					relPath := r.URL.Query().Get("path")
+					if relPath == "" {
+						http.Error(w, "Missing file path", http.StatusBadRequest)
+						return
+					}
+					content, err := instMgr.GetServerFileContent(serverID, relPath)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+					w.Write([]byte(content))
+					return
+				}
+				subPath := r.URL.Query().Get("path")
+				nodes, err := instMgr.GetServerFiles(serverID, subPath)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(nodes)
+				return
+			} else if r.Method == http.MethodPost {
+				if user.Role != "admin" && !hasUserPermission(user, "config") {
+					http.Error(w, "Forbidden - Missing permission", http.StatusForbidden)
+					return
+				}
+				if len(parts) >= 6 && parts[5] == "upload" {
+					file, header, err := r.FormFile("file")
+					if err != nil {
+						http.Error(w, "Failed to read uploaded file", http.StatusBadRequest)
+						return
+					}
+					defer file.Close()
+
+					fileBytes, err := io.ReadAll(file)
+					if err != nil {
+						http.Error(w, "Failed to read file bytes", http.StatusInternalServerError)
+						return
+					}
+
+					subPath := r.FormValue("path")
+					err = instMgr.UploadServerFile(serverID, subPath, header.Filename, fileBytes)
+					if err != nil {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusInternalServerError)
+						json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+						return
+					}
+
+					authMgr.LogAudit(user.Username, r.RemoteAddr, "FILE_UPLOAD", fmt.Sprintf("Uploaded file %s to %s", header.Filename, subPath), serverID)
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+					return
+				}
+
+				var payload struct {
+					Path    string `json:"path"`
+					Content string `json:"content"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Path == "" {
+					http.Error(w, "Invalid payload", http.StatusBadRequest)
+					return
+				}
+				err := instMgr.SaveServerFileContent(serverID, payload.Path, payload.Content)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				authMgr.LogAudit(user.Username, r.RemoteAddr, "FILE_EDIT", fmt.Sprintf("Saved file %s", payload.Path), serverID)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				return
+			}
+
+		case "mods":
+			if r.Method == http.MethodGet {
+				installedMods := []string{}
+				srv := instMgr.GetInstances()
+				var targetSrv *backend.GameServerInstance
+				for _, s := range srv {
+					if s.ID == serverID {
+						targetSrv = &s
+						break
+					}
+				}
+				if targetSrv != nil {
+					modsFile := filepath.Join("/home", targetSrv.User, "lgsm", "mods", "installed-mods.txt")
+					if file, err := os.Open(modsFile); err == nil {
+						scanner := bufio.NewScanner(file)
+						for scanner.Scan() {
+							line := strings.TrimSpace(scanner.Text())
+							if line != "" && !strings.HasPrefix(line, "#") {
+								installedMods = append(installedMods, line)
+							}
+						}
+						file.Close()
+					}
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"status":    "ok",
+					"installed": installedMods,
+				})
+				return
+			}
+
 
 
 		default:
@@ -1379,11 +1520,7 @@ func main() {
 	// Start server
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("[SYS] LinuxGSM Web Dashboard running on http://localhost%s\n", addr)
-	if isMock {
-		fmt.Println("[SYS] Local test mode (Mock Mode) enabled. Game commands and resource values will be simulated.")
-	} else {
-		fmt.Println("[SYS] Production mode enabled. Live LinuxGSM instances and CPU/RAM process tracking are active.")
-	}
+	fmt.Println("[SYS] Production mode enabled. Live LinuxGSM instances and CPU/RAM process tracking are active.")
 
 	err = http.ListenAndServe(addr, nil)
 	if err != nil && err != http.ErrServerClosed {
