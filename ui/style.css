@@ -71,15 +71,35 @@ body.light-theme .login-card {
     box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.08);
 }
 
-body.light-theme .form-control {
-    background: rgba(255, 255, 255, 0.8);
+body.light-theme .form-control,
+body.light-theme input,
+body.light-theme select,
+body.light-theme textarea {
+    background: rgba(255, 255, 255, 0.85);
     color: #1e1e2f;
     border: 1px solid rgba(0, 0, 0, 0.12);
 }
 
-body.light-theme .form-control:focus {
+body.light-theme .form-control:focus,
+body.light-theme input:focus,
+body.light-theme select:focus,
+body.light-theme textarea:focus {
     background: #ffffff;
     border-color: var(--primary);
+}
+
+body.light-theme select option {
+    background-color: #ffffff;
+    color: #1e1e2f;
+}
+
+body.light-theme .form-control:disabled,
+body.light-theme input:disabled,
+body.light-theme select:disabled,
+body.light-theme textarea:disabled {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+    color: var(--text-muted) !important;
+    border-color: rgba(0, 0, 0, 0.08) !important;
 }
 
 body.light-theme .terminal-container,
@@ -305,30 +325,62 @@ label {
     color: var(--text-secondary);
 }
 
-input[type="text"], input[type="password"], select, textarea {
-    background-color: rgba(0, 0, 0, 0.2);
+.form-control,
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="email"],
+input[type="url"],
+input[type="time"],
+select,
+textarea {
+    background-color: rgba(18, 18, 29, 0.75);
     border: 1px solid var(--border-color);
-    padding: 0.75rem 1rem;
+    padding: 0.625rem 0.875rem;
     border-radius: var(--inner-radius);
     color: var(--text-primary);
     font-family: var(--font-sans);
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     transition: var(--transition);
+    width: 100%;
 }
 
-input:focus, select:focus, textarea:focus {
+.form-control:focus,
+input:focus,
+select:focus,
+textarea:focus {
     outline: none;
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(124, 77, 255, 0.15);
+    box-shadow: 0 0 0 3px var(--primary-glow);
+    background-color: rgba(24, 24, 38, 0.95);
 }
 
 select {
     appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23a0a0b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.75rem center;
     background-size: 1rem;
     padding-right: 2.5rem;
+}
+
+select option {
+    background-color: #12121d;
+    color: #f3f3f6;
+    padding: 0.5rem;
+}
+
+.form-control:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+    background-color: rgba(255, 255, 255, 0.04) !important;
+    color: var(--text-muted) !important;
+    border-color: rgba(255, 255, 255, 0.06) !important;
+    cursor: not-allowed;
+    opacity: 0.6;
 }
 
 small {
