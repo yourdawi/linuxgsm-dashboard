@@ -4386,8 +4386,17 @@ function renderConsoleGameActions(server) {
             );
         }
     }
-    // 4. Mod & Workshop Games (Arma 3, Minecraft, 7DTD, Factorio, ARK, KF2, DST, Insurgency, Valheim, MTA, TrackMania)
-    else if (['arma3', 'mc', 'mcb', 'mct', 'sdtd', 'fct', 'ark', 'kf2', 'dst', 'inss', 'vh', 'valheim', 'mta', 'tm2', 'tmf'].includes(game)) {
+    // 4. Multi Theft Auto (MTA:SA)
+    else if (game === 'mta' || game === 'multitheftauto') {
+        buttonsHtml += `
+            <button id="game-act-mta-resources" class="btn btn-primary btn-sm" ${disabledAttr}>
+                <span>📦 ${isDe ? 'MTA Default Resources Installieren' : 'Install MTA Default Resources'}</span>
+            </button>
+        `;
+        clickHandlers.push({ id: 'game-act-mta-resources', action: 'install-default-resources' });
+    }
+    // 5. Mod & Workshop Games (Arma 3, Minecraft, 7DTD, Factorio, ARK, KF2, DST, Insurgency, Valheim, TrackMania)
+    else if (['arma3', 'mc', 'mcb', 'mct', 'sdtd', 'fct', 'ark', 'kf2', 'dst', 'inss', 'vh', 'valheim', 'tm2', 'tmf'].includes(game)) {
         let modFrameworkLabel = isDe ? 'Mods / Plugins' : 'Mods / Plugins';
         if (game === 'arma3') modFrameworkLabel = 'Arma 3 Mods / Workshop';
         else if (['mc', 'mcb', 'mct'].includes(game)) modFrameworkLabel = 'Paper/Spigot/Fabric Plugins';
@@ -4398,7 +4407,6 @@ function renderConsoleGameActions(server) {
         else if (game === 'dst') modFrameworkLabel = 'DST Workshop Mods';
         else if (game === 'inss') modFrameworkLabel = 'Mod.io Mods';
         else if (['vh', 'valheim'].includes(game)) modFrameworkLabel = 'Valheim BepInEx Mods';
-        else if (game === 'mta') modFrameworkLabel = 'MTA Default Resources';
         else if (['tm2', 'tmf'].includes(game)) modFrameworkLabel = 'TrackMania Plugins & Scripts';
 
         buttonsHtml += `

@@ -55,7 +55,7 @@ func isValidGameCmd(c string) bool {
 // Helper to validate action against whitelist
 func isValidAction(a string) bool {
 	switch a {
-	case "start", "stop", "restart", "update", "details", "backup", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe", "change-password", "check-update", "mods-install", "mods-update", "mods-remove", "fastdl", "map-compressor", "postdetails", "skeleton", "debug":
+	case "start", "stop", "restart", "update", "details", "backup", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe", "change-password", "check-update", "mods-install", "mods-update", "mods-remove", "fastdl", "map-compressor", "postdetails", "skeleton", "debug", "install-default-resources":
 		return true
 	}
 	return false
