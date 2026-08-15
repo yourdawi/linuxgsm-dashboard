@@ -565,7 +565,7 @@ function handleRouting() {
     }
     
     // Hide all views, deactivate menu items
-    el.views.forEach(v => v.classList.add('hidden'));
+    document.querySelectorAll('.app-view').forEach(v => v.classList.add('hidden'));
     el.menuItems.forEach(item => {
         item.classList.remove('active');
         if (item.getAttribute('href') === hash) {
@@ -590,10 +590,12 @@ function handleRouting() {
         refreshMetrics();
         startMetricsPolling();
     } else if (viewName === 'console') {
-        populateConsoleDropdown();
-        if (state.selectedConsoleServer) {
-            startConsolePolling();
-        }
+        ensureServersLoaded().then(() => {
+            populateConsoleDropdown();
+            if (state.selectedConsoleServer) {
+                startConsolePolling();
+            }
+        });
     } else if (viewName === 'users') {
         loadUsersList();
     } else if (viewName === 'settings') {
@@ -601,12 +603,33 @@ function handleRouting() {
     } else if (viewName === 'installer') {
         loadGamesList();
     } else if (viewName === 'backups') {
-        populateBackupsDropdown();
+        ensureServersLoaded().then(() => {
+            populateBackupsDropdown();
+        });
     } else if (viewName === 'files') {
-        updateFilesServerSelect();
-        loadFilesTree();
+        ensureServersLoaded().then(() => {
+            updateFilesServerSelect();
+            if (!currentFilesServer && state.servers && state.servers.length > 0) {
+                currentFilesServer = state.servers[0].id;
+                if (el.filesServerSelect) el.filesServerSelect.value = currentFilesServer;
+            }
+            loadFilesTree();
+        });
     } else if (viewName === 'audit') {
         loadAuditLogs();
+    }
+}
+
+async function ensureServersLoaded() {
+    if (!state.servers || state.servers.length === 0) {
+        try {
+            const res = await apiFetch('/api/servers');
+            if (res.status === 200) {
+                state.servers = await res.json();
+            }
+        } catch (e) {
+            console.error('Failed to fetch servers:', e);
+        }
     }
 }
 
