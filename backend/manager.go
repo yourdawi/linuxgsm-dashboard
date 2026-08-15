@@ -19,6 +19,44 @@ import (
 	"time"
 )
 
+type GameServerInstance struct {
+	ID          string      `json:"id"`     // Username or ScriptName
+	Name        string      `json:"name"`   // Game Name
+	User        string      `json:"user"`   // Linux User
+	Script      string      `json:"script"` // Executable script name (e.g. arkserver)
+	Status      string      `json:"status"` // running | stopped | installing | updating
+	Port        int         `json:"port"`   // Game Port
+	Game        string      `json:"game"`   // Game ID
+	CPU         float64     `json:"cpu"`    // Process CPU usage percentage
+	RAM         float64     `json:"ram"`    // Process RAM usage in GB
+	PIDs        []int       `json:"pids,omitempty"`
+	ParsedPorts []PortProbe `json:"parsed_ports,omitempty"`
+	Tag         string      `json:"tag,omitempty"`
+	QueryData   QueryInfo   `json:"query_data"`
+}
+
+type QueryInfo struct {
+	Online     bool         `json:"online"`
+	Map        string       `json:"map"`
+	NumPlayers int          `json:"num_players"`
+	MaxPlayers int          `json:"max_players"`
+	Bots       int          `json:"bots,omitempty"`
+	Ping       int          `json:"ping,omitempty"`
+	Players    []PlayerInfo `json:"players,omitempty"`
+}
+
+type PlayerInfo struct {
+	Name  string `json:"name"`
+	Score int    `json:"score"`
+	Time  string `json:"time"`
+}
+
+type ConfigFile struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	Layer string `json:"layer"` // "default" | "common" | "instance" | "secrets"
+}
+
 type BackupFile struct {
 	Name string    `json:"name"`
 	Size int64     `json:"size"`
@@ -34,22 +72,6 @@ type BackupSettings struct {
 	AutoBackupCron    string `json:"autobackup_cron"`
 }
 
-type PlayerInfo struct {
-	Name  string `json:"name"`
-	Score int    `json:"score"`
-	Time  string `json:"time"`
-}
-
-type QueryInfo struct {
-	Online     bool         `json:"online"`
-	Map        string       `json:"map"`
-	NumPlayers int          `json:"numplayers"`
-	MaxPlayers int          `json:"maxplayers"`
-	Bots       int          `json:"bots"`
-	Ping       int          `json:"ping"`
-	Players    []PlayerInfo `json:"players"`
-}
-
 type CronSchedule struct {
 	MonitorInterval string `json:"monitor_interval"`
 	UpdateInterval  string `json:"update_interval"`
@@ -57,34 +79,9 @@ type CronSchedule struct {
 	CoreUpdateDay   string `json:"core_update_day"`
 }
 
-type GameServerInstance struct {
-	ID          string      `json:"id"`     // Username
-	Name        string      `json:"name"`   // Game Name
-	User        string      `json:"user"`   // Linux User
-	Script      string      `json:"script"` // Executable script name (e.g. arkserver)
-	Status      string      `json:"status"` // running | stopped | installing | updating
-	Port        int         `json:"port"`   // Game Port
-	Game        string      `json:"game"`   // Game ID
-	CPU         float64     `json:"cpu"`    // Process CPU usage percentage
-	RAM         float64     `json:"ram"`    // Process RAM usage in GB
-	PIDs        []int       `json:"pids,omitempty"`
-	ParsedPorts []PortProbe `json:"parsed_ports,omitempty"`
-	Tag         string      `json:"tag,omitempty"`
-	QueryData   QueryInfo   `json:"query_data"`
-}
-
-type ConfigFile struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	Layer string `json:"layer"` // "default" | "common" | "instance" | "secrets"
-}
-
 type InstanceManager struct {
-	mu          sync.Mutex
-	instances   map[string]*GameServerInstance
-	isMock      bool
-	mockServers []GameServerInstance
-	mockBackups map[string][]BackupFile
+	mu        sync.Mutex
+	instances map[string]*GameServerInstance
 }
 
 // Msg returns the English or German text depending on the language code.
@@ -95,67 +92,13 @@ func Msg(lang, en, de string) string {
 	return en
 }
 
-func NewInstanceManager(isMock bool) *InstanceManager {
+func NewInstanceManager() *InstanceManager {
 	im := &InstanceManager{
-		instances:   make(map[string]*GameServerInstance),
-		isMock:      isMock,
-		mockBackups: make(map[string][]BackupFile),
+		instances: make(map[string]*GameServerInstance),
 	}
 
-	if isMock {
-		im.mockServers = []GameServerInstance{
-			{
-				ID:     "arkserver",
-				Name:   "Ark: Survival Evolved",
-				User:   "arkserver",
-				Script: "arkserver",
-				Status: "running",
-				Port:   7777,
-				Game:   "ark",
-				Tag:    "Production",
-				QueryData: QueryInfo{
-					Online:     true,
-					Map:        "TheIsland",
-					NumPlayers: 18,
-					MaxPlayers: 70,
-					Bots:       0,
-					Ping:       24,
-					Players: []PlayerInfo{
-						{Name: "Survivalist_Dan", Score: 1450, Time: "2h 15m"},
-						{Name: "AlphaTrex99", Score: 980, Time: "1h 40m"},
-						{Name: "RaptorRider", Score: 620, Time: "35m"},
-					},
-				},
-				ParsedPorts: []PortProbe{
-					{Port: 7777, Protocol: "UDP", Description: "Game"},
-					{Port: 27015, Protocol: "UDP", Description: "Query"},
-				},
-			},
-			{
-				ID:     "vhserver",
-				Name:   "Valheim",
-				User:   "vhserver",
-				Script: "vhserver",
-				Status: "stopped",
-				Port:   2456,
-				Game:   "valheim",
-				Tag:    "Cluster A",
-				QueryData: QueryInfo{
-					Online:     false,
-					Map:        "Valheim_PVP",
-					NumPlayers: 0,
-					MaxPlayers: 10,
-				},
-				ParsedPorts: []PortProbe{
-					{Port: 2456, Protocol: "UDP", Description: "Game"},
-					{Port: 2457, Protocol: "UDP", Description: "Query"},
-				},
-			},
-		}
-	} else {
-		cleanupLeftoverSudoers()
-		im.ScanInstances()
-	}
+	cleanupLeftoverSudoers()
+	im.ScanInstances()
 
 	return im
 }
@@ -163,25 +106,6 @@ func NewInstanceManager(isMock bool) *InstanceManager {
 func (im *InstanceManager) GetInstances() []GameServerInstance {
 	im.mu.Lock()
 	defer im.mu.Unlock()
-
-	if im.isMock {
-		stats := GetMockSystemStats(im.mockServers)
-		statsByID := make(map[string]ServerStats, len(stats.Servers))
-		for _, stat := range stats.Servers {
-			statsByID[stat.ID] = stat
-		}
-
-		list := make([]GameServerInstance, len(im.mockServers))
-		for i, srv := range im.mockServers {
-			list[i] = srv
-			if stat, ok := statsByID[srv.ID]; ok {
-				list[i].CPU = stat.CPU
-				list[i].RAM = stat.RAM
-				list[i].PIDs = stat.PIDs
-			}
-		}
-		return list
-	}
 
 	im.ScanInstancesNoLock()
 
@@ -201,10 +125,6 @@ func (im *InstanceManager) ScanInstances() {
 }
 
 func (im *InstanceManager) ScanInstancesNoLock() {
-	if im.isMock {
-		return
-	}
-
 	// 1. Read /etc/passwd to find users with home directory in /home/
 	file, err := os.Open("/etc/passwd")
 	if err != nil {
@@ -323,23 +243,23 @@ func parseDetailsOutput(output string) (string, []PortProbe) {
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		
+
 		// 1. Try server name match
 		if match := reName.FindStringSubmatch(line); len(match) > 1 {
 			rawName := strings.TrimSpace(match[1])
 			serverName = strings.TrimSpace(reClean.ReplaceAllString(rawName, ""))
 			continue
 		}
-		
+
 		// 2. Try port match
 		if match := rePort.FindStringSubmatch(line); len(match) > 3 {
 			desc := strings.TrimSpace(match[1])
 			portStr := match[2]
 			proto := strings.ToUpper(match[3])
-			
+
 			portVal := 0
 			fmt.Sscanf(portStr, "%d", &portVal)
-			
+
 			if portVal > 0 {
 				ports = append(ports, PortProbe{
 					Port:        portVal,
@@ -358,7 +278,7 @@ func parseDetailsOutput(output string) (string, []PortProbe) {
 func (im *InstanceManager) RefreshServerDetails(serverID string) {
 	im.mu.Lock()
 	srv, exists := im.instances[serverID]
-	if !exists || im.isMock {
+	if !exists {
 		im.mu.Unlock()
 		return
 	}
@@ -378,7 +298,7 @@ func (im *InstanceManager) RefreshServerDetails(serverID string) {
 func (im *InstanceManager) RefreshServerDetailsForce(serverID string) {
 	im.mu.Lock()
 	srv, exists := im.instances[serverID]
-	if !exists || im.isMock {
+	if !exists {
 		im.mu.Unlock()
 		return
 	}
@@ -393,18 +313,18 @@ func (im *InstanceManager) executeRefreshDetails(serverID, username, scriptName 
 	go func() {
 		execCmd := fmt.Sprintf("./%s details", scriptName)
 		cmd := exec.Command("runuser", "-l", username, "-c", execCmd)
-		
+
 		outputBytes, err := cmd.Output()
 		if err != nil {
 			fmt.Printf("[WARNING] failed to query details for server %s: %v\n", serverID, err)
 			return
 		}
-		
+
 		serverName, ports := parseDetailsOutput(stripAnsi(string(outputBytes)))
-		
+
 		im.mu.Lock()
 		defer im.mu.Unlock()
-		
+
 		srv, exists := im.instances[serverID]
 		if exists {
 			if serverName != "" {
@@ -433,67 +353,11 @@ func (srv *GameServerInstance) GetProcessResourceUsage() (cpu float64, ram float
 
 func (im *InstanceManager) GetConsole(serverID string, mode string, lang string) ([]string, error) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return nil, fmt.Errorf("server %s not found", serverID)
-	}
-
-	if isMock {
-		switch mode {
-		case "script":
-			return []string{
-				"=== [MOCK] LINUXGSM SCRIPT LOG ===",
-				"[ INFO ] LinuxGSM core version: v24.1.0",
-				"[ INFO ] Checking dependencies... OK",
-				"[ INFO ] Running command: ./script status",
-				"[ OK ] Server is currently running.",
-			}, nil
-		case "game":
-			return []string{
-				"=== [MOCK] GAME ENGINE LOG ===",
-				"[Engine] Engine initialized successfully.",
-				"[Network] Listening on port 7777 (UDP)",
-				"[World] Map 'world_default' loaded in 1.42s.",
-				"[Chat] Admin: Welcome to the server!",
-			}, nil
-		case "console":
-			return []string{
-				"=== [MOCK] CONSOLE LOG FILE ===",
-				"Console logging enabled.",
-				"Initializing server instance...",
-				"Server tickrate locked at 60 FPS.",
-			}, nil
-		default: // tmux
-			if srv.Status != "running" {
-				return []string{Msg(lang, "[MOCK] Server is offline. tmux session is not active.", "[MOCK] Server ist offline. tmux Sitzung nicht aktiv.")}, nil
-			}
-			return []string{
-				"=== [MOCK] TMUX LIVE SCREEN ===",
-				fmt.Sprintf("Status: running on port %d", srv.Port),
-				fmt.Sprintf("OS: Mock OS (Windows) | Engine ID: %s", srv.Game),
-				"SteamCMD client version 1.0.0 init...",
-				"Initializing GameEngine Loop...",
-				"Master Server registration: SUCCESS",
-				"Active players: 3/32",
-				"Tickrate: 30.1 Hz",
-				"LOG: player [Admin] connected.",
-				"LOG: player [Gamer1] connected.",
-				"LOG: autosave triggered. Map saved.",
-			}, nil
-		}
 	}
 
 	switch mode {
@@ -582,33 +446,11 @@ func readLastNLines(logPath string, n int, lang string) ([]string, error) {
 
 func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return nil, fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		return []ConfigFile{
-			{Name: "_default.cfg", Path: "mock://_default.cfg", Layer: "default"},
-			{Name: "common.cfg", Path: "mock://common.cfg", Layer: "common"},
-			{Name: fmt.Sprintf("%s.cfg", srv.Script), Path: fmt.Sprintf("mock://%s.cfg", srv.Script), Layer: "instance"},
-			{Name: "secrets-mock.cfg", Path: "mock://secrets-mock.cfg", Layer: "secrets"},
-			{Name: "serverfiles/server.properties", Path: "mock://serverfiles/server.properties", Layer: "instance"},
-			{Name: "serverfiles/server.cfg", Path: "mock://serverfiles/server.cfg", Layer: "instance"},
-		}, nil
 	}
 
 	var configs []ConfigFile
@@ -667,80 +509,11 @@ func isPathWithinDirectories(path string, allowedDirs ...string) bool {
 
 func (im *InstanceManager) GetConfigFileContent(serverID, path string) (string, error) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return "", fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		if strings.HasSuffix(path, "common.cfg") {
-			return `# Shared LinuxGSM Config Template for Mock Mode
-ip="0.0.0.0"
-port="2456"
-queryport="27015"
-maxplayers="16"
-updateonstart="always"`, nil
-		}
-		if strings.HasSuffix(path, "server.properties") {
-			return `# Minecraft server properties
-# Tue Jul 07 14:30:00 CEST 2026
-enable-jmx-monitoring=false
-rcon.port=25575
-level-seed=4815162342
-gamemode=survival
-enable-command-block=true
-enable-query=false
-generator-settings={}
-query.port=25565
-pvp=true
-generate-structures=true
-difficulty=easy
-network-compression-threshold=256
-max-players=20
-require-resource-pack=false
-use-native-transport=true
-online-mode=true
-server-port=25565
-motd=Welcome to the LinuxGSM Minecraft Server!`, nil
-		}
-		if strings.HasSuffix(path, "server.cfg") {
-			return `// Server configuration file
-hostname "LinuxGSM Dedicated Server"
-rcon_password "admin123"
-sv_password ""
-sv_maxplayers 16
-sv_lan 0`, nil
-		}
-		if strings.HasSuffix(path, "settings.json") {
-			return `{
-  "ServerName": "My Palworld Server",
-  "ServerPassword": "",
-  "AdminPassword": "superadminpass",
-  "Difficulty": "None",
-  "DayTimeSpeedRate": 1.0,
-  "NightTimeSpeedRate": 1.0,
-  "ExpRate": 1.0,
-  "PalCaptureRate": 1.0
-}`, nil
-		}
-		return fmt.Sprintf(`# Instance Configuration for %s
-servername="Sleek %s Server"
-serverpassword="secretpassword"
-adminpassword="adminpassword"
-saveinterval="600"`, srv.Script, srv.Name), nil
 	}
 
 	// SECURITY CHECK: Ensure path is within allowed directories
@@ -761,27 +534,11 @@ saveinterval="600"`, srv.Script, srv.Name), nil
 
 func (im *InstanceManager) SaveConfigFileContent(serverID, path, content string) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		fmt.Printf("[MOCK SAVE] Saved config %s for %s\n", path, serverID)
-		return nil
 	}
 
 	// SECURITY CHECK: Ensure path is within allowed directories
@@ -802,18 +559,7 @@ func (im *InstanceManager) SaveConfigFileContent(serverID, path, content string)
 
 func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, serverID, action, lang string) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 
 	if srv == nil {
 		im.mu.Unlock()
@@ -832,23 +578,9 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 	updateStatus := func(newStatus string) {
 		im.mu.Lock()
 		defer im.mu.Unlock()
-		if isMock {
-			for i := range im.mockServers {
-				if im.mockServers[i].ID == serverID {
-					im.mockServers[i].Status = newStatus
-					break
-				}
-			}
-		} else {
-			if s, ok := im.instances[serverID]; ok {
-				s.Status = newStatus
-			}
+		if s, ok := im.instances[serverID]; ok {
+			s.Status = newStatus
 		}
-	}
-
-	if isMock {
-		StreamMockAction(w, r, action, serverID, updateStatus)
-		return
 	}
 
 	// Real execution on Linux
@@ -937,16 +669,6 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 }
 
 func (im *InstanceManager) InstallGame(w http.ResponseWriter, r *http.Request, gameCmd, username, password, lang string) {
-	if im.isMock {
-		addServerCallback := func(srv GameServerInstance) {
-			im.mu.Lock()
-			defer im.mu.Unlock()
-			im.mockServers = append(im.mockServers, srv)
-		}
-		StreamMockInstall(w, r, gameCmd, username, addServerCallback)
-		return
-	}
-
 	// Real installation on Linux
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1323,27 +1045,11 @@ func getGameFromScriptName(scriptName string) string {
 
 func (im *InstanceManager) SendConsoleCommand(serverID string, command string) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return fmt.Errorf("server %s not found", serverID)
-	}
-
-	if isMock {
-		fmt.Printf("[MOCK CONSOLE INPUT] Server %s received command: %s\n", serverID, command)
-		return nil
 	}
 
 	socketName, sessionName, ok := findLinuxGSMTmuxTarget(srv.User, srv.Script)
@@ -1374,6 +1080,135 @@ var skipDirs = map[string]bool{
 	"Saved":             true,
 	"serverfiles/steam": true,
 	"steamclient":       true,
+}
+
+type FileNode struct {
+	Name     string     `json:"name"`
+	Path     string     `json:"path"`
+	IsDir    bool       `json:"is_dir"`
+	Size     int64      `json:"size"`
+	ModTime  string     `json:"mod_time"`
+	Children []FileNode `json:"children,omitempty"`
+}
+
+func (im *InstanceManager) GetServerFiles(serverID string, subPath string) ([]FileNode, error) {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return nil, fmt.Errorf("server %s not found", serverID)
+	}
+
+	baseDir := filepath.Join("/home", srv.User, "serverfiles")
+	targetDir := baseDir
+	if subPath != "" {
+		targetDir = filepath.Join(baseDir, subPath)
+	}
+
+	rel, err := filepath.Rel(baseDir, targetDir)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return nil, fmt.Errorf("invalid path traversal attempt")
+	}
+
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		return []FileNode{}, nil
+	}
+
+	var nodes []FileNode
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		relPath, _ := filepath.Rel(baseDir, filepath.Join(targetDir, entry.Name()))
+		relPath = filepath.ToSlash(relPath)
+
+		nodes = append(nodes, FileNode{
+			Name:    entry.Name(),
+			Path:    relPath,
+			IsDir:   entry.IsDir(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
+		})
+	}
+
+	return nodes, nil
+}
+
+func (im *InstanceManager) GetServerFileContent(serverID string, relPath string) (string, error) {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return "", fmt.Errorf("server %s not found", serverID)
+	}
+
+	baseDir := filepath.Join("/home", srv.User, "serverfiles")
+	targetFile := filepath.Join(baseDir, relPath)
+	rel, err := filepath.Rel(baseDir, targetFile)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("invalid path traversal attempt")
+	}
+
+	content, err := os.ReadFile(targetFile)
+	if err != nil {
+		return "", err
+	}
+
+	return string(content), nil
+}
+
+func (im *InstanceManager) SaveServerFileContent(serverID string, relPath string, content string) error {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server %s not found", serverID)
+	}
+
+	baseDir := filepath.Join("/home", srv.User, "serverfiles")
+	targetFile := filepath.Join(baseDir, relPath)
+	rel, err := filepath.Rel(baseDir, targetFile)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("invalid path traversal attempt")
+	}
+
+	return os.WriteFile(targetFile, []byte(content), 0644)
+}
+
+func (im *InstanceManager) UploadServerFile(serverID string, subPath string, filename string, data []byte) error {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server %s not found", serverID)
+	}
+
+	baseDir := filepath.Join("/home", srv.User, "serverfiles")
+	targetDir := baseDir
+	if subPath != "" {
+		targetDir = filepath.Join(baseDir, subPath)
+	}
+
+	rel, err := filepath.Rel(baseDir, targetDir)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("invalid path traversal attempt")
+	}
+
+	targetFile := filepath.Join(targetDir, filepath.Base(filename))
+	err = os.WriteFile(targetFile, data, 0644)
+	if err != nil {
+		return err
+	}
+
+	_ = exec.Command("chown", fmt.Sprintf("%s:%s", srv.User, srv.User), targetFile).Run()
+	return nil
 }
 
 func findConfigsInDir(baseDir string, dirPath string, depth int) []ConfigFile {
@@ -1423,18 +1258,7 @@ type PortProbe struct {
 
 func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Request, serverID string) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
@@ -1449,73 +1273,51 @@ func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Reque
 	}
 
 	var probes []PortProbe
-	if isMock {
-		// Mock responses
-		if len(srv.ParsedPorts) > 0 {
-			for _, pp := range srv.ParsedPorts {
-				probes = append(probes, PortProbe{
-					Port:        pp.Port,
-					Protocol:    pp.Protocol,
-					Open:        srv.Status == "running",
-					Description: pp.Description,
-				})
-			}
-		} else {
-			probes = []PortProbe{
-				{Port: srv.Port, Protocol: "TCP", Open: srv.Status == "running", Description: "Game Port (TCP)"},
-				{Port: srv.Port, Protocol: "UDP", Open: srv.Status == "running", Description: "Game Query Port (UDP)"},
-			}
-			if srv.Game != "minecraft" {
-				probes = append(probes, PortProbe{Port: srv.Port + 1, Protocol: "UDP", Open: srv.Status == "running", Description: "Steam Query Port (UDP)"})
-			}
-		}
+	var configProbes []PortProbe
+	if len(srv.ParsedPorts) > 0 {
+		configProbes = make([]PortProbe, len(srv.ParsedPorts))
+		copy(configProbes, srv.ParsedPorts)
 	} else {
-		var configProbes []PortProbe
-		if len(srv.ParsedPorts) > 0 {
-			configProbes = make([]PortProbe, len(srv.ParsedPorts))
-			copy(configProbes, srv.ParsedPorts)
-		} else {
-			// Try to parse ports directly from config files
-			homeDir := filepath.Join("/home", srv.User)
-			configProbes = parseServerPortsFromConfig(homeDir, srv.Script, srv.Game)
-		}
+		// Try to parse ports directly from config files
+		homeDir := filepath.Join("/home", srv.User)
+		configProbes = parseServerPortsFromConfig(homeDir, srv.Script, srv.Game)
+	}
 
-		// If no probes could be parsed, fallback to heuristics
-		if len(configProbes) == 0 {
-			p := srv.Port
-			if p > 0 {
-				if srv.Game == "minecraft" || srv.Game == "mc" {
-					configProbes = append(configProbes, PortProbe{Port: p, Protocol: "TCP", Description: "Game Port"})
-					rcon := p + 10
-					if p == 25565 {
-						rcon = 25575
-					}
-					configProbes = append(configProbes, PortProbe{Port: rcon, Protocol: "TCP", Description: "RCON Port"})
-				} else {
-					configProbes = append(configProbes, PortProbe{Port: p, Protocol: "UDP", Description: "Game Port"})
-					configProbes = append(configProbes, PortProbe{Port: p + 1, Protocol: "UDP", Description: "Steam Query Port"})
-					if p != 27015 && p+1 != 27015 {
-						configProbes = append(configProbes, PortProbe{Port: 27015, Protocol: "UDP", Description: "Default Query Port"})
-					}
+	// If no probes could be parsed, fallback to heuristics
+	if len(configProbes) == 0 {
+		p := srv.Port
+		if p > 0 {
+			if srv.Game == "minecraft" || srv.Game == "mc" {
+				configProbes = append(configProbes, PortProbe{Port: p, Protocol: "TCP", Description: "Game Port"})
+				rcon := p + 10
+				if p == 25565 {
+					rcon = 25575
+				}
+				configProbes = append(configProbes, PortProbe{Port: rcon, Protocol: "TCP", Description: "RCON Port"})
+			} else {
+				configProbes = append(configProbes, PortProbe{Port: p, Protocol: "UDP", Description: "Game Port"})
+				configProbes = append(configProbes, PortProbe{Port: p + 1, Protocol: "UDP", Description: "Steam Query Port"})
+				if p != 27015 && p+1 != 27015 {
+					configProbes = append(configProbes, PortProbe{Port: 27015, Protocol: "UDP", Description: "Default Query Port"})
 				}
 			}
 		}
+	}
 
-		// Run probes and copy to final slice
-		for _, cp := range configProbes {
-			open := false
-			if strings.ToUpper(cp.Protocol) == "TCP" {
-				open = checkTCP(publicIP, cp.Port)
-			} else {
-				open = checkUDPQuery(publicIP, cp.Port)
-			}
-			probes = append(probes, PortProbe{
-				Port:        cp.Port,
-				Protocol:    cp.Protocol,
-				Open:        open,
-				Description: cp.Description,
-			})
+	// Run probes and copy to final slice
+	for _, cp := range configProbes {
+		open := false
+		if strings.ToUpper(cp.Protocol) == "TCP" {
+			open = checkTCP(publicIP, cp.Port)
+		} else {
+			open = checkUDPQuery(publicIP, cp.Port)
 		}
+		probes = append(probes, PortProbe{
+			Port:        cp.Port,
+			Protocol:    cp.Protocol,
+			Open:        open,
+			Description: cp.Description,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1527,38 +1329,11 @@ func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Reque
 
 func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, serverID string) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		http.Error(w, "Server not found", http.StatusNotFound)
-		return
-	}
-
-	if isMock {
-		im.mu.Lock()
-		newMockServers := []GameServerInstance{}
-		for _, ms := range im.mockServers {
-			if ms.ID != serverID {
-				newMockServers = append(newMockServers, ms)
-			}
-		}
-		im.mockServers = newMockServers
-		im.mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Mock server deleted successfully"})
 		return
 	}
 
@@ -1917,12 +1692,6 @@ func (im *InstanceManager) getBackupDirsForServer(srv *GameServerInstance) []str
 		filepath.Join("/home", user, "backups"),
 	}
 
-	// In mock mode, also include the mock directory
-	if im.isMock {
-		mockDir := filepath.Join(".", ".mock_backups", srv.ID)
-		dirs = append([]string{mockDir}, dirs...)
-	}
-
 	// Read backupdir from config files (priority: <script>.cfg -> common.cfg -> _default.cfg)
 	configDir := filepath.Join("/home", user, "lgsm", "config-lgsm", srv.Script)
 	filesToTry := []string{
@@ -1938,7 +1707,7 @@ func (im *InstanceManager) getBackupDirsForServer(srv *GameServerInstance) []str
 		if err != nil {
 			continue
 		}
-		
+
 		scanner := bufio.NewScanner(file)
 		var customDir string
 		for scanner.Scan() {
@@ -1990,24 +1759,6 @@ func (im *InstanceManager) getBackupFilePath(srv *GameServerInstance, filename s
 		return "", fmt.Errorf("invalid backup file extension")
 	}
 
-	// In mock mode, if it's one of the default mock files, return dummy or actual if exists
-	if im.isMock {
-		mockPath := filepath.Join(".", ".mock_backups", srv.ID, filename)
-		if _, err := os.Stat(mockPath); err == nil {
-			return mockPath, nil
-		}
-		// If it's a default mock file but doesn't exist, we can create/write a dummy one
-		if strings.HasSuffix(filename, "-backup-2026-07-08-120000.tar.gz") || strings.HasSuffix(filename, "-backup-2026-07-09-080000.tar.gz") {
-			mockDir := filepath.Join(".", ".mock_backups", srv.ID)
-			_ = os.MkdirAll(mockDir, 0755)
-			destPath := filepath.Join(mockDir, filename)
-			if _, err := os.Stat(destPath); err != nil {
-				_ = os.WriteFile(destPath, []byte("Mock backup file content"), 0644)
-			}
-			return destPath, nil
-		}
-	}
-
 	dirs := im.getBackupDirsForServer(srv)
 	for _, dir := range dirs {
 		path := filepath.Join(dir, filename)
@@ -2020,18 +1771,7 @@ func (im *InstanceManager) getBackupFilePath(srv *GameServerInstance, filename s
 
 func (im *InstanceManager) ListBackups(serverID string) ([]BackupFile, error) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
@@ -2039,73 +1779,6 @@ func (im *InstanceManager) ListBackups(serverID string) ([]BackupFile, error) {
 	}
 
 	var backups []BackupFile
-
-	if isMock {
-		now := time.Now()
-		// Default mock files
-		backups = []BackupFile{
-			{
-				Name: fmt.Sprintf("%s-backup-2026-07-08-120000.tar.gz", srv.Script),
-				Size: 1024 * 1024 * 150,
-				Date: now.Add(-24 * time.Hour),
-				Path: fmt.Sprintf("mock://backup/%s-backup-2026-07-08-120000.tar.gz", srv.Script),
-			},
-			{
-				Name: fmt.Sprintf("%s-backup-2026-07-09-080000.tar.gz", srv.Script),
-				Size: 1024 * 1024 * 152,
-				Date: now.Add(-2 * time.Hour),
-				Path: fmt.Sprintf("mock://backup/%s-backup-2026-07-09-080000.tar.gz", srv.Script),
-			},
-		}
-
-		// Read files in mock directory too
-		mockDir := filepath.Join(".", ".mock_backups", srv.ID)
-		if entries, err := os.ReadDir(mockDir); err == nil {
-			for _, entry := range entries {
-				// Don't duplicate default ones
-				if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".tar.gz") {
-					if entry.Name() == fmt.Sprintf("%s-backup-2026-07-08-120000.tar.gz", srv.Script) ||
-						entry.Name() == fmt.Sprintf("%s-backup-2026-07-09-080000.tar.gz", srv.Script) {
-						continue
-					}
-					info, err := entry.Info()
-					if err != nil {
-						continue
-					}
-					backups = append(backups, BackupFile{
-						Name: entry.Name(),
-						Size: info.Size(),
-						Date: info.ModTime(),
-						Path: filepath.Join(mockDir, entry.Name()),
-					})
-				}
-			}
-		}
-
-		// Add memory-only mock backups if any
-		im.mu.Lock()
-		if uploaded, ok := im.mockBackups[serverID]; ok {
-			for _, b := range uploaded {
-				// Don't duplicate if already listed from directory scan
-				found := false
-				for _, existing := range backups {
-					if existing.Name == b.Name {
-						found = true
-						break
-					}
-				}
-				if !found {
-					backups = append(backups, b)
-				}
-			}
-		}
-		im.mu.Unlock()
-
-		sort.Slice(backups, func(i, j int) bool {
-			return backups[i].Date.After(backups[j].Date)
-		})
-		return backups, nil
-	}
 
 	dirs := im.getBackupDirsForServer(srv)
 	for _, dir := range dirs {
@@ -2138,42 +1811,11 @@ func (im *InstanceManager) ListBackups(serverID string) ([]BackupFile, error) {
 
 func (im *InstanceManager) DeleteBackup(serverID, fileName string) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		im.mu.Lock()
-		if im.mockBackups != nil {
-			var list []BackupFile
-			for _, b := range im.mockBackups[serverID] {
-				if b.Name != fileName {
-					list = append(list, b)
-				}
-			}
-			im.mockBackups[serverID] = list
-		}
-		im.mu.Unlock()
-
-		mockPath := filepath.Join(".", ".mock_backups", serverID, fileName)
-		_ = os.Remove(mockPath)
-
-		fmt.Printf("[MOCK DELETE] Deleted backup %s for %s\n", fileName, serverID)
-		return nil
 	}
 
 	filePath, err := im.getBackupFilePath(srv, fileName)
@@ -2186,18 +1828,7 @@ func (im *InstanceManager) DeleteBackup(serverID, fileName string) error {
 
 func (im *InstanceManager) GetBackupPath(serverID, fileName string) (string, error) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
@@ -2209,18 +1840,7 @@ func (im *InstanceManager) GetBackupPath(serverID, fileName string) (string, err
 
 func (im *InstanceManager) UploadBackup(serverID string, filename string, fileReader io.Reader) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
@@ -2232,50 +1852,6 @@ func (im *InstanceManager) UploadBackup(serverID string, filename string, fileRe
 	}
 	if strings.Contains(filename, "/") || strings.Contains(filename, "\\") || strings.Contains(filename, "..") {
 		return fmt.Errorf("invalid backup filename")
-	}
-
-	if isMock {
-		mockDir := filepath.Join(".", ".mock_backups", serverID)
-		if err := os.MkdirAll(mockDir, 0755); err != nil {
-			return err
-		}
-		destPath := filepath.Join(mockDir, filename)
-		out, err := os.Create(destPath)
-		if err != nil {
-			return err
-		}
-		defer out.Close()
-		_, err = io.Copy(out, fileReader)
-		if err != nil {
-			return err
-		}
-
-		fileInfo, err := os.Stat(destPath)
-		if err != nil {
-			return err
-		}
-
-		im.mu.Lock()
-		defer im.mu.Unlock()
-		if im.mockBackups == nil {
-			im.mockBackups = make(map[string][]BackupFile)
-		}
-
-		var list []BackupFile
-		for _, b := range im.mockBackups[serverID] {
-			if b.Name != filename {
-				list = append(list, b)
-			}
-		}
-
-		list = append(list, BackupFile{
-			Name: filename,
-			Size: fileInfo.Size(),
-			Date: fileInfo.ModTime(),
-			Path: destPath,
-		})
-		im.mockBackups[serverID] = list
-		return nil
 	}
 
 	dirs := im.getBackupDirsForServer(srv)
@@ -2339,32 +1915,11 @@ func saveCrontab(user string, content string) error {
 
 func (im *InstanceManager) GetBackupSettings(serverID string) (BackupSettings, error) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return BackupSettings{}, fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		return BackupSettings{
-			MaxBackups:        "4",
-			MaxBackupDays:     "30",
-			StopOnBackup:      "on",
-			AutoBackupEnabled: true,
-			AutoBackupCron:    "0 5 * * *",
-		}, nil
 	}
 
 	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
@@ -2429,27 +1984,11 @@ func (im *InstanceManager) GetBackupSettings(serverID string) (BackupSettings, e
 
 func (im *InstanceManager) SaveBackupSettings(serverID string, settings BackupSettings) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		fmt.Printf("[MOCK SAVE SETTINGS] Saved backups settings %+v for %s\n", settings, serverID)
-		return nil
 	}
 
 	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
@@ -2533,18 +2072,7 @@ func (im *InstanceManager) SaveBackupSettings(serverID string, settings BackupSe
 
 func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request, serverID, fileName, lang string) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 
 	if srv == nil {
 		im.mu.Unlock()
@@ -2559,23 +2087,9 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 	updateStatus := func(newStatus string) {
 		im.mu.Lock()
 		defer im.mu.Unlock()
-		if isMock {
-			for i := range im.mockServers {
-				if im.mockServers[i].ID == serverID {
-					im.mockServers[i].Status = newStatus
-					break
-				}
-			}
-		} else {
-			if s, ok := im.instances[serverID]; ok {
-				s.Status = newStatus
-			}
+		if s, ok := im.instances[serverID]; ok {
+			s.Status = newStatus
 		}
-	}
-
-	if isMock {
-		StreamMockRestore(w, r, serverID, fileName, updateStatus)
-		return
 	}
 
 	flusher, ok := w.(http.Flusher)
@@ -2694,33 +2208,11 @@ type AlertSettings struct {
 
 func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, error) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return AlertSettings{}, fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		return AlertSettings{
-			DiscordEnabled:  true,
-			DiscordWebhook:  "https://discord.com/api/webhooks/mock",
-			TelegramEnabled: false,
-			NtfyEnabled:     true,
-			NtfyURL:         "https://ntfy.sh",
-			NtfyTopic:       "lgsm-alerts-mock",
-		}, nil
 	}
 
 	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
@@ -2819,27 +2311,11 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 
 func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSettings) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		fmt.Printf("[MOCK SAVE ALERTS] Saved alerts settings %+v for %s\n", settings, serverID)
-		return nil
 	}
 
 	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
@@ -2951,18 +2427,7 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 
 func (im *InstanceManager) InstallSystemdService(serverID string) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
@@ -2985,11 +2450,6 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target`, srv.Name, srv.User, srv.User, srv.User, srv.Script, srv.User, srv.Script)
 
-	if isMock {
-		fmt.Printf("[MOCK SYSTEMD] Installing service for %s:\n%s\n", serverID, systemdCode)
-		return nil
-	}
-
 	servicePath := filepath.Join("/etc/systemd/system", fmt.Sprintf("linuxgsm-%s.service", srv.ID))
 	err := os.WriteFile(servicePath, []byte(systemdCode), 0644)
 	if err != nil {
@@ -3007,18 +2467,7 @@ WantedBy=multi-user.target`, srv.Name, srv.User, srv.User, srv.User, srv.Script,
 
 func (im *InstanceManager) InstallCronjobs(serverID string) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
@@ -3030,11 +2479,6 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 		fmt.Sprintf("*/30 * * * * /home/%s/%s update > /dev/null 2>&1", srv.User, srv.Script),
 		fmt.Sprintf("30 4 * * * /home/%s/%s force-update > /dev/null 2>&1", srv.User, srv.Script),
 		fmt.Sprintf("0 0 * * 0 /home/%s/%s update-lgsm > /dev/null 2>&1", srv.User, srv.Script),
-	}
-
-	if isMock {
-		fmt.Printf("[MOCK CRON] Installing cronjobs for %s:\n%s\n", serverID, strings.Join(cronLines, "\n"))
-		return nil
 	}
 
 	crontabStr, err := getCrontab(srv.User)
@@ -3071,16 +2515,6 @@ func (im *InstanceManager) SetServerTag(serverID string, tag string) error {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 
-	if im.isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				im.mockServers[i].Tag = tag
-				return nil
-			}
-		}
-		return fmt.Errorf("server not found")
-	}
-
 	srv, ok := im.instances[serverID]
 	if !ok {
 		return fmt.Errorf("server %s not found", serverID)
@@ -3091,35 +2525,13 @@ func (im *InstanceManager) SetServerTag(serverID string, tag string) error {
 
 func (im *InstanceManager) RunActionDirect(serverID, action string) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 
 	if srv == nil {
 		im.mu.Unlock()
 		return fmt.Errorf("server not found")
 	}
 
-	if isMock {
-		if action == "start" {
-			srv.Status = "running"
-		} else if action == "stop" {
-			srv.Status = "stopped"
-		} else if action == "restart" {
-			srv.Status = "running"
-		}
-		im.mu.Unlock()
-		return nil
-	}
 	user := srv.User
 	script := srv.Script
 	im.mu.Unlock()
@@ -3143,31 +2555,11 @@ func (im *InstanceManager) RunBulkAction(action string, serverIDs []string) map[
 
 func (im *InstanceManager) GetCronSchedule(serverID string) (CronSchedule, error) {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return CronSchedule{}, fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		return CronSchedule{
-			MonitorInterval: "5",
-			UpdateInterval:  "30",
-			RestartTime:     "04:30",
-			CoreUpdateDay:   "0",
-		}, nil
 	}
 
 	crontabStr, err := getCrontab(srv.User)
@@ -3205,26 +2597,11 @@ func (im *InstanceManager) GetCronSchedule(serverID string) (CronSchedule, error
 
 func (im *InstanceManager) SaveCronSchedule(serverID string, sched CronSchedule) error {
 	im.mu.Lock()
-	isMock := im.isMock
-	var srv *GameServerInstance
-	if isMock {
-		for i := range im.mockServers {
-			if im.mockServers[i].ID == serverID {
-				srv = &im.mockServers[i]
-				break
-			}
-		}
-	} else {
-		srv = im.instances[serverID]
-	}
+	srv := im.instances[serverID]
 	im.mu.Unlock()
 
 	if srv == nil {
 		return fmt.Errorf("server not found")
-	}
-
-	if isMock {
-		return nil
 	}
 
 	scriptPath := fmt.Sprintf("/home/%s/%s", srv.User, srv.Script)

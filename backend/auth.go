@@ -95,7 +95,7 @@ func (am *AuthManager) loadOrCreateConfig() error {
 					PasswordHash: hashPassword(rawPassword),
 					Role:         "admin",
 					Servers:      []string{}, // Admins bypass server checks
-					Permissions:  []string{"start", "stop", "restart", "console", "config", "backup"},
+					Permissions:  []string{"start", "stop", "restart", "console", "config", "files", "backup"},
 				},
 			},
 			Port: 8080,
@@ -138,7 +138,7 @@ func (am *AuthManager) loadOrCreateConfig() error {
 				PasswordHash: raw.PasswordHash,
 				Role:         "admin",
 				Servers:      []string{},
-				Permissions:  []string{"start", "stop", "restart", "console", "config", "backup"},
+				Permissions:  []string{"start", "stop", "restart", "console", "config", "files", "backup"},
 			}
 			if adminUser.Username == "" {
 				adminUser.Username = "admin"
@@ -440,4 +440,61 @@ func generateRandomPassword(length int) (string, error) {
 		b[i] = charset[int(b[i])%len(charset)]
 	}
 	return string(b), nil
+}
+
+type AuditEntry struct {
+	Timestamp string `json:"timestamp"`
+	Username  string `json:"username"`
+	IP        string `json:"ip"`
+	Action    string `json:"action"`
+	Details   string `json:"details"`
+	ServerID  string `json:"server_id,omitempty"`
+}
+
+func (am *AuthManager) LogAudit(username, ip, action, details, serverID string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	auditFile := filepath.Join(filepath.Dir(am.configPath), "audit_log.json")
+	var entries []AuditEntry
+
+	if data, err := os.ReadFile(auditFile); err == nil {
+		json.Unmarshal(data, &entries)
+	}
+
+	newEntry := AuditEntry{
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+		Username:  username,
+		IP:        ip,
+		Action:    action,
+		Details:   details,
+		ServerID:  serverID,
+	}
+
+	entries = append([]AuditEntry{newEntry}, entries...)
+	if len(entries) > 1000 {
+		entries = entries[:1000]
+	}
+
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err == nil {
+		os.WriteFile(auditFile, data, 0644)
+	}
+}
+
+func (am *AuthManager) GetAuditLogs() []AuditEntry {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+
+	auditFile := filepath.Join(filepath.Dir(am.configPath), "audit_log.json")
+	var entries []AuditEntry
+
+	if data, err := os.ReadFile(auditFile); err == nil {
+		json.Unmarshal(data, &entries)
+	}
+
+	if entries == nil {
+		entries = []AuditEntry{}
+	}
+	return entries
 }
