@@ -167,6 +167,24 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 			}
 			scriptPath := filepath.Join(homeDir, scriptName)
 
+			// If script is a symlink to another LinuxGSM script, convert it to a real copy.
+			// LinuxGSM resolves symlinks via `readlink -f $0` or `realpath`, which causes
+			// symlinked instances to execute the root server instead of the clone.
+			if linfo, err := os.Lstat(scriptPath); err == nil && linfo.Mode()&os.ModeSymlink != 0 {
+				if target, err := os.Readlink(scriptPath); err == nil {
+					targetPath := target
+					if !filepath.IsAbs(targetPath) {
+						targetPath = filepath.Join(homeDir, target)
+					}
+					if isLinuxGSMScript(targetPath) {
+						_ = os.Remove(scriptPath)
+						_ = exec.Command("cp", "-p", targetPath, scriptPath).Run()
+						_ = exec.Command("chown", fmt.Sprintf("%s:%s", username, username), scriptPath).Run()
+						_ = exec.Command("chmod", "0755", scriptPath).Run()
+					}
+				}
+			}
+
 			info, err := os.Stat(scriptPath)
 			if err != nil {
 				continue
@@ -461,8 +479,24 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 	}
 
 	var configs []ConfigFile
+	seenPaths := make(map[string]bool)
 
-	// 1. Scan primary LinuxGSM config directory: /home/<user>/lgsm/config-lgsm/<script>/
+	addConfig := func(name, path, layer string) {
+		clean := filepath.Clean(path)
+		if seenPaths[clean] {
+			return
+		}
+		seenPaths[clean] = true
+		configs = append(configs, ConfigFile{
+			Name:  name,
+			Path:  clean,
+			Layer: layer,
+		})
+	}
+
+	rootScript := strings.Split(srv.Script, "-")[0]
+
+	// 1. Scan primary LinuxGSM config directory for this specific instance: /home/<user>/lgsm/config-lgsm/<script>/
 	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
 	if files, err := os.ReadDir(configDir); err == nil {
 		for _, f := range files {
@@ -475,23 +509,38 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 				} else if strings.HasPrefix(f.Name(), "secrets-") {
 					layer = "secrets"
 				}
-				configs = append(configs, ConfigFile{
-					Name:  f.Name(),
-					Path:  filepath.Join(configDir, f.Name()),
-					Layer: layer,
-				})
+				addConfig(f.Name(), filepath.Join(configDir, f.Name()), layer)
 			}
 		}
 	}
 
-	// 2. Scan gameserver files directory recursively: /home/<user>/serverfiles/
+	// 2. If this is a multi-instance (e.g. mtaserver-2), also scan the root config directory /home/<user>/lgsm/config-lgsm/<rootScript>/
+	if rootScript != srv.Script {
+		rootConfigDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", rootScript)
+		if files, err := os.ReadDir(rootConfigDir); err == nil {
+			for _, f := range files {
+				if !f.IsDir() && strings.HasSuffix(f.Name(), ".cfg") {
+					if f.Name() == "_default.cfg" {
+						addConfig(f.Name(), filepath.Join(rootConfigDir, f.Name()), "default")
+					} else if f.Name() == "common.cfg" {
+						addConfig(f.Name(), filepath.Join(rootConfigDir, f.Name()), "common")
+					} else if f.Name() == fmt.Sprintf("%s.cfg", srv.Script) {
+						addConfig(f.Name(), filepath.Join(rootConfigDir, f.Name()), "instance")
+					} else if strings.HasPrefix(f.Name(), fmt.Sprintf("secrets-%s", srv.Script)) {
+						addConfig(f.Name(), filepath.Join(rootConfigDir, f.Name()), "secrets")
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Scan gameserver files directory recursively: /home/<user>/serverfiles/
 	serverfilesDir := filepath.Join("/home", srv.User, "serverfiles")
 	if _, err := os.Stat(serverfilesDir); err == nil {
 		found := findConfigsInDir(filepath.Join("/home", srv.User), serverfilesDir, 0)
-		for i := range found {
-			found[i].Layer = "instance"
+		for _, cfg := range found {
+			addConfig(cfg.Name, cfg.Path, "instance")
 		}
-		configs = append(configs, found...)
 	}
 
 	return configs, nil
@@ -524,11 +573,13 @@ func (im *InstanceManager) GetConfigFileContent(serverID, path string) (string, 
 	}
 
 	// SECURITY CHECK: Ensure path is within allowed directories
+	rootScript := strings.Split(srv.Script, "-")[0]
 	allowedDir1 := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
-	allowedDir2 := filepath.Join("/home", srv.User, "serverfiles")
+	allowedDir2 := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", rootScript)
+	allowedDir3 := filepath.Join("/home", srv.User, "serverfiles")
 	cleanPath := filepath.Clean(path)
 
-	if !isPathWithinDirectories(cleanPath, allowedDir1, allowedDir2) {
+	if !isPathWithinDirectories(cleanPath, allowedDir1, allowedDir2, allowedDir3) {
 		return "", fmt.Errorf("access denied: path outside allowed config directories")
 	}
 
@@ -549,11 +600,13 @@ func (im *InstanceManager) SaveConfigFileContent(serverID, path, content string)
 	}
 
 	// SECURITY CHECK: Ensure path is within allowed directories
+	rootScript := strings.Split(srv.Script, "-")[0]
 	allowedDir1 := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
-	allowedDir2 := filepath.Join("/home", srv.User, "serverfiles")
+	allowedDir2 := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", rootScript)
+	allowedDir3 := filepath.Join("/home", srv.User, "serverfiles")
 	cleanPath := filepath.Clean(path)
 
-	if !isPathWithinDirectories(cleanPath, allowedDir1, allowedDir2) {
+	if !isPathWithinDirectories(cleanPath, allowedDir1, allowedDir2, allowedDir3) {
 		return fmt.Errorf("access denied: path outside allowed config directories")
 	}
 
@@ -824,11 +877,16 @@ func (im *InstanceManager) InstallGame(w http.ResponseWriter, r *http.Request, g
 func parseServerPort(homeDir string, scriptName string) int {
 	// Try to find the port in config files
 	// Order: <script>.cfg -> common.cfg -> _default.cfg
+	rootScript := strings.Split(scriptName, "-")[0]
 	configDir := filepath.Join(homeDir, "lgsm", "config-lgsm", scriptName)
+	rootConfigDir := filepath.Join(homeDir, "lgsm", "config-lgsm", rootScript)
 	filesToTry := []string{
 		filepath.Join(configDir, fmt.Sprintf("%s.cfg", scriptName)),
+		filepath.Join(rootConfigDir, fmt.Sprintf("%s.cfg", scriptName)),
 		filepath.Join(configDir, "common.cfg"),
+		filepath.Join(rootConfigDir, "common.cfg"),
 		filepath.Join(configDir, "_default.cfg"),
+		filepath.Join(rootConfigDir, "_default.cfg"),
 	}
 
 	portRegex := regexp.MustCompile(`port="?(\d+)"?`)
@@ -859,7 +917,7 @@ func parseServerPort(homeDir string, scriptName string) int {
 	}
 
 	// Game-specific fallbacks if not found in LGSM config
-	if scriptName == "mtaserver" {
+	if rootScript == "mtaserver" || scriptName == "mtaserver" {
 		mtaConfig := filepath.Join(homeDir, "serverfiles", "mods", "deathmatch", "mtaserver.conf")
 		file, err := os.Open(mtaConfig)
 		if err == nil {
@@ -878,7 +936,7 @@ func parseServerPort(homeDir string, scriptName string) int {
 		}
 	}
 
-	if scriptName == "mcserver" || scriptName == "minecraft" {
+	if rootScript == "mcserver" || rootScript == "minecraft" || scriptName == "mcserver" || scriptName == "minecraft" {
 		mcConfig := filepath.Join(homeDir, "serverfiles", "server.properties")
 		file, err := os.Open(mcConfig)
 		if err == nil {
@@ -983,6 +1041,7 @@ func mapScriptToGameName(scriptName string) string {
 		"sfserver":    "Satisfactory",
 		"pwserver":    "Palworld",
 		"pzserver":    "Project Zomboid",
+		"mtaserver":   "Multi Theft Auto",
 	}
 
 	// Extract suffix if it has an instance marker like -1 or -zombies
@@ -1044,10 +1103,9 @@ func isLinuxGSMScript(filePath string) bool {
 }
 
 func getGameFromScriptName(scriptName string) string {
-	reInstance := regexp.MustCompile(`-\d+$`)
-	clean := reInstance.ReplaceAllString(scriptName, "")
+	parts := strings.Split(scriptName, "-")
+	clean := parts[0]
 	clean = strings.TrimSuffix(clean, "server")
-	clean = strings.TrimSuffix(clean, "-")
 	return clean
 }
 
@@ -2223,9 +2281,14 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 		return AlertSettings{}, fmt.Errorf("server not found")
 	}
 
+	rootScript := strings.Split(srv.Script, "-")[0]
 	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	rootConfigDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", rootScript)
+
 	commonPath := filepath.Join(configDir, "common.cfg")
+	rootCommonPath := filepath.Join(rootConfigDir, "common.cfg")
 	instancePath := filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script))
+	rootInstancePath := filepath.Join(rootConfigDir, fmt.Sprintf("%s.cfg", srv.Script))
 
 	settings := AlertSettings{}
 
@@ -2311,7 +2374,9 @@ func (im *InstanceManager) GetAlertSettings(serverID string) (AlertSettings, err
 		}
 	}
 
+	parseFile(rootCommonPath)
 	parseFile(commonPath)
+	parseFile(rootInstancePath)
 	parseFile(instancePath)
 
 	return settings, nil
@@ -2326,20 +2391,21 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 		return fmt.Errorf("server not found")
 	}
 
+	rootScript := strings.Split(srv.Script, "-")[0]
 	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
-	instancePath := filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script))
+	rootConfigDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", rootScript)
 
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return err
+	instancePaths := []string{
+		filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script)),
+	}
+	if rootScript != srv.Script {
+		instancePaths = append(instancePaths, filepath.Join(rootConfigDir, fmt.Sprintf("%s.cfg", srv.Script)))
 	}
 
-	var content string
-	if contentBytes, err := os.ReadFile(instancePath); err == nil {
-		content = string(contentBytes)
+	_ = os.MkdirAll(configDir, 0755)
+	if rootScript != srv.Script {
+		_ = os.MkdirAll(rootConfigDir, 0755)
 	}
-
-	lines := strings.Split(content, "\n")
-	updated := make(map[string]bool)
 
 	valMap := map[string]string{
 		"discordalert":      "off",
@@ -2407,27 +2473,35 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 		valMap["rocketchatalert"] = "on"
 	}
 
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		for key, val := range valMap {
-			re := regexp.MustCompile(fmt.Sprintf(`^\s*%s\s*=`, key))
-			if re.MatchString(trimmed) {
-				lines[i] = fmt.Sprintf("%s=\"%s\"", key, val)
-				updated[key] = true
+	for _, instancePath := range instancePaths {
+		var content string
+		if contentBytes, err := os.ReadFile(instancePath); err == nil {
+			content = string(contentBytes)
+		}
+
+		lines := strings.Split(content, "\n")
+		updated := make(map[string]bool)
+
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			for key, val := range valMap {
+				re := regexp.MustCompile(fmt.Sprintf(`^\s*%s\s*=`, key))
+				if re.MatchString(trimmed) {
+					lines[i] = fmt.Sprintf("%s=\"%s\"", key, val)
+					updated[key] = true
+				}
 			}
 		}
-	}
 
-	for key, val := range valMap {
-		if !updated[key] {
-			lines = append(lines, fmt.Sprintf("%s=\"%s\"", key, val))
+		for key, val := range valMap {
+			if !updated[key] {
+				lines = append(lines, fmt.Sprintf("%s=\"%s\"", key, val))
+			}
 		}
-	}
 
-	newContent := strings.Join(lines, "\n")
-	err := os.WriteFile(instancePath, []byte(newContent), 0644)
-	if err != nil {
-		return err
+		newContent := strings.Join(lines, "\n")
+		_ = os.WriteFile(instancePath, []byte(newContent), 0644)
+		_ = exec.Command("chown", fmt.Sprintf("%s:%s", srv.User, srv.User), instancePath).Run()
 	}
 
 	return nil
@@ -2458,17 +2532,13 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target`, srv.Name, srv.User, srv.User, srv.User, srv.Script, srv.User, srv.Script)
 
-	servicePath := filepath.Join("/etc/systemd/system", fmt.Sprintf("linuxgsm-%s.service", srv.ID))
-	err := os.WriteFile(servicePath, []byte(systemdCode), 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write service file: %v", err)
+	servicePath := fmt.Sprintf("/etc/systemd/system/linuxgsm-%s.service", srv.Script)
+	if err := os.WriteFile(servicePath, []byte(systemdCode), 0644); err != nil {
+		return err
 	}
 
 	_ = exec.Command("systemctl", "daemon-reload").Run()
-	err = exec.Command("systemctl", "enable", "--now", fmt.Sprintf("linuxgsm-%s", srv.ID)).Run()
-	if err != nil {
-		return fmt.Errorf("failed to enable systemd service: %v", err)
-	}
+	_ = exec.Command("systemctl", "enable", fmt.Sprintf("linuxgsm-%s.service", srv.Script)).Run()
 
 	return nil
 }
@@ -2482,18 +2552,14 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 		return fmt.Errorf("server not found")
 	}
 
-	cronLines := []string{
+	crons := []string{
 		fmt.Sprintf("*/5 * * * * /home/%s/%s monitor > /dev/null 2>&1", srv.User, srv.Script),
 		fmt.Sprintf("*/30 * * * * /home/%s/%s update > /dev/null 2>&1", srv.User, srv.Script),
 		fmt.Sprintf("30 4 * * * /home/%s/%s force-update > /dev/null 2>&1", srv.User, srv.Script),
 		fmt.Sprintf("0 0 * * 0 /home/%s/%s update-lgsm > /dev/null 2>&1", srv.User, srv.Script),
 	}
 
-	crontabStr, err := getCrontab(srv.User)
-	if err != nil {
-		return fmt.Errorf("failed to read crontab: %v", err)
-	}
-
+	crontabStr, _ := getCrontab(srv.User)
 	lines := strings.Split(crontabStr, "\n")
 	var newLines []string
 	for _, line := range lines {
@@ -2508,15 +2574,10 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 	}
 
 	newLines = append(newLines, fmt.Sprintf("# LinuxGSM %s Geplante Wartungsaufgaben", srv.Name))
-	newLines = append(newLines, cronLines...)
+	newLines = append(newLines, crons...)
 
 	newCrontab := strings.Join(newLines, "\n")
-	err = saveCrontab(srv.User, newCrontab)
-	if err != nil {
-		return fmt.Errorf("failed to save crontab: %v", err)
-	}
-
-	return nil
+	return saveCrontab(srv.User, newCrontab)
 }
 
 const serverTagsFilePath = "server_tags.json"
@@ -2545,49 +2606,56 @@ func (im *InstanceManager) SetServerTag(serverID string, tag string) error {
 
 	srv, ok := im.instances[serverID]
 	if !ok {
-		return fmt.Errorf("server %s not found", serverID)
+		return fmt.Errorf("server not found")
 	}
-	srv.Tag = tag
 
+	srv.Tag = strings.TrimSpace(tag)
 	tags := loadServerTags()
-	if tag == "" {
+	if srv.Tag == "" {
 		delete(tags, serverID)
 	} else {
-		tags[serverID] = tag
+		tags[serverID] = srv.Tag
 	}
-	_ = saveServerTags(tags)
-
-	return nil
+	return saveServerTags(tags)
 }
 
 func (im *InstanceManager) RunActionDirect(serverID, action string) error {
 	im.mu.Lock()
-	srv := im.instances[serverID]
+	srv, ok := im.instances[serverID]
+	im.mu.Unlock()
 
-	if srv == nil {
-		im.mu.Unlock()
+	if !ok {
 		return fmt.Errorf("server not found")
 	}
 
 	user := srv.User
 	script := srv.Script
-	im.mu.Unlock()
-
-	cmd := exec.Command("runuser", "-u", user, "--", fmt.Sprintf("/home/%s/%s", user, script), action)
-	cmd.Stdin = strings.NewReader("y\ny\ny\n")
-	return cmd.Start()
+	execCmd := fmt.Sprintf("cd /home/%s && ./%s %s", user, script, action)
+	cmd := exec.Command("runuser", "-l", user, "-c", execCmd)
+	return cmd.Run()
 }
 
 func (im *InstanceManager) RunBulkAction(action string, serverIDs []string) map[string]string {
 	results := make(map[string]string)
-	for _, id := range serverIDs {
-		err := im.RunActionDirect(id, action)
-		if err != nil {
-			results[id] = "error: " + err.Error()
-		} else {
-			results[id] = "ok"
-		}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for _, sid := range serverIDs {
+		wg.Add(1)
+		go func(serverID string) {
+			defer wg.Done()
+			err := im.RunActionDirect(serverID, action)
+			mu.Lock()
+			if err != nil {
+				results[serverID] = "Error: " + err.Error()
+			} else {
+				results[serverID] = "Success"
+			}
+			mu.Unlock()
+		}(sid)
 	}
+	wg.Wait()
+	im.ScanInstances()
 	return results
 }
 
@@ -2600,36 +2668,32 @@ func (im *InstanceManager) GetCronSchedule(serverID string) (CronSchedule, error
 		return CronSchedule{}, fmt.Errorf("server not found")
 	}
 
-	crontabStr, err := getCrontab(srv.User)
-	if err != nil {
-		return CronSchedule{}, nil
+	sched := CronSchedule{}
+	crontabStr, _ := getCrontab(srv.User)
+	lines := strings.Split(crontabStr, "\n")
+
+	reMonitor := regexp.MustCompile(fmt.Sprintf(`\*/(\d+)\s+\*\s+\*\s+\*\s+\*\s+/home/%s/%s\s+monitor`, srv.User, srv.Script))
+	reUpdate := regexp.MustCompile(fmt.Sprintf(`\*/(\d+)\s+\*\s+\*\s+\*\s+\*\s+/home/%s/%s\s+update`, srv.User, srv.Script))
+	reRestart := regexp.MustCompile(fmt.Sprintf(`(\d+)\s+(\d+)\s+\*\s+\*\s+\*\s+/home/%s/%s\s+force-update`, srv.User, srv.Script))
+	reCore := regexp.MustCompile(fmt.Sprintf(`0\s+0\s+\*\s+\*\s+(\d+)\s+/home/%s/%s\s+update-lgsm`, srv.User, srv.Script))
+
+	for _, line := range lines {
+		if m := reMonitor.FindStringSubmatch(line); len(m) > 1 {
+			sched.MonitorInterval = m[1]
+		}
+		if m := reUpdate.FindStringSubmatch(line); len(m) > 1 {
+			sched.UpdateInterval = m[1]
+		}
+		if m := reRestart.FindStringSubmatch(line); len(m) > 2 {
+			hour, _ := strconv.Atoi(m[2])
+			min, _ := strconv.Atoi(m[1])
+			sched.RestartTime = fmt.Sprintf("%02d:%02d", hour, min)
+		}
+		if m := reCore.FindStringSubmatch(line); len(m) > 1 {
+			sched.CoreUpdateDay = m[1]
+		}
 	}
 
-	sched := CronSchedule{}
-	for _, line := range strings.Split(crontabStr, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") || line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 6 {
-			continue
-		}
-		action := fields[len(fields)-1]
-		if action == "monitor" {
-			if strings.HasPrefix(fields[0], "*/") {
-				sched.MonitorInterval = strings.TrimPrefix(fields[0], "*/")
-			}
-		} else if action == "update" {
-			if strings.HasPrefix(fields[0], "*/") {
-				sched.UpdateInterval = strings.TrimPrefix(fields[0], "*/")
-			}
-		} else if action == "restart" || action == "force-update" {
-			sched.RestartTime = fmt.Sprintf("%02s:%02s", fields[1], fields[0])
-		} else if action == "update-lgsm" {
-			sched.CoreUpdateDay = fields[4]
-		}
-	}
 	return sched, nil
 }
 
@@ -2680,4 +2744,335 @@ func (im *InstanceManager) SaveCronSchedule(serverID string, sched CronSchedule)
 
 	newCrontab := strings.Join(newLines, "\n")
 	return saveCrontab(srv.User, newCrontab)
+}
+
+// -------------------------------------------------------------
+// Stop Mode Configurator
+// -------------------------------------------------------------
+
+func (im *InstanceManager) GetStopModeSettings(serverID string) (string, error) {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return "", fmt.Errorf("server not found")
+	}
+
+	rootScript := strings.Split(srv.Script, "-")[0]
+	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	rootConfigDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", rootScript)
+
+	commonPath := filepath.Join(configDir, "common.cfg")
+	rootCommonPath := filepath.Join(rootConfigDir, "common.cfg")
+	instancePath := filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script))
+	rootInstancePath := filepath.Join(rootConfigDir, fmt.Sprintf("%s.cfg", srv.Script))
+
+	stopMode := "default"
+	parseFile := func(path string) {
+		contentBytes, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		lines := strings.Split(string(contentBytes), "\n")
+		re := regexp.MustCompile(`^\s*stopmode\s*=\s*["']?([^"'\s#]*)["']?`)
+		for _, line := range lines {
+			matches := re.FindStringSubmatch(line)
+			if len(matches) > 1 {
+				val := matches[1]
+				if val != "" {
+					stopMode = val
+				}
+			}
+		}
+	}
+
+	parseFile(rootCommonPath)
+	parseFile(commonPath)
+	parseFile(rootInstancePath)
+	parseFile(instancePath)
+	return stopMode, nil
+}
+
+func (im *InstanceManager) SaveStopModeSettings(serverID string, stopMode string) error {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
+	}
+
+	rootScript := strings.Split(srv.Script, "-")[0]
+	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	rootConfigDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", rootScript)
+
+	instancePaths := []string{
+		filepath.Join(configDir, fmt.Sprintf("%s.cfg", srv.Script)),
+	}
+	if rootScript != srv.Script {
+		instancePaths = append(instancePaths, filepath.Join(rootConfigDir, fmt.Sprintf("%s.cfg", srv.Script)))
+	}
+
+	_ = os.MkdirAll(configDir, 0755)
+	if rootScript != srv.Script {
+		_ = os.MkdirAll(rootConfigDir, 0755)
+	}
+
+	for _, instancePath := range instancePaths {
+		var content string
+		if contentBytes, err := os.ReadFile(instancePath); err == nil {
+			content = string(contentBytes)
+		}
+
+		lines := strings.Split(content, "\n")
+		updated := false
+		reStopMode := regexp.MustCompile(`^\s*stopmode\s*=`)
+
+		for i, line := range lines {
+			if reStopMode.MatchString(line) {
+				if stopMode == "default" || stopMode == "" {
+					lines[i] = "# stopmode=\"\""
+				} else {
+					lines[i] = fmt.Sprintf("stopmode=\"%s\"", stopMode)
+				}
+				updated = true
+				break
+			}
+		}
+
+		if !updated && stopMode != "default" && stopMode != "" {
+			lines = append(lines, fmt.Sprintf("stopmode=\"%s\"", stopMode))
+		}
+
+		newContent := strings.Join(lines, "\n")
+		_ = os.WriteFile(instancePath, []byte(newContent), 0644)
+		_ = exec.Command("chown", fmt.Sprintf("%s:%s", srv.User, srv.User), instancePath).Run()
+	}
+
+	return nil
+}
+
+// -------------------------------------------------------------
+// Multi-Instance Creator
+
+func (im *InstanceManager) CreateMultiInstance(serverID string, suffix string) (string, error) {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return "", fmt.Errorf("server not found")
+	}
+
+	cleanSuffix := strings.ToLower(strings.TrimSpace(suffix))
+	if cleanSuffix == "" {
+		return "", fmt.Errorf("suffix cannot be empty")
+	}
+	if matched, _ := regexp.MatchString(`^[a-z0-9-]+$`, cleanSuffix); !matched {
+		return "", fmt.Errorf("suffix can only contain lowercase letters, numbers, and hyphens")
+	}
+
+	baseScript := srv.Script
+	parts := strings.Split(baseScript, "-")
+	rootScript := parts[0]
+
+	newInstanceScript := fmt.Sprintf("%s-%s", rootScript, cleanSuffix)
+	homeDir := filepath.Join("/home", srv.User)
+	newScriptPath := filepath.Join(homeDir, newInstanceScript)
+	rootScriptPath := filepath.Join(homeDir, rootScript)
+
+	// If rootScriptPath doesn't exist, fallback to baseScript
+	sourceScript := rootScript
+	if _, err := os.Stat(rootScriptPath); err != nil {
+		sourceScript = baseScript
+	}
+
+	// If newScriptPath already exists as a symlink or file
+	if linfo, err := os.Lstat(newScriptPath); err == nil {
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			// Remove legacy symlink so it can be replaced with a real executable script
+			_ = os.Remove(newScriptPath)
+		} else {
+			return "", fmt.Errorf("instance script %s already exists", newInstanceScript)
+		}
+	}
+
+	// LinuxGSM instances MUST be independent copies of the script (not symlinks),
+	// because LinuxGSM internally resolves symlinks via `readlink -f $0` or `realpath`,
+	// which causes a symlinked script to run the base server instead of the clone.
+	copyCmd := fmt.Sprintf("cd /home/%s && cp -p %s %s && chmod 0755 %s", srv.User, sourceScript, newInstanceScript, newInstanceScript)
+	cmd := exec.Command("runuser", "-l", srv.User, "-c", copyCmd)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("failed to create instance script: %s (%v)", string(out), err)
+	}
+
+	// 1. Create config in lgsm/config-lgsm/<rootScript>/<newInstanceScript>.cfg (LinuxGSM standard)
+	rootConfigDir := filepath.Join(homeDir, "lgsm", "config-lgsm", rootScript)
+	_ = os.MkdirAll(rootConfigDir, 0755)
+	rootInstanceConfig := filepath.Join(rootConfigDir, fmt.Sprintf("%s.cfg", newInstanceScript))
+	if _, err := os.Stat(rootInstanceConfig); os.IsNotExist(err) {
+		initialConfig := fmt.Sprintf("## LinuxGSM Multi-Instance Config: %s\n## Generated by LinuxGSM Dashboard\n\n", newInstanceScript)
+		_ = os.WriteFile(rootInstanceConfig, []byte(initialConfig), 0644)
+		_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", srv.User, srv.User), rootConfigDir).Run()
+	}
+
+	// 2. Also ensure lgsm/config-lgsm/<newInstanceScript>/<newInstanceScript>.cfg is available
+	instanceConfigDir := filepath.Join(homeDir, "lgsm", "config-lgsm", newInstanceScript)
+	_ = os.MkdirAll(instanceConfigDir, 0755)
+	newInstanceConfig := filepath.Join(instanceConfigDir, fmt.Sprintf("%s.cfg", newInstanceScript))
+	if _, err := os.Stat(newInstanceConfig); os.IsNotExist(err) {
+		initialConfig := fmt.Sprintf("## LinuxGSM Multi-Instance Config: %s\n## Generated by LinuxGSM Dashboard\n\n", newInstanceScript)
+		_ = os.WriteFile(newInstanceConfig, []byte(initialConfig), 0644)
+		_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", srv.User, srv.User), instanceConfigDir).Run()
+	}
+
+	im.ScanInstances()
+	return newInstanceScript, nil
+}
+
+// -------------------------------------------------------------
+// Cloud Backup (rclone) Integration
+// -------------------------------------------------------------
+
+type CloudBackupSettings struct {
+	Enabled  bool   `json:"enabled"`
+	Remote   string `json:"remote"`
+	Path     string `json:"path"`
+	AutoSync bool   `json:"auto_sync"`
+}
+
+func (im *InstanceManager) GetCloudBackupSettings(serverID string) (CloudBackupSettings, error) {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return CloudBackupSettings{}, fmt.Errorf("server not found")
+	}
+
+	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	cloudConfigFile := filepath.Join(configDir, "cloud_backup.json")
+
+	data, err := os.ReadFile(cloudConfigFile)
+	if err != nil {
+		return CloudBackupSettings{Enabled: false, Remote: "", Path: "backups", AutoSync: false}, nil
+	}
+
+	var settings CloudBackupSettings
+	_ = json.Unmarshal(data, &settings)
+	return settings, nil
+}
+
+func (im *InstanceManager) SaveCloudBackupSettings(serverID string, settings CloudBackupSettings) error {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		return fmt.Errorf("server not found")
+	}
+
+	configDir := filepath.Join("/home", srv.User, "lgsm", "config-lgsm", srv.Script)
+	_ = os.MkdirAll(configDir, 0755)
+	cloudConfigFile := filepath.Join(configDir, "cloud_backup.json")
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(cloudConfigFile, data, 0644); err != nil {
+		return err
+	}
+	_ = exec.Command("chown", fmt.Sprintf("%s:%s", srv.User, srv.User), cloudConfigFile).Run()
+	return nil
+}
+
+func (im *InstanceManager) SyncCloudBackup(w http.ResponseWriter, r *http.Request, serverID, lang string) {
+	im.mu.Lock()
+	srv := im.instances[serverID]
+	im.mu.Unlock()
+
+	if srv == nil {
+		http.Error(w, "Server not found", http.StatusNotFound)
+		return
+	}
+
+	settings, err := im.GetCloudBackupSettings(serverID)
+	if err != nil || !settings.Enabled || settings.Remote == "" {
+		http.Error(w, "Cloud backup not configured or disabled", http.StatusBadRequest)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	sendSSE := func(msgType string, data interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(w, "data: %s\n\n", jsonData)
+		flusher.Flush()
+	}
+
+	logLine := func(text string) {
+		sendSSE("message", map[string]interface{}{
+			"type": "log",
+			"text": text,
+		})
+	}
+
+	go func() {
+		logLine(Msg(lang, fmt.Sprintf("Starting cloud backup sync to %s:%s...", settings.Remote, settings.Path), fmt.Sprintf("Starte Cloud-Backup-Synchronisierung nach %s:%s...", settings.Remote, settings.Path)))
+
+		backupDir := filepath.Join("/home", srv.User, "lgsm", "backup")
+		if _, err := os.Stat(backupDir); os.IsNotExist(err) {
+			backupDir = filepath.Join("/home", srv.User, "backup")
+		}
+
+		targetDest := fmt.Sprintf("%s:%s", settings.Remote, settings.Path)
+		rcloneCmd := fmt.Sprintf("rclone copy %s %s -v", backupDir, targetDest)
+		cmd := exec.Command("runuser", "-l", srv.User, "-c", rcloneCmd)
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			logLine("Error creating stdout pipe: " + err.Error())
+			sendSSE("message", map[string]interface{}{"type": "exit", "code": 1})
+			return
+		}
+		cmd.Stderr = cmd.Stdout
+
+		if err := cmd.Start(); err != nil {
+			logLine(Msg(lang, "Error starting rclone (is rclone installed?): ", "Fehler beim Starten von rclone (ist rclone installiert?): ") + err.Error())
+			sendSSE("message", map[string]interface{}{"type": "exit", "code": 1})
+			return
+		}
+
+		reader := bufio.NewReader(stdout)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err != io.EOF {
+					logLine("Read error: " + err.Error())
+				}
+				break
+			}
+			logLine(strings.TrimRight(line, "\r\n"))
+		}
+
+		if err := cmd.Wait(); err != nil {
+			logLine(Msg(lang, "Sync finished with error: ", "Synchronisierung mit Fehler beendet: ") + err.Error())
+			sendSSE("message", map[string]interface{}{"type": "exit", "code": 1})
+			return
+		}
+
+		logLine(Msg(lang, "Cloud backup sync completed successfully!", "Cloud-Backup-Synchronisierung erfolgreich abgeschlossen!"))
+		sendSSE("message", map[string]interface{}{"type": "exit", "code": 0})
+	}()
 }

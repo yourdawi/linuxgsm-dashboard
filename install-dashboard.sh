@@ -299,7 +299,7 @@ do_install() {
         LGSM_DEPS=(
             bc binutils bsdmainutils bzip2 ca-certificates cpio curl
             distro-info file gzip hostname jq lib32gcc-s1 lib32stdc++6
-            netcat-openbsd pigz python3 tmux unzip util-linux uuid-runtime
+            netcat-openbsd pigz python3 rclone tmux unzip util-linux uuid-runtime
             wget xz-utils libxml2-utils
         )
         for pkg in "${LGSM_DEPS[@]}"; do
@@ -334,7 +334,7 @@ do_install() {
         check_and_install_fallback "libncursesw5" "libncursesw6"
 
     elif [ "$OS_TYPE" == "redhat" ]; then
-        LGSM_DEPS=(bc binutils bzip2 curl file gzip jq tmux unzip wget tar)
+        LGSM_DEPS=(bc binutils bzip2 curl file gzip jq rclone tmux unzip wget tar)
         for pkg in "${LGSM_DEPS[@]}"; do
             if is_package_installed "$pkg"; then
                 echo -e "${GREEN}[INFO] Dependency '$pkg' is already installed.${NC}"

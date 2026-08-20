@@ -126,10 +126,15 @@ const el = {
     settingsOs: document.getElementById('settings-os'),
     settingsPid: document.getElementById('settings-pid'),
     settingsMode: document.getElementById('settings-mode'),
+    settingsServerSelectBar: document.getElementById('settings-server-select-bar'),
     settingsServerSelect: document.getElementById('settings-server-select'),
     settingsServerTagInput: document.getElementById('settings-server-tag-input'),
     settingsServerTagSaveBtn: document.getElementById('settings-server-tag-save-btn'),
     settingsToolsArea: document.getElementById('settings-tools-area'),
+    settingsCronArea: document.getElementById('settings-cron-area'),
+    settingsServerPromptServer: document.getElementById('settings-server-prompt-server'),
+    settingsServerPromptCron: document.getElementById('settings-server-prompt-cron'),
+    settingsServerPromptAlerts: document.getElementById('settings-server-prompt-alerts'),
     templateSystemd: document.getElementById('template-systemd'),
     templateCron: document.getElementById('template-cron'),
     
@@ -331,7 +336,33 @@ const el = {
     cronRestartTime: document.getElementById('cron-restart-time'),
     cronCoreSelect: document.getElementById('cron-core-select'),
     cronBuilderForm: document.getElementById('cron-builder-form'),
-    cronBuilderMessage: document.getElementById('cron-builder-message')
+    cronBuilderMessage: document.getElementById('cron-builder-message'),
+
+    consoleBtnDebug: document.getElementById('console-btn-debug'),
+    consoleBtnMapCompressor: document.getElementById('console-btn-map-compressor'),
+    settingsStopmodeSelect: document.getElementById('settings-stopmode-select'),
+    settingsStopmodeSaveBtn: document.getElementById('settings-stopmode-save-btn'),
+    settingsBtnOpenClone: document.getElementById('settings-btn-open-clone'),
+    modalRustWipe: document.getElementById('modal-rust-wipe'),
+    modalRustWipeCloseX: document.getElementById('modal-rust-wipe-close-x'),
+    modalRustWipeCancel: document.getElementById('modal-rust-wipe-cancel'),
+    modalRustWipeSubmit: document.getElementById('modal-rust-wipe-submit'),
+    modalRustWipeSubtitle: document.getElementById('modal-rust-wipe-subtitle'),
+    modalCloneInstance: document.getElementById('modal-clone-instance'),
+    modalCloneCloseX: document.getElementById('modal-clone-close-x'),
+    modalCloneCancel: document.getElementById('modal-clone-cancel'),
+    modalCloneSubmit: document.getElementById('modal-clone-submit'),
+    modalCloneSubtitle: document.getElementById('modal-clone-subtitle'),
+    cloneInstancePrefix: document.getElementById('clone-instance-prefix'),
+    cloneInstanceSuffix: document.getElementById('clone-instance-suffix'),
+    modalCloneMessage: document.getElementById('modal-clone-message'),
+    cloudbackupEnabled: document.getElementById('cloudbackup-enabled'),
+    cloudbackupRemote: document.getElementById('cloudbackup-remote'),
+    cloudbackupPath: document.getElementById('cloudbackup-path'),
+    cloudbackupSettingsForm: document.getElementById('cloudbackup-settings-form'),
+    cloudbackupBtnSave: document.getElementById('cloudbackup-btn-save'),
+    cloudbackupBtnSync: document.getElementById('cloudbackup-btn-sync'),
+    cloudbackupMessage: document.getElementById('cloudbackup-message')
 };
 
 // -------------------------------------------------------------
@@ -383,6 +414,8 @@ function initApp() {
     if (el.consoleBtnFastdl) el.consoleBtnFastdl.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'fastdl'));
     if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'postdetails'));
     el.consoleBtnTestAlert.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'test-alert'));
+    if (el.consoleBtnDebug) el.consoleBtnDebug.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'debug'));
+    if (el.consoleBtnMapCompressor) el.consoleBtnMapCompressor.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'map-compressor'));
     
     el.consoleModeTmux.addEventListener('click', () => switchConsoleMode('tmux'));
     el.consoleModeLog.addEventListener('click', () => switchConsoleMode('log'));
@@ -405,8 +438,22 @@ function initApp() {
     el.settingsPasswordForm.addEventListener('submit', changePassword);
     el.settingsServerSelect.addEventListener('change', handleSettingsServerChange);
     if (el.settingsServerTagSaveBtn) el.settingsServerTagSaveBtn.addEventListener('click', saveServerTagFromSettings);
+    if (el.settingsStopmodeSaveBtn) el.settingsStopmodeSaveBtn.addEventListener('click', saveServerStopModeFromSettings);
+    if (el.settingsBtnOpenClone) el.settingsBtnOpenClone.addEventListener('click', () => {
+        const srv = state.servers.find(s => s.id === el.settingsServerSelect.value);
+        if (srv) openCloneModal(srv);
+    });
     el.settingsToolsBtnSystemd.addEventListener('click', installSystemdService);
     el.settingsToolsBtnCron.addEventListener('click', installCronjobs);
+    
+    // Settings sub-tab navigation
+    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security'];
+    settingsSubtabs.forEach(tab => {
+        const btn = document.getElementById(`settings-tab-btn-${tab}`);
+        if (btn) {
+            btn.addEventListener('click', () => switchSettingsSubtab(tab));
+        }
+    });
     
     // Backups listeners
     el.backupsServerSelect.addEventListener('change', handleBackupsServerChange);
@@ -414,6 +461,16 @@ function initApp() {
     el.backupsBtnUpload.addEventListener('click', () => el.backupsInputUpload.click());
     el.backupsInputUpload.addEventListener('change', handleBackupsUpload);
     el.backupsSettingsForm.addEventListener('submit', saveBackupSettings);
+    if (el.cloudbackupSettingsForm) el.cloudbackupSettingsForm.addEventListener('submit', handleCloudBackupSave);
+    if (el.cloudbackupBtnSync) el.cloudbackupBtnSync.addEventListener('click', handleCloudBackupSync);
+
+    // Rust Wipe & Clone Modals listeners
+    if (el.modalRustWipeCloseX) el.modalRustWipeCloseX.addEventListener('click', () => el.modalRustWipe.classList.add('hidden'));
+    if (el.modalRustWipeCancel) el.modalRustWipeCancel.addEventListener('click', () => el.modalRustWipe.classList.add('hidden'));
+    if (el.modalRustWipeSubmit) el.modalRustWipeSubmit.addEventListener('click', handleRustWipeSubmit);
+    if (el.modalCloneCloseX) el.modalCloneCloseX.addEventListener('click', () => el.modalCloneInstance.classList.add('hidden'));
+    if (el.modalCloneCancel) el.modalCloneCancel.addEventListener('click', () => el.modalCloneInstance.classList.add('hidden'));
+    if (el.modalCloneSubmit) el.modalCloneSubmit.addEventListener('click', handleCloneSubmit);
     
     // Alerts listeners
     el.alertsSettingsForm.addEventListener('submit', saveAlertSettings);
@@ -1070,11 +1127,17 @@ function createServerCard(server) {
         adminActionsHtml += `</div>`;
         
         if (isAdmin) {
+            const isRust = (server.game || '').toLowerCase() === 'rust' || server.script === 'rustserver';
             adminActionsHtml += `
-            <div class="card-actions-row-2" style="margin-top: 0.4rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;">
+            <div class="card-actions-row-${isRust ? 3 : 2}" style="margin-top: 0.4rem; display: grid; grid-template-columns: ${isRust ? '1fr 1fr 1fr' : '1fr 1fr'}; gap: 0.4rem;">
                 <button class="btn btn-primary btn-sm btn-server-action" onclick="checkServerPorts('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg> ${t('btn-portcheck')}
                 </button>
+                ${isRust ? `
+                <button class="btn btn-warning btn-sm btn-server-action" onclick="openRustWipeModal(state.servers.find(s=>s.id==='${server.id}'))" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
+                    🌲 ${t('btn-wipe-server')}
+                </button>
+                ` : ''}
                 <button class="btn btn-danger btn-sm btn-server-action" onclick="openDeleteServerModal('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> ${t('btn-delete-server')}
                 </button>
@@ -1955,6 +2018,9 @@ async function loadSettingsInfo() {
             checkDashboardUpdate(false);
         }
         
+        // Ensure active subtab is visible
+        switchSettingsSubtab(state.settingsSubtab || 'general');
+
         // Populate tools dropdown
         populateSettingsServerSelect();
 
@@ -1962,6 +2028,22 @@ async function loadSettingsInfo() {
         loadFirewallStatus();
     } catch (e) {
         console.error(e);
+    }
+}
+
+function switchSettingsSubtab(subtabName) {
+    state.settingsSubtab = subtabName;
+    const subtabs = ['general', 'server', 'cron', 'alerts', 'security'];
+    subtabs.forEach(tab => {
+        const btn = document.getElementById(`settings-tab-btn-${tab}`);
+        const panel = document.getElementById(`settings-subtab-panel-${tab}`);
+        if (btn) btn.classList.toggle('active', tab === subtabName);
+        if (panel) panel.classList.toggle('hidden', tab !== subtabName);
+    });
+
+    if (el.settingsServerSelectBar) {
+        const isServerTab = ['server', 'cron', 'alerts'].includes(subtabName);
+        el.settingsServerSelectBar.classList.toggle('hidden', !isServerTab);
     }
 }
 
@@ -2074,6 +2156,7 @@ async function handleConsoleInputSubmit(e) {
 }
 
 function populateSettingsServerSelect() {
+    if (!el.settingsServerSelect) return;
     const current = el.settingsServerSelect.value;
     el.settingsServerSelect.innerHTML = `<option value="">${t('settings-tools-select-default')}</option>`;
     
@@ -2086,17 +2169,24 @@ function populateSettingsServerSelect() {
     
     if (current && state.servers.find(s => s.id === current)) {
         el.settingsServerSelect.value = current;
-        el.settingsToolsArea.classList.remove('hidden');
-    } else {
-        el.settingsToolsArea.classList.add('hidden');
-        resetSettingsAlerts();
     }
+    handleSettingsServerChange();
 }
 
 function handleSettingsServerChange() {
+    if (!el.settingsServerSelect) return;
     const serverID = el.settingsServerSelect.value;
-    if (!serverID) {
-        el.settingsToolsArea.classList.add('hidden');
+    const hasServer = !!serverID;
+    
+    if (el.settingsToolsArea) el.settingsToolsArea.classList.toggle('hidden', !hasServer);
+    if (el.settingsCronArea) el.settingsCronArea.classList.toggle('hidden', !hasServer);
+    if (el.alertsSettingsPanel) el.alertsSettingsPanel.classList.toggle('hidden', !hasServer);
+
+    if (el.settingsServerPromptServer) el.settingsServerPromptServer.classList.toggle('hidden', hasServer);
+    if (el.settingsServerPromptCron) el.settingsServerPromptCron.classList.toggle('hidden', hasServer);
+    if (el.settingsServerPromptAlerts) el.settingsServerPromptAlerts.classList.toggle('hidden', hasServer);
+
+    if (!hasServer) {
         resetSettingsAlerts();
         return;
     }
@@ -2109,6 +2199,7 @@ function handleSettingsServerChange() {
     }
 
     loadCronSchedule(serverID);
+    loadServerStopMode(serverID);
     
     // 1. Generate Systemd template
     const systemdCode = `[Unit]
@@ -2142,12 +2233,15 @@ WantedBy=multi-user.target`;
 # 4. ${isDe ? 'Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)' : 'Weekly update of LinuxGSM itself (every Sunday at 00:00 AM)'}
 0 0 * * 0 /home/${server.user}/${server.script} update-lgsm > /dev/null 2>&1`;
 
-    el.templateSystemd.textContent = systemdCode;
-    el.templateCron.textContent = cronCode;
-    el.settingsToolsArea.classList.remove('hidden');
+    if (el.templateSystemd) el.templateSystemd.textContent = systemdCode;
+    if (el.templateCron) el.templateCron.textContent = cronCode;
     
     // 3. Configure alerts and load settings
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+    if (el.settingsBtnOpenClone) {
+        el.settingsBtnOpenClone.classList.toggle('hidden', !isAdmin);
+    }
+
     if (isAdmin) {
         setAlertFieldsDisabled(false);
         loadAlertSettings();
@@ -2738,7 +2832,127 @@ const i18n = {
         "cron-preset-12h": "Every 12 Hours",
         "cron-preset-custom": "Custom (Cron Expression)",
         "backups-setting-cron-custom-label": "Cron Expression",
-        "backups-setting-cron-custom-help": "Format: Minute Hour Day-of-Month Month Day-of-Week"
+        "backups-setting-cron-custom-help": "Format: Minute Hour Day-of-Month Month Day-of-Week",
+        "btn-save": "Save",
+        "console-mode-game": "Game Log",
+        "console-mode-script": "Script Log",
+        "console-mode-tmux": "tmux Live Console",
+        "role-label": "Role",
+        "settings-info-pid": "Process ID (PID)",
+        "settings-info-version": "Dashboard Version",
+        "user-password-help": "Password for the web login of this user.",
+        "settings-btn-cron": "Write Cronjobs to Crontab",
+        "settings-btn-systemd": "Auto-Install & Enable Service",
+        "settings-confirm-pass": "Confirm New Password",
+        "settings-new-pass": "New Password",
+        "settings-templates-card": "Server-specific Templates",
+        "col-ip": "IP Address",
+        "col-action": "Action",
+        "col-details": "Details",
+        "col-server": "Server",
+        "settings-tag-label": "Server Tag / Cluster",
+        "settings-tag-placeholder": "e.g. Cluster-1, Public, EU-Server",
+        "alerts-telegram-label": "Telegram-Alerts",
+        "alerts-telegram-token-label": "Telegram Bot Token",
+        "alerts-telegram-chatid-label": "Telegram Chat ID",
+        "alerts-email-label": "E-Mail-Alerts",
+        "alerts-email-smtp-label": "SMTP Server",
+        "alerts-email-port-label": "SMTP Port",
+        "alerts-email-user-label": "SMTP User",
+        "alerts-email-pass-label": "SMTP Password",
+        "alerts-email-dest-label": "Recipient E-Mail",
+        "alerts-ntfy-label": "ntfy-Alerts",
+        "alerts-ntfy-url-label": "ntfy Server URL",
+        "alerts-ntfy-topic-label": "ntfy Topic",
+        "alerts-ntfy-token-label": "Auth Token (Optional)",
+        "alerts-slack-label": "Slack-Alerts",
+        "alerts-slack-webhook-label": "Slack Webhook URL",
+        "alerts-matrix-label": "Matrix-Alerts",
+        "alerts-matrix-homeserver-label": "Homeserver URL",
+        "alerts-matrix-roomid-label": "Room ID",
+        "alerts-matrix-token-label": "Access Token",
+        "alerts-pushover-label": "Pushover-Alerts",
+        "alerts-pushover-token-label": "App Token",
+        "alerts-pushover-user-label": "User Key",
+        "alerts-pushbullet-label": "Pushbullet-Alerts",
+        "alerts-pushbullet-token-label": "Access Token",
+        "alerts-pushbullet-channel-label": "Channel Tag (Optional)",
+        "alerts-ifttt-label": "IFTTT-Alerts",
+        "alerts-ifttt-key-label": "IFTTT Key",
+        "alerts-ifttt-event-label": "Event Name",
+        "alerts-rocketchat-label": "Rocket.Chat-Alerts",
+        "alerts-rocketchat-webhook-label": "Webhook URL",
+        "backups-maxbackups-placeholder": "e.g. 4",
+        "backups-maxbackupdays-placeholder": "e.g. 30",
+        "backups-cron-custom-placeholder": "0 5 * * *",
+        "user-username-placeholder": "e.g. supporter_1",
+        "tag-save-success": "Server tag saved successfully!",
+        "tag-save-error": "Error saving server tag:",
+        "tag-prompt": "Enter tag / cluster name for this server (e.g. Cluster-1, Public, Event - or leave blank to remove):",
+        "cron-option-5m": "Every 5 minutes",
+        "cron-option-10m": "Every 10 minutes",
+        "cron-option-15m": "Every 15 minutes",
+        "cron-option-30m": "Every 30 minutes",
+        "cron-option-1h": "Every hour",
+        "cron-option-sunday": "Sundays at 00:00 AM",
+        "cron-option-monday": "Mondays at 00:00 AM",
+        "cron-option-disabled": "Disabled",
+        "btn-debug": "Debug Mode",
+        "btn-map-compressor": "Map Compressor",
+        "btn-wipe-server": "Wipe Server",
+        "settings-stopmode-label": "Stop Mode (Graceful Shutdown)",
+        "settings-stopmode-default": "Default (LinuxGSM Default / Normal Stop)",
+        "settings-stopmode-1": "Mode 1: tmux kill",
+        "settings-stopmode-2": "Mode 2: CTRL+c",
+        "settings-stopmode-3": "Mode 3: quit",
+        "settings-stopmode-4": "Mode 4: quit 120s",
+        "settings-stopmode-5": "Mode 5: stop",
+        "settings-stopmode-6": "Mode 6: q",
+        "settings-stopmode-7": "Mode 7: exit",
+        "settings-stopmode-8": "Mode 8: 7 Days to Die",
+        "settings-stopmode-9": "Mode 9: GoldSrc",
+        "settings-stopmode-10": "Mode 10: Avorion",
+        "settings-stopmode-11": "Mode 11: end",
+        "settings-stopmode-12": "Mode 12: shutdown",
+        "settings-stopmode-13": "Mode 13: Soulmask",
+        "settings-btn-clone": "Clone Instance",
+        "cloudbackup-title": "Cloud Backup (rclone Sync)",
+        "cloudbackup-btn-sync": "Sync Now",
+        "cloudbackup-desc": "Synchronize created .tar.gz backups automatically or manually to cloud storage (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-enable-label": "Enable Cloud Sync",
+        "cloudbackup-remote-label": "rclone Remote Name",
+        "cloudbackup-remote-placeholder": "e.g. gdrive or s3",
+        "cloudbackup-path-label": "Target Directory Path",
+        "cloudbackup-path-placeholder": "backups/linuxgsm",
+        "modal-wipe-title": "🌲 Rust Server Wipe",
+        "modal-wipe-warning": "A wipe resets the world of the server. Ensure you have created a backup beforehand.",
+        "modal-wipe-type-label": "Select Wipe Type:",
+        "modal-wipe-map-title": "Map Wipe (map-wipe)",
+        "modal-wipe-map-desc": "Deletes all buildings and resources. Player blueprints are retained.",
+        "modal-wipe-full-title": "Full Wipe (full-wipe)",
+        "modal-wipe-full-desc": "Complete reset: Deletes map, buildings, and all player blueprints.",
+        "modal-wipe-btn-submit": "Execute Wipe Now",
+        "modal-clone-title": "👥 Clone Multi-Instance",
+        "modal-clone-desc": "Creates a new instance with shared game binaries (symlink), but separate configuration (e.g. for a secondary server on different ports).",
+        "modal-clone-suffix-label": "Instance Suffix (Name):",
+        "modal-clone-suffix-placeholder": "2",
+        "modal-clone-help": "Lowercase letters, numbers, and hyphens only (e.g. '2', 'pvp', 'event').",
+        "modal-clone-btn-submit": "Create Instance",
+        "stopmode-save-success": "Stop mode saved successfully!",
+        "stopmode-save-error": "Failed to save stop mode",
+        "clone-success": "Instance cloned successfully! Reloading...",
+        "clone-error": "Failed to clone instance",
+        "cloudbackup-save-success": "Cloud backup settings saved!",
+        "cloudbackup-save-error": "Failed to save cloud backup settings",
+        "settings-subtab-general": "General",
+        "settings-subtab-server": "Server Tools",
+        "settings-subtab-cron": "Crontab & Scheduler",
+        "settings-subtab-alerts": "Alerts",
+        "settings-subtab-security": "Firewall & Security",
+        "settings-server-select-hint": "Settings apply to the selected server instance.",
+        "settings-select-server-prompt": "Please select a server above to view server tools and instance settings.",
+        "settings-select-server-prompt-cron": "Please select a server above to manage scheduled maintenance tasks.",
+        "settings-select-server-prompt-alerts": "Please select a server above to configure notification alerts."
     },
     de: {
         "menu-dashboard": "Dashboard",
@@ -3028,7 +3242,127 @@ const i18n = {
         "cron-preset-12h": "Alle 12 Stunden",
         "cron-preset-custom": "Benutzerdefiniert (Cron-Ausdruck)",
         "backups-setting-cron-custom-label": "Cron-Ausdruck",
-        "backups-setting-cron-custom-help": "Format: Minute Stunde Tag-des-Monats Monat Tag-der-Woche"
+        "backups-setting-cron-custom-help": "Format: Minute Stunde Tag-des-Monats Monat Tag-der-Woche",
+        "btn-save": "Speichern",
+        "console-mode-game": "Spiel-Log",
+        "console-mode-script": "Skript-Log",
+        "console-mode-tmux": "tmux Live-Konsole",
+        "role-label": "Rolle",
+        "settings-info-pid": "Prozess-ID (PID)",
+        "settings-info-version": "Dashboard Version",
+        "user-password-help": "Passwort für den Web-Login dieses Benutzers.",
+        "settings-btn-cron": "Cronjobs in Crontab schreiben",
+        "settings-btn-systemd": "Dienst automatisch installieren & aktivieren",
+        "settings-confirm-pass": "Neues Passwort bestätigen",
+        "settings-new-pass": "Neues Passwort",
+        "settings-templates-card": "Server-spezifische Vorlagen",
+        "col-ip": "IP-Adresse",
+        "col-action": "Aktion",
+        "col-details": "Details",
+        "col-server": "Server",
+        "settings-tag-label": "Server Tag / Cluster",
+        "settings-tag-placeholder": "z. B. Cluster-1, Public, EU-Server",
+        "alerts-telegram-label": "Telegram-Alerts",
+        "alerts-telegram-token-label": "Telegram Bot Token",
+        "alerts-telegram-chatid-label": "Telegram Chat ID",
+        "alerts-email-label": "E-Mail-Alerts",
+        "alerts-email-smtp-label": "SMTP Server",
+        "alerts-email-port-label": "SMTP Port",
+        "alerts-email-user-label": "SMTP Benutzer",
+        "alerts-email-pass-label": "SMTP Passwort",
+        "alerts-email-dest-label": "Empfänger E-Mail",
+        "alerts-ntfy-label": "ntfy-Alerts",
+        "alerts-ntfy-url-label": "ntfy Server URL",
+        "alerts-ntfy-topic-label": "ntfy Topic",
+        "alerts-ntfy-token-label": "Auth Token (Optional)",
+        "alerts-slack-label": "Slack-Alerts",
+        "alerts-slack-webhook-label": "Slack Webhook URL",
+        "alerts-matrix-label": "Matrix-Alerts",
+        "alerts-matrix-homeserver-label": "Homeserver URL",
+        "alerts-matrix-roomid-label": "Room ID",
+        "alerts-matrix-token-label": "Access Token",
+        "alerts-pushover-label": "Pushover-Alerts",
+        "alerts-pushover-token-label": "App Token",
+        "alerts-pushover-user-label": "User Key",
+        "alerts-pushbullet-label": "Pushbullet-Alerts",
+        "alerts-pushbullet-token-label": "Access Token",
+        "alerts-pushbullet-channel-label": "Channel Tag (Optional)",
+        "alerts-ifttt-label": "IFTTT-Alerts",
+        "alerts-ifttt-key-label": "IFTTT Key",
+        "alerts-ifttt-event-label": "Event Name",
+        "alerts-rocketchat-label": "Rocket.Chat-Alerts",
+        "alerts-rocketchat-webhook-label": "Webhook URL",
+        "backups-maxbackups-placeholder": "z.B. 4",
+        "backups-maxbackupdays-placeholder": "z.B. 30",
+        "backups-cron-custom-placeholder": "0 5 * * *",
+        "user-username-placeholder": "z.B. supporter_1",
+        "tag-save-success": "Server-Tag erfolgreich gespeichert!",
+        "tag-save-error": "Fehler beim Speichern des Server-Tags:",
+        "tag-prompt": "Gib den Tag / Cluster-Namen für diesen Server ein (z. B. Cluster-1, Public, Event - oder leer lassen zum Entfernen):",
+        "cron-option-5m": "Alle 5 Minuten",
+        "cron-option-10m": "Alle 10 Minuten",
+        "cron-option-15m": "Alle 15 Minuten",
+        "cron-option-30m": "Alle 30 Minuten",
+        "cron-option-1h": "Jede Stunde",
+        "cron-option-sunday": "Sonntags um 00:00 Uhr",
+        "cron-option-monday": "Montags um 00:00 Uhr",
+        "cron-option-disabled": "Deaktiviert",
+        "btn-debug": "Debug Modus",
+        "btn-map-compressor": "Map Compressor",
+        "btn-wipe-server": "Wipe Server",
+        "settings-stopmode-label": "Stop-Modus (Graceful Shutdown)",
+        "settings-stopmode-default": "Standard (LinuxGSM Default / Normaler Stop)",
+        "settings-stopmode-1": "Modus 1: tmux kill",
+        "settings-stopmode-2": "Modus 2: CTRL+c",
+        "settings-stopmode-3": "Modus 3: quit",
+        "settings-stopmode-4": "Modus 4: quit 120s",
+        "settings-stopmode-5": "Modus 5: stop",
+        "settings-stopmode-6": "Modus 6: q",
+        "settings-stopmode-7": "Modus 7: exit",
+        "settings-stopmode-8": "Modus 8: 7 Days to Die",
+        "settings-stopmode-9": "Modus 9: GoldSrc",
+        "settings-stopmode-10": "Modus 10: Avorion",
+        "settings-stopmode-11": "Modus 11: end",
+        "settings-stopmode-12": "Modus 12: shutdown",
+        "settings-stopmode-13": "Modus 13: Soulmask",
+        "settings-btn-clone": "Instanz klonen",
+        "cloudbackup-title": "Cloud Backup (rclone Sync)",
+        "cloudbackup-btn-sync": "Jetzt synchronisieren",
+        "cloudbackup-desc": "Synchronisiere erstellte .tar.gz Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-enable-label": "Cloud Sync aktivieren",
+        "cloudbackup-remote-label": "rclone Remote Name",
+        "cloudbackup-remote-placeholder": "z. B. gdrive oder s3",
+        "cloudbackup-path-label": "Ziel-Ordnerpfad",
+        "cloudbackup-path-placeholder": "backups/linuxgsm",
+        "modal-wipe-title": "🌲 Rust Server Wipe",
+        "modal-wipe-warning": "Ein Wipe setzt die Welt des Servers zurück. Stelle sicher, dass du vorher ein Backup angelegt hast.",
+        "modal-wipe-type-label": "Wipe-Typ wählen:",
+        "modal-wipe-map-title": "Map Wipe (map-wipe)",
+        "modal-wipe-map-desc": "Löscht alle Gebäude und Ressourcen. Spieler-Blueprints bleiben erhalten.",
+        "modal-wipe-full-title": "Full Wipe (full-wipe)",
+        "modal-wipe-full-desc": "Kompletter Reset: Löscht Map, Gebäude und alle Spieler-Blueprints.",
+        "modal-wipe-btn-submit": "Wipe jetzt ausführen",
+        "modal-clone-title": "👥 Multi-Instanz klonen",
+        "modal-clone-desc": "Erstellt eine neue Instanz mit geteilten Serverdateien (Symlink), aber eigener Konfiguration (z. B. für einen zweiten Server auf anderen Ports).",
+        "modal-clone-suffix-label": "Instanz-Suffix (Name):",
+        "modal-clone-suffix-placeholder": "2",
+        "modal-clone-help": "Nur Kleinbuchstaben, Zahlen und Bindestriche (z. B. '2', 'pvp', 'event').",
+        "modal-clone-btn-submit": "Instanz erstellen",
+        "stopmode-save-success": "Stop-Modus erfolgreich gespeichert!",
+        "stopmode-save-error": "Fehler beim Speichern des Stop-Modus",
+        "clone-success": "Instanz erfolgreich geklont! Aktualisiere...",
+        "clone-error": "Fehler beim Klonen der Instanz",
+        "cloudbackup-save-success": "Cloud-Backup Einstellungen gespeichert!",
+        "cloudbackup-save-error": "Fehler beim Speichern der Cloud-Backup Einstellungen",
+        "settings-subtab-general": "Allgemein",
+        "settings-subtab-server": "Server-Tools",
+        "settings-subtab-cron": "Crontab & Scheduler",
+        "settings-subtab-alerts": "Benachrichtigungen",
+        "settings-subtab-security": "Firewall & Sicherheit",
+        "settings-server-select-hint": "Einstellungen gelten für die ausgewählte Server-Instanz.",
+        "settings-select-server-prompt": "Bitte wähle oben einen Server aus, um Server-Tools und Instanz-Einstellungen anzuzeigen.",
+        "settings-select-server-prompt-cron": "Bitte wähle oben einen Server aus, um geplante Wartungsaufgaben zu verwalten.",
+        "settings-select-server-prompt-alerts": "Bitte wähle oben einen Server aus, um Benachrichtigungen zu konfigurieren."
     }
 };
 
@@ -3342,7 +3676,7 @@ async function triggerDashboardUpdate() {
     const btnCheck = document.getElementById('btn-check-update');
     
     if (!latestTagName) {
-        alert('Kein Update-Tag vorhanden.');
+        alert(state.language === 'de' ? 'Kein Update-Tag vorhanden.' : 'No update tag available.');
         return;
     }
     
@@ -3747,6 +4081,13 @@ function updateBackupsView() {
         el.backupsSettingCronContainer.classList.add('hidden');
         el.backupsSettingCustomCronContainer.classList.add('hidden');
         
+        if (el.cloudbackupEnabled) el.cloudbackupEnabled.disabled = true;
+        if (el.cloudbackupRemote) el.cloudbackupRemote.disabled = true;
+        if (el.cloudbackupPath) el.cloudbackupPath.disabled = true;
+        if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = true;
+        if (el.cloudbackupBtnSync) el.cloudbackupBtnSync.disabled = true;
+        if (el.cloudbackupMessage) el.cloudbackupMessage.textContent = '';
+        
         const placeholder = document.createElement('tr');
         placeholder.innerHTML = `<td colspan="4" class="text-center text-muted" style="padding: 2rem;">\${t('backups-no-server-selected')}</td>`;
         el.backupsTableBody.appendChild(placeholder);
@@ -3765,9 +4106,15 @@ function updateBackupsView() {
     el.backupsSettingAutoBackupEnabled.disabled = false;
     el.backupsSettingCronPreset.disabled = false;
     el.backupsSettingCronCustom.disabled = false;
+
+    if (el.cloudbackupEnabled) el.cloudbackupEnabled.disabled = false;
+    if (el.cloudbackupRemote) el.cloudbackupRemote.disabled = false;
+    if (el.cloudbackupPath) el.cloudbackupPath.disabled = false;
+    if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = false;
     
     loadBackupsList();
     loadBackupSettings();
+    loadCloudBackupSettings();
 }
 
 async function loadBackupsList() {
@@ -4425,6 +4772,14 @@ function renderConsoleGameActions(server) {
             <button id="game-act-fastdl" class="btn btn-primary btn-sm" ${disabledAttr}>
                 <span>⚡ ${isDe ? 'FastDL Web-Sync (Bzip2)' : 'FastDL Web Sync (Bzip2)'}</span>
             </button>
+            <div style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;">
+                <span style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.35rem;">
+                    ⚡ <strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${window.location.protocol}//${window.location.host}/fastdl/${server.id}/</code>
+                </span>
+                <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText('${window.location.protocol}//${window.location.host}/fastdl/${server.id}/'); alert(state.language === 'de' ? 'FastDL URL in die Zwischenablage kopiert!' : 'FastDL URL copied to clipboard!');">
+                    📋 ${isDe ? 'Kopieren' : 'Copy'}
+                </button>
+            </div>
         `;
         clickHandlers.push({ id: 'game-act-fastdl', action: 'fastdl' });
 
@@ -4584,7 +4939,8 @@ function closePlayersModal() {
 }
 
 async function sendRconCommand(serverId, command) {
-    if (!confirm(`RCON ${command}?`)) return;
+    const promptMsg = state.language === 'de' ? `RCON-Befehl ausführen: ${command}?` : `Execute RCON command: ${command}?`;
+    if (!confirm(promptMsg)) return;
     try {
         const res = await apiFetch(`/api/servers/${serverId}/rcon`, {
             method: 'POST',
@@ -4786,10 +5142,10 @@ function initFileManager() {
                     alert(state.language === 'de' ? 'Datei erfolgreich hochgeladen!' : 'File uploaded successfully!');
                     loadFilesTree();
                 } else {
-                    alert('Error uploading file');
+                    alert(state.language === 'de' ? 'Fehler beim Hochladen der Datei.' : 'Error uploading file.');
                 }
             } catch (e) {
-                alert('Error: ' + e.message);
+                alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + e.message);
             } finally {
                 el.filesInputUpload.value = '';
             }
@@ -4894,7 +5250,7 @@ async function openFileEditor(path) {
     activeEditingFilePath = path;
     el.filesEditingFilename.textContent = path;
     el.filesEditorCard.classList.remove('hidden');
-    el.filesEditorTextarea.value = 'Loading file content...';
+    el.filesEditorTextarea.value = state.language === 'de' ? 'Lade Dateiinhalt...' : 'Loading file content...';
 
     try {
         const res = await apiFetch(`/api/servers/${currentFilesServer}/files/content?path=${encodeURIComponent(path)}`);
@@ -4902,7 +5258,7 @@ async function openFileEditor(path) {
             const text = await res.text();
             el.filesEditorTextarea.value = text;
         } else {
-            el.filesEditorTextarea.value = 'Error reading file content.';
+            el.filesEditorTextarea.value = state.language === 'de' ? 'Fehler beim Lesen des Dateiinhalts.' : 'Error reading file content.';
         }
     } catch (e) {
         el.filesEditorTextarea.value = 'Error: ' + e.message;
@@ -4922,10 +5278,10 @@ async function saveFileContent() {
         if (res.status === 200) {
             alert(state.language === 'de' ? 'Datei erfolgreich gespeichert!' : 'File saved successfully!');
         } else {
-            alert('Error saving file');
+            alert(state.language === 'de' ? 'Fehler beim Speichern der Datei.' : 'Error saving file.');
         }
     } catch (e) {
-        alert('Error: ' + e.message);
+        alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + e.message);
     }
 }
 
@@ -4934,7 +5290,7 @@ async function saveFileContent() {
 // ----------------------------------------------------
 async function loadAuditLogs() {
     if (!el.auditTableBody) return;
-    el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Loading audit logs...</td></tr>`;
+    el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">${state.language === 'de' ? 'Lade Audit-Logs...' : 'Loading audit logs...'}</td></tr>`;
 
     try {
         const res = await apiFetch('/api/system/audit');
@@ -4942,10 +5298,10 @@ async function loadAuditLogs() {
             const logs = await res.json();
             renderAuditTable(logs);
         } else {
-            el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">Failed to load audit logs</td></tr>`;
+            el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">${state.language === 'de' ? 'Fehler beim Laden der Audit-Logs' : 'Failed to load audit logs'}</td></tr>`;
         }
     } catch (e) {
-        el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">${e.message}</td></tr>`;
+        el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">${escapeHtml(e.message)}</td></tr>`;
     }
 }
 
@@ -4973,11 +5329,7 @@ function renderAuditTable(logs) {
 if (el.auditBtnRefresh) el.auditBtnRefresh.addEventListener('click', loadAuditLogs);
 
 async function editServerTag(serverId, currentTag) {
-    const isDe = state.language === 'de';
-    const promptText = isDe 
-        ? 'Gib den Tag / Cluster-Namen für diesen Server ein (z. B. Cluster-1, Public, Event - oder leer lassen zum Entfernen):' 
-        : 'Enter tag / cluster name for this server (e.g. Cluster-1, Public, Event - or leave blank to remove):';
-    
+    const promptText = t('tag-prompt');
     const newTag = prompt(promptText, currentTag || '');
     if (newTag === null) return;
     
@@ -4996,11 +5348,11 @@ async function editServerTag(serverId, currentTag) {
             }
         } else {
             const data = await res.json();
-            alert((isDe ? 'Fehler beim Speichern des Tags: ' : 'Error saving tag: ') + (data.error || 'Unknown error'));
+            alert(t('tag-save-error') + ' ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
         console.error('Error setting tag:', e);
-        alert((isDe ? 'Fehler beim Speichern des Tags: ' : 'Error saving tag: ') + e.message);
+        alert(t('tag-save-error') + ' ' + e.message);
     }
 }
 
@@ -5008,7 +5360,6 @@ async function saveServerTagFromSettings() {
     const serverId = el.settingsServerSelect ? el.settingsServerSelect.value : '';
     if (!serverId) return;
     const tagVal = el.settingsServerTagInput ? el.settingsServerTagInput.value.trim() : '';
-    const isDe = state.language === 'de';
     
     try {
         const res = await apiFetch(`/api/servers/${serverId}/tag`, {
@@ -5020,15 +5371,243 @@ async function saveServerTagFromSettings() {
             const server = state.servers.find(s => s.id === serverId);
             if (server) server.tag = tagVal;
             renderServersGrid();
-            alert(isDe ? 'Server-Tag erfolgreich gespeichert!' : 'Server tag saved successfully!');
+            alert(t('tag-save-success'));
         } else {
             const data = await res.json();
-            alert((isDe ? 'Fehler beim Speichern: ' : 'Error saving: ') + (data.error || 'Unknown error'));
+            alert(t('tag-save-error') + ' ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
-        alert((isDe ? 'Fehler beim Speichern: ' : 'Error saving: ') + e.message);
+        alert(t('tag-save-error') + ' ' + e.message);
     }
 }
+
+// ----------------------------------------------------
+// Stop Mode Configurator
+// ----------------------------------------------------
+async function loadServerStopMode(serverId) {
+    if (!el.settingsStopmodeSelect) return;
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/stopmode`);
+        if (res.status === 200) {
+            const data = await res.json();
+            el.settingsStopmodeSelect.value = data.stopmode || 'default';
+        }
+    } catch (e) {
+        console.error('Failed to load stopmode:', e);
+    }
+}
+
+async function saveServerStopModeFromSettings() {
+    const serverId = el.settingsServerSelect ? el.settingsServerSelect.value : '';
+    if (!serverId || !el.settingsStopmodeSelect) return;
+    const stopMode = el.settingsStopmodeSelect.value;
+    try {
+        const res = await apiFetch(`/api/servers/${serverId}/stopmode`, {
+            method: 'POST',
+            body: JSON.stringify({ stopmode: stopMode })
+        });
+        if (res.status === 200) {
+            alert(t('stopmode-save-success'));
+        } else {
+            alert(t('stopmode-save-error'));
+        }
+    } catch (e) {
+        alert(t('stopmode-save-error') + ': ' + e.message);
+    }
+}
+
+// ----------------------------------------------------
+// Multi-Instance Cloning Assistant
+// ----------------------------------------------------
+let currentCloneServer = null;
+
+function openCloneModal(server) {
+    if (!state.currentUser || state.currentUser.role !== 'admin') {
+        alert(state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.');
+        return;
+    }
+    if (!el.modalCloneInstance) return;
+    currentCloneServer = server;
+    if (el.modalCloneSubtitle) el.modalCloneSubtitle.textContent = `${server.name} (${server.id})`;
+    if (el.cloneInstancePrefix) {
+        const rootScript = server.script.split('-')[0];
+        el.cloneInstancePrefix.textContent = `${rootScript}-`;
+    }
+    if (el.cloneInstanceSuffix) el.cloneInstanceSuffix.value = '2';
+    if (el.modalCloneMessage) el.modalCloneMessage.textContent = '';
+    el.modalCloneInstance.classList.remove('hidden');
+}
+
+async function handleCloneSubmit() {
+    if (!currentCloneServer || !el.cloneInstanceSuffix) return;
+    const suffix = el.cloneInstanceSuffix.value.trim().toLowerCase();
+    if (!suffix) return;
+    
+    if (!state.currentUser || state.currentUser.role !== 'admin') {
+        if (el.modalCloneMessage) {
+            el.modalCloneMessage.className = 'info-message text-danger';
+            el.modalCloneMessage.textContent = state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.';
+        }
+        return;
+    }
+
+    if (el.modalCloneMessage) {
+        el.modalCloneMessage.className = 'info-message text-muted';
+        el.modalCloneMessage.textContent = state.language === 'de' ? 'Erstelle Instanz...' : 'Creating instance...';
+    }
+
+    try {
+        const res = await apiFetch(`/api/servers/${currentCloneServer.id}/clone`, {
+            method: 'POST',
+            body: JSON.stringify({ suffix })
+        });
+        
+        if (res.status === 403) {
+            if (el.modalCloneMessage) {
+                el.modalCloneMessage.className = 'info-message text-danger';
+                el.modalCloneMessage.textContent = state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.';
+            }
+            return;
+        }
+
+        let data = {};
+        try {
+            data = await res.json();
+        } catch (err) {}
+
+        if (res.status === 200) {
+            if (el.modalCloneMessage) {
+                el.modalCloneMessage.className = 'info-message text-success';
+                el.modalCloneMessage.textContent = t('clone-success');
+            }
+            setTimeout(() => {
+                el.modalCloneInstance.classList.add('hidden');
+                refreshDashboard();
+            }, 1000);
+        } else {
+            if (el.modalCloneMessage) {
+                el.modalCloneMessage.className = 'info-message text-danger';
+                el.modalCloneMessage.textContent = (data.error || t('clone-error'));
+            }
+        }
+    } catch (e) {
+        if (el.modalCloneMessage) {
+            el.modalCloneMessage.className = 'info-message text-danger';
+            el.modalCloneMessage.textContent = t('clone-error') + ': ' + e.message;
+        }
+    }
+}
+
+// ----------------------------------------------------
+// Rust Server Wipe Modal
+// ----------------------------------------------------
+let currentWipeServer = null;
+
+function openRustWipeModal(server) {
+    if (!el.modalRustWipe) return;
+    currentWipeServer = server;
+    if (el.modalRustWipeSubtitle) el.modalRustWipeSubtitle.textContent = `${server.name} (${server.id})`;
+    el.modalRustWipe.classList.remove('hidden');
+}
+
+function handleRustWipeSubmit() {
+    if (!currentWipeServer) return;
+    const selectedRadio = document.querySelector('input[name="rust-wipe-type"]:checked');
+    const wipeType = selectedRadio ? selectedRadio.value : 'map-wipe';
+    el.modalRustWipe.classList.add('hidden');
+    runServerAction(currentWipeServer.id, wipeType);
+}
+
+// ----------------------------------------------------
+// Cloud Backup (rclone) Integration
+// ----------------------------------------------------
+async function loadCloudBackupSettings() {
+    if (!state.selectedBackupServer) return;
+    try {
+        const res = await apiFetch(`/api/servers/${state.selectedBackupServer}/cloudbackup/settings`);
+        if (res.status === 200) {
+            const data = await res.json();
+            if (el.cloudbackupEnabled) el.cloudbackupEnabled.checked = !!data.enabled;
+            if (el.cloudbackupRemote) el.cloudbackupRemote.value = data.remote || '';
+            if (el.cloudbackupPath) el.cloudbackupPath.value = data.path || 'backups';
+            if (el.cloudbackupBtnSync) el.cloudbackupBtnSync.disabled = !data.enabled || !data.remote;
+        }
+    } catch (e) {
+        console.error('Failed to load cloud backup settings:', e);
+    }
+}
+
+async function handleCloudBackupSave(e) {
+    e.preventDefault();
+    if (!state.selectedBackupServer) return;
+    const settings = {
+        enabled: el.cloudbackupEnabled ? el.cloudbackupEnabled.checked : false,
+        remote: el.cloudbackupRemote ? el.cloudbackupRemote.value.trim() : '',
+        path: el.cloudbackupPath ? el.cloudbackupPath.value.trim() : 'backups',
+        auto_sync: false
+    };
+
+    try {
+        const res = await apiFetch(`/api/servers/${state.selectedBackupServer}/cloudbackup/settings`, {
+            method: 'POST',
+            body: JSON.stringify(settings)
+        });
+        if (res.status === 200) {
+            if (el.cloudbackupMessage) {
+                el.cloudbackupMessage.className = 'info-message text-success';
+                el.cloudbackupMessage.textContent = t('cloudbackup-save-success');
+                setTimeout(() => { if (el.cloudbackupMessage) el.cloudbackupMessage.textContent = ''; }, 3000);
+            }
+            if (el.cloudbackupBtnSync) el.cloudbackupBtnSync.disabled = !settings.enabled || !settings.remote;
+        } else {
+            if (el.cloudbackupMessage) {
+                el.cloudbackupMessage.className = 'info-message text-danger';
+                el.cloudbackupMessage.textContent = t('cloudbackup-save-error');
+            }
+        }
+    } catch (e) {
+        if (el.cloudbackupMessage) {
+            el.cloudbackupMessage.className = 'info-message text-danger';
+            el.cloudbackupMessage.textContent = t('cloudbackup-save-error') + ': ' + e.message;
+        }
+    }
+}
+
+function handleCloudBackupSync() {
+    if (!state.selectedBackupServer) return;
+    openActionModal('rclone sync', state.selectedBackupServer);
+    actionEventSource = new EventSource(`/api/servers/${state.selectedBackupServer}/cloudbackup/sync?lang=${state.language}`);
+    actionEventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'log') {
+            appendActionLog(data.text);
+        } else if (data.type === 'exit') {
+            actionEventSource.close();
+            actionEventSource = null;
+            if (data.code === 0) {
+                el.actionModalStatus.textContent = t('action-success');
+                el.actionModalStatus.className = 'status-badge status-online';
+            } else {
+                el.actionModalStatus.textContent = t('action-failed');
+                el.actionModalStatus.className = 'status-badge status-offline';
+            }
+            el.btnActionClose.disabled = false;
+        }
+    };
+    actionEventSource.onerror = () => {
+        if (actionEventSource) {
+            actionEventSource.close();
+            actionEventSource = null;
+        }
+        appendActionLog('\n' + t('action-failed'));
+        el.actionModalStatus.textContent = t('action-failed');
+        el.actionModalStatus.className = 'status-badge status-offline';
+        el.btnActionClose.disabled = false;
+    };
+}
+
+window.openCloneModal = openCloneModal;
+window.openRustWipeModal = openRustWipeModal;
 
 // Initialize Macros and File Manager
 initConsoleMacrosAndHistory();

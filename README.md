@@ -1,6 +1,6 @@
 # LinuxGSM Web Dashboard
 
-A secure, lightweight, and modern single-binary web dashboard designed to manage game servers running under LinuxGSM (Linux Game Server Manager). It is designed to consume minimal system resources (~10-15MB RAM) so that host memory is dedicated solely to running your games.
+A secure, lightweight, and modern single-binary web dashboard designed to manage game servers running under LinuxGSM (Linux Game Server Manager). It is engineered to consume minimal system resources (~10-15MB RAM) so that host memory is dedicated solely to running your games.
 
 ---
 
@@ -29,7 +29,7 @@ A secure, lightweight, and modern single-binary web dashboard designed to manage
     <img width="80%" alt="gameinstaller" src="https://github.com/user-attachments/assets/478d3ac0-24df-4f61-b35b-104a4320f3f3" />
   </p>
 
-  ### 🖥️ Server Overview
+  ### 🖥️ Server Overview & Monitoring
   <p align="center">
     <img width="60%" alt="serveroverview" src="https://github.com/user-attachments/assets/39fc2c08-57d2-40d4-8b30-b607ce5e17cc" />
   </p>
@@ -55,8 +55,8 @@ wget -qO- https://raw.githubusercontent.com/yourdawi/linuxgsm-dashboard/main/ins
 
 This presents a colored **interactive terminal menu** that:
 - Runs **pre-flight requirements checks** (verifying 64-bit architecture and memory recommendations).
-- Detects your Linux distribution (Ubuntu/Debian, CentOS/RHEL, Arch, Alpine, openSUSE).
-- Tracks pre-existing system tools and installs only missing dependencies.
+- Detects your Linux distribution (Ubuntu/Debian, CentOS/RHEL/AlmaLinux/Rocky, Arch, Alpine, openSUSE).
+- Tracks pre-existing system tools and installs only missing dependencies (including `rclone` for remote cloud backups).
 - Configures a **custom listening port** (via interactive prompts or `--port <port>` argument).
 - Configures the daemon as a **sandboxed Systemd service** (`ProtectSystem=true`, `PrivateTmp=false` for shared tmux sockets, restricted `CapabilityBoundingSet` limiting root powers).
 - Automatically configures firewalls (`ufw` / `firewalld`) if active.
@@ -99,23 +99,40 @@ On first launch, it will:
 - 🖥️ **Interactive Server Console:** Real-time visual tmux pane updates paired with a **command input bar** to send console/RCON commands directly to the server (uses secure `tmux send-keys` escaping).
 - 👥 **GameDig Live Query & Player Widgets:** Displays current active map (`🗺️ TheIsland`) and live player count (`👥 18/70`) directly on server cards. Click to open an **Interactive Player List Modal** with real-time playtime, scores, and 1-click **Kick** / **Ban** RCON actions.
 - 📜 **Multi-Log Viewer:** Toggle between 4 log modes directly in the console view: **Tmux Live Pane**, **Console Log**, **Script Activity Log** (`log/script/`), and **Game Engine Log** (`log/game/`).
-- 🛠️ **Expanded LinuxGSM Action Suite:** Execute LinuxGSM actions like `check-update`, `update-lgsm`, `force-update`, `mods-install`, `mods-update`, `fastdl` (Bzip2 FastDL generator), `postdetails` (termbin log upload), `test-alert`, and `debug` directly from the Live Console view.
+- 🛠️ **Expanded LinuxGSM Action Suite:** Execute LinuxGSM actions like `check-update`, `update-lgsm`, `force-update`, `mods-install`, `mods-update`, `fastdl` (Bzip2 FastDL generator), `postdetails` (termbin log upload), `test-alert`, `debug` (interactive debugging mode with real-time SSE stream), and `map-compressor` (Unreal Tournament map redirect compression) directly from the Live Console view.
 - 🏷️ **Multi-Instance Cluster Management & Mass Actions:** Assign cluster tags (`Production`, `Cluster A`) and filter servers by tag. Select multiple servers using checkboxes to execute **Bulk Start, Stop, Restart, and Update** commands simultaneously.
-- 🎲 **Game-Specific Actions Panel:** Context-aware action buttons rendered strictly for supported game types: Rust (Map Wipe, Full Wipe, Map Compressor, Oxide/uMod), Source Engine Games (FastDL Web Sync, Metamod/SourceMod), TeamSpeak 3 (Query Password Reset), Arma 3, Minecraft, 7 Days to Die, Factorio, ARK, KF2, DST, and Insurgency (Mods/Plugins/Workshop Manager), and Unreal Tournament (Map Redirect Compressor).
+- 🎲 **Game-Specific Actions Panel:** Context-aware action buttons rendered strictly for supported game types:
+  - **Rust:** Map Wipe (`map-wipe`), Full Wipe (`full-wipe`), Map Compressor, Oxide/uMod Installer.
+  - **Source Engine Games (CS:S, TF2, Garry's Mod, etc.):** FastDL Web Sync & 1-click FastDL URL copy, Metamod/SourceMod Installer.
+  - **TeamSpeak 3:** Server Query Admin Password Reset (`ts3-pw-reset`).
+  - **Unreal Tournament:** Map Redirect Compressor (`map-compressor`).
+  - **Arma 3, Minecraft, 7 Days to Die, Factorio, ARK, KF2, DST, Insurgency:** Mods/Plugins/Workshop Manager.
+- 🌐 **Integrated FastDL HTTP Server:** Built-in public static web server serving compressed game assets directly from `/fastdl/{serverID}/...` with a 1-click URL copy button for easy inclusion in server configuration files (`sv_downloadurl`).
 
-### 💾 Backups & Server Migration
+---
+
+### 💾 Backups, Cloud Storage & Migration
 - 💾 **Complete Backup Suite:** View, download, delete, and restore server backups. Restoration runs in real-time, automatically stopping and starting the server safely to prevent corruption.
 - 📤 **Backup Uploads & Migration Import/Export:** Download backup `.tar.gz` archives as standalone migration packages to transfer instances across hosts, or upload existing backups with automatic ownership adjustment (`chown`).
+- ☁️ **Remote Cloud-Backup Sync (rclone Integration):** Seamlessly synchronize backups to remote cloud storage providers (Google Drive, AWS S3, Wasabi, Backblaze B2, Dropbox, OneDrive, WebDAV, etc.) with real-time SSE progress streaming.
 - ⚙️ **Backup Retention & Scheduling:** Configure retention limits (`maxbackups`, `maxbackupdays`, `stoponbackup`) and automate cronjob schedules by writing directly to the gameserver user's crontab.
 
-### ⚙️ Administration & Automation
-- 📅 **Visual Crontab Scheduler:** Interactive schedule builder under Settings to configure intervals for Crash-Monitoring, Auto-Update checks, Daily Restarts/Force-Updates, and Weekly LGSM Core Updates with 1-click crontab installation.
-- 🔔 **Complete 10-Channel Alert Suite:** Full webhook & credentials management for all 10 LinuxGSM notification channels: Discord, Telegram, E-Mail SMTP, Matrix, ntfy, Slack, Pushover, Pushbullet, IFTTT, and Rocket.Chat.
-- 🛡️ **Firewall Inspector & Privilege Probe:** Automatically inspects UFW and Firewalld status, detects open server ports, and checks dashboard root permissions. Provides copy-paste `sudo` commands when running in container/non-root mode.
-- ⚡ **One-Click Systemd & Cron Installation:** Automatically register sandboxed Systemd boot autostarts and maintenance cronjob routines into the crontab with one click.
-- 📝 **Hierarchical Config Visualizer:** Layered configuration editing within `/home/<user>/lgsm/config-lgsm/<script>/*.cfg` featuring color-coded badges (`Default`, `Common`, `Instance`, `Secrets`), overwrite warnings for `_default.cfg`, and a dual **Form View** / **Raw View**.
-- 👥 **Multi-User Administration:** Create/update/delete dashboard users with role-based access control (RBAC) and restricted server-level permissions (`start`, `stop`, `restart`, `console`, `config`, `backup`).
+---
+
+### ⚙️ Modular Administration & Automation
+- 📑 **5-Subtab Modular Settings Hub:**
+  1. **⚙️ General:** Web dashboard credentials management, system telemetry (Version, OS, PID, Mode), and GitHub release checker with 1-click self-updater.
+  2. **🎮 Server Tools:** Server tag/cluster assignment, **Stop Mode Configurator** (graceful shutdown selector supporting all 13 LinuxGSM stop modes with standard default fallback), **Multi-Instance Cloner Assistant** (symlink cloning), Systemd boot service installer, and maintenance cronjob templates.
+  3. **⏰ Crontab & Scheduler:** Interactive visual scheduler to configure Crash-Monitoring (5m/10m/15m), Auto-Update check intervals, Daily Restarts/Force-Updates, and Weekly LGSM Core Updates with direct crontab writing.
+  4. **🔔 10-Channel Alert Suite:** Multi-channel webhook & credentials manager for Discord, Telegram, E-Mail SMTP, ntfy, Slack, Matrix, Pushover, Pushbullet, IFTTT, and Rocket.Chat.
+  5. **🛡️ Firewall & Security Inspector:** Inspects active UFW and Firewalld status, detects open server ports, and checks dashboard root execution rights. Provides copy-paste `sudo` commands when running in container/non-root mode.
+- 📁 **File Manager & In-Browser Editor:** Browse, view, upload, download, and edit files inside `serverfiles/` with syntax highlighting and instant file saving.
+- 📝 **Hierarchical Config Visualizer:** Layered configuration editing within `/home/<user>/lgsm/config-lgsm/<script>/*.cfg` featuring color-coded badges (`Default`, `Common`, `Instance`, `Secrets`), overwrite warnings for `_default.cfg`, and dual **Form View** / **Raw View**.
+- 👥 **Multi-User Administration (RBAC):** Create/update/delete dashboard users with role-based access control (`admin`, `operator`, `viewer`) and restricted server-level permissions (`start`, `stop`, `restart`, `console`, `config`, `backup`, `files`).
+- 📜 **Security Audit Log:** Centralized, tamper-resistant audit trail logging user authentication events, server actions, and configuration modifications.
 - 🔄 **One-Click Self-Updates:** Safe, automated dashboard self-updates from the UI. Swaps the binary and triggers a clean systemd restart.
+
+---
 
 ### 🛡️ Hardened Security & Efficiency
 - 🖥️ **Resource-Efficient Backend (Go):** Compiled static binary consuming only ~10-15MB RAM with embedded web assets for zero-dependency deployment.
@@ -123,8 +140,7 @@ On first launch, it will:
 - 🛡️ **Systemd Security Sandboxing:** Hardened systemd daemon configuration featuring isolated sandboxing (`ProtectSystem=true`, `PrivateTmp=false` for shared tmux sockets, and a restricted `CapabilityBoundingSet` limiting root powers).
 - 🔒 **Security Hardened Input Validation:** Filters all incoming API queries against strict backend whitelist patterns, blocking shell command injection vectors.
 - 📊 **Host & Process Monitoring:** Real-time CPU, RAM, and Disk host gauges, custom canvas historical graphs, and user process metrics mapping.
-- 🌓 **Dark/Light Mode & Multilingual (i18n):** Togglable dual color modes and complete German/English translations.
-
+- 🌓 **Dark/Light Mode & Multilingual (i18n):** Togglable dual color modes and complete German/English translations with 100% key parity.
 
 ---
 
