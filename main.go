@@ -856,6 +856,46 @@ func main() {
 		}()
 	}))
 
+	// FastDL Web Server endpoint: /fastdl/{serverID}/...
+	// Maps to /home/<user>/public_html/fastdl/...
+	http.HandleFunc("/fastdl/", func(w http.ResponseWriter, r *http.Request) {
+		trimmed := strings.TrimPrefix(r.URL.Path, "/fastdl/")
+		parts := strings.Split(trimmed, "/")
+		if len(parts) < 1 || parts[0] == "" {
+			http.NotFound(w, r)
+			return
+		}
+		serverID := parts[0]
+		instances := instMgr.GetInstances()
+		var targetSrv *backend.GameServerInstance
+		for _, s := range instances {
+			if s.ID == serverID {
+				targetSrv = &s
+				break
+			}
+		}
+		if targetSrv == nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		relPath := strings.Join(parts[1:], "/")
+		fastdlDir := filepath.Join("/home", targetSrv.User, "public_html", "fastdl")
+		targetFile := filepath.Join(fastdlDir, filepath.Clean("/"+relPath))
+
+		// Security: ensure targetFile is within fastdlDir
+		if !strings.HasPrefix(targetFile, fastdlDir) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		if info, err := os.Stat(targetFile); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, targetFile)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
 	// Dynamic routing for /api/servers/{id}/...
 	http.HandleFunc("/api/servers/", authMgr.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.URL.Path, "/")
@@ -936,7 +976,7 @@ func main() {
 					http.Error(w, "Forbidden - Missing restart permission", http.StatusForbidden)
 					return
 				}
-			case "update", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe", "change-password", "check-update", "mods-install", "mods-update", "mods-remove", "fastdl", "map-compressor", "skeleton", "debug":
+			case "update", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe", "change-password", "check-update", "mods-install", "mods-update", "mods-remove", "fastdl", "map-compressor", "skeleton", "debug", "install-default-resources":
 				if user.Role != "admin" {
 					http.Error(w, "Forbidden - Administrator action", http.StatusForbidden)
 					return
@@ -1510,9 +1550,113 @@ func main() {
 				return
 			}
 
+		case "stopmode":
+			if r.Method == http.MethodGet {
+				stopMode, err := instMgr.GetStopModeSettings(serverID)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"stopmode": stopMode})
+				return
+			} else if r.Method == http.MethodPost {
+				if user.Role != "admin" {
+					http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+					return
+				}
+				var req struct {
+					StopMode string `json:"stopmode"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+					return
+				}
+				if err := instMgr.SaveStopModeSettings(serverID, req.StopMode); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				authMgr.LogAudit(user.Username, r.RemoteAddr, "SETTINGS_STOPMODE", fmt.Sprintf("Updated stopmode to %s", req.StopMode), serverID)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				return
+			}
 
+		case "clone":
+			if r.Method != http.MethodPost {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if user.Role != "admin" {
+				http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+				return
+			}
+			var req struct {
+				Suffix string `json:"suffix"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "Invalid JSON", http.StatusBadRequest)
+				return
+			}
+			newScript, err := instMgr.CreateMultiInstance(serverID, req.Suffix)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			authMgr.LogAudit(user.Username, r.RemoteAddr, "SERVER_CLONE", fmt.Sprintf("Cloned instance %s to %s", serverID, newScript), serverID)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "new_script": newScript})
+			return
 
-		default:
+		case "cloudbackup":
+			subSubRoute := ""
+			if len(parts) >= 6 {
+				subSubRoute = parts[5]
+			}
+			switch subSubRoute {
+			case "settings":
+				if r.Method == http.MethodGet {
+					settings, err := instMgr.GetCloudBackupSettings(serverID)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(settings)
+					return
+				} else if r.Method == http.MethodPost {
+					if user.Role != "admin" {
+						http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+						return
+					}
+					var settings backend.CloudBackupSettings
+					if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+						http.Error(w, "Invalid JSON", http.StatusBadRequest)
+						return
+					}
+					if err := instMgr.SaveCloudBackupSettings(serverID, settings); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					authMgr.LogAudit(user.Username, r.RemoteAddr, "SETTINGS_CLOUDBACKUP", "Updated cloud backup settings", serverID)
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+					return
+				}
+			case "sync":
+				if user.Role != "admin" && !hasUserPermission(user, "backup") {
+					http.Error(w, "Forbidden - Missing backup permission", http.StatusForbidden)
+					return
+				}
+				authMgr.LogAudit(user.Username, r.RemoteAddr, "CLOUDBACKUP_SYNC", "Triggered cloud backup sync", serverID)
+				instMgr.SyncCloudBackup(w, r, serverID, r.URL.Query().Get("lang"))
+				return
+			default:
+				http.NotFound(w, r)
+				return
+			}
 			http.NotFound(w, r)
 		}
 	}))

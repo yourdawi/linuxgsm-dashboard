@@ -420,6 +420,12 @@
                             <button id="console-btn-test-alert" class="btn btn-secondary" disabled>
                                 <span data-i18n="btn-test-alert">Alert Testen</span>
                             </button>
+                            <button id="console-btn-debug" class="btn btn-secondary" disabled title="Debug Modus">
+                                <span data-i18n="btn-debug">Debug Modus</span>
+                            </button>
+                            <button id="console-btn-map-compressor" class="btn btn-secondary hidden" disabled>
+                                <span data-i18n="btn-map-compressor">Map Compressor</span>
+                            </button>
                         </div>
 
                         <!-- Game-specific Actions Panel -->
@@ -511,72 +517,397 @@
                     </div>
                 </header>
 
-                <div class="settings-layout">
-                    <div class="settings-card glass-panel">
-                        <h3 data-i18n="settings-pass-card">Dashboard-Zugangsdaten</h3>
-                        <p class="text-muted" data-i18n="settings-pass-card-desc">Ändere das Passwort für das Web-Dashboard.</p>
-                        <form id="settings-password-form" class="mt-4">
-                            <div class="form-group">
-                                <label for="settings-old-password" data-i18n="settings-old-pass-label">Current Password</label>
-                                <input type="password" id="settings-old-password" required autocomplete="current-password">
+                <!-- Settings Sub-Tabs Navigation Bar -->
+                <div class="settings-subtabs-nav">
+                    <button class="settings-subtab-btn active" id="settings-tab-btn-general" data-subtab="general">
+                        ⚙️ <span data-i18n="settings-subtab-general">Allgemein</span>
+                    </button>
+                    <button class="settings-subtab-btn" id="settings-tab-btn-server" data-subtab="server">
+                        🎮 <span data-i18n="settings-subtab-server">Server-Tools</span>
+                    </button>
+                    <button class="settings-subtab-btn" id="settings-tab-btn-cron" data-subtab="cron">
+                        ⏰ <span data-i18n="settings-subtab-cron">Crontab & Scheduler</span>
+                    </button>
+                    <button class="settings-subtab-btn" id="settings-tab-btn-alerts" data-subtab="alerts">
+                        🔔 <span data-i18n="settings-subtab-alerts">Benachrichtigungen</span>
+                    </button>
+                    <button class="settings-subtab-btn" id="settings-tab-btn-security" data-subtab="security">
+                        🛡️ <span data-i18n="settings-subtab-security">Firewall & Sicherheit</span>
+                    </button>
+                </div>
+
+                <!-- Shared Server Selection Bar (visible when on server, cron, or alerts tab) -->
+                <div id="settings-server-select-bar" class="glass-panel mb-4 hidden" style="padding: 1rem 1.25rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+                    <div style="display: flex; align-items: center; gap: 0.75rem; flex: 1; min-width: 280px;">
+                        <label for="settings-server-select" style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0; white-space: nowrap;" data-i18n="settings-tools-select-label">Server auswählen:</label>
+                        <select id="settings-server-select" class="form-control" style="flex: 1; max-width: 350px;">
+                            <option value="" data-i18n="settings-tools-select-default">-- Server auswählen --</option>
+                        </select>
+                    </div>
+                    <span class="text-muted" style="font-size: 0.8rem;" data-i18n="settings-server-select-hint">Einstellungen gelten für die ausgewählte Server-Instanz.</span>
+                </div>
+
+                <!-- Subtab 1: Allgemein (General) -->
+                <div id="settings-subtab-panel-general" class="settings-subtab-panel">
+                    <div class="settings-layout">
+                        <!-- Dashboard-Zugangsdaten -->
+                        <div class="settings-card glass-panel">
+                            <h3 data-i18n="settings-pass-card">Dashboard-Zugangsdaten</h3>
+                            <p class="text-muted" data-i18n="settings-pass-card-desc">Ändere das Passwort für das Web-Dashboard.</p>
+                            <form id="settings-password-form" class="mt-4">
+                                <div class="form-group">
+                                    <label for="settings-old-password" data-i18n="settings-old-pass-label">Current Password</label>
+                                    <input type="password" id="settings-old-password" required autocomplete="current-password">
+                                </div>
+                                <div class="form-group">
+                                    <label for="settings-new-password" data-i18n="settings-new-pass-label">New Password</label>
+                                    <input type="password" id="settings-new-password" required autocomplete="new-password">
+                                </div>
+                                <div class="form-group">
+                                    <label for="settings-new-password-confirm" data-i18n="settings-confirm-pass-label">Confirm New Password</label>
+                                    <input type="password" id="settings-new-password-confirm" required autocomplete="new-password">
+                                </div>
+                                <div id="settings-password-message" class="info-message"></div>
+                                <button type="submit" class="btn btn-primary" data-i18n="settings-btn-save">Update Password</button>
+                            </form>
+                        </div>
+
+                        <!-- System-Informationen -->
+                        <div class="settings-card glass-panel">
+                            <h3 data-i18n="settings-info-card">System-Informationen</h3>
+                            <div class="info-list mt-4">
+                                <div class="info-item">
+                                    <span class="info-label" data-i18n="settings-info-version">Dashboard Version</span>
+                                    <span class="info-value">1.0.7 (Lightweight Edition)</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label" data-i18n="settings-info-os">Operating System</span>
+                                    <span class="info-value" id="settings-os">Lädt...</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label" data-i18n="settings-info-pid">Prozess-ID (PID)</span>
+                                    <span class="info-value" id="settings-pid">Lädt...</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label" data-i18n="settings-info-mode">Dashboard Mode</span>
+                                    <span class="info-value highlight" id="settings-mode">Lädt...</span>
+                                </div>
                             </div>
-                            <div class="form-group">
-                                <label for="settings-new-password" data-i18n="settings-new-pass-label">New Password</label>
-                                <input type="password" id="settings-new-password" required autocomplete="new-password">
+                        </div>
+
+                        <!-- Dashboard-Updates -->
+                        <div class="settings-card glass-panel" id="settings-update-card">
+                            <h3 data-i18n="settings-update-title">Dashboard-Updates</h3>
+                            <p class="text-muted" data-i18n="settings-update-desc">Überprüfe, ob neue Versionen des Dashboards auf GitHub verfügbar sind.</p>
+                            <div class="update-status-box mt-4">
+                                <div class="update-status-row" style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+                                    <span class="info-label" data-i18n="settings-update-status-label" style="font-weight: 500;">Status:</span>
+                                    <span class="info-value text-success" id="update-status-text" data-i18n="update-status-latest" style="font-weight: 600;">Aktuell</span>
+                                </div>
+                                <div class="update-info-row mt-2 hidden" id="update-details-row" style="display: flex; justify-content: space-between;">
+                                    <span class="info-label" data-i18n="settings-update-new-version" style="font-weight: 500;">Verfügbare Version:</span>
+                                    <span class="info-value highlight" id="update-new-version-text" style="font-weight: 600;">v0.0.0</span>
+                                </div>
                             </div>
-                            <div class="form-group">
-                                <label for="settings-new-password-confirm" data-i18n="settings-confirm-pass-label">Confirm New Password</label>
-                                <input type="password" id="settings-new-password-confirm" required autocomplete="new-password">
+                            <div class="update-action-box mt-4" style="display: flex; gap: 0.5rem;">
+                                <button id="btn-check-update" class="btn btn-secondary" style="width: 100%;" data-i18n="btn-check-update">Nach Updates suchen</button>
+                                <button id="btn-trigger-update" class="btn btn-primary hidden" style="width: 100%;" data-i18n="btn-trigger-update">Jetzt updaten</button>
                             </div>
-                            <div id="settings-password-message" class="info-message"></div>
-                            <button type="submit" class="btn btn-primary" data-i18n="settings-btn-save">Update Password</button>
+                            <div id="settings-update-message" class="info-message mt-2" style="font-size: 0.8rem; text-align: center;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Subtab 2: Server-Tools & Instanzen -->
+                <div id="settings-subtab-panel-server" class="settings-subtab-panel hidden">
+                    <div id="settings-tools-area" class="hidden">
+                        <div class="settings-card glass-panel" style="margin-bottom: 1.5rem;">
+                            <h3 data-i18n="settings-tools-card">Server-spezifische Tools</h3>
+                            <p class="text-muted" data-i18n="settings-tools-card-desc">Konfiguriere Tags, Stop-Modus und Multi-Instanzen für den ausgewählten Server.</p>
+
+                            <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin-top: 1.5rem;">
+                                <div class="form-group mb-0" style="flex: 1; min-width: 250px; max-width: 380px; display: flex; gap: 0.5rem; align-items: flex-end;">
+                                    <div style="flex: 1;">
+                                        <label for="settings-server-tag-input" style="font-size:0.85rem;" data-i18n="settings-tag-label">Server Tag / Cluster</label>
+                                        <input type="text" id="settings-server-tag-input" class="form-control mt-1" data-i18n-placeholder="settings-tag-placeholder" placeholder="z. B. Cluster-1, Public, EU-Server">
+                                    </div>
+                                    <button id="settings-server-tag-save-btn" class="btn btn-secondary btn-sm" style="padding: 0.625rem 1rem;" data-i18n="btn-save">Speichern</button>
+                                </div>
+
+                                <div class="form-group mb-0" style="flex: 1; min-width: 280px; max-width: 420px; display: flex; gap: 0.5rem; align-items: flex-end;">
+                                    <div style="flex: 1;">
+                                        <label for="settings-stopmode-select" style="font-size:0.85rem;" data-i18n="settings-stopmode-label">Stop-Modus (Graceful Shutdown)</label>
+                                        <select id="settings-stopmode-select" class="form-control mt-1">
+                                            <option value="default" data-i18n="settings-stopmode-default">Standard (LinuxGSM Default / Normaler Stop)</option>
+                                            <option value="1" data-i18n="settings-stopmode-1">Modus 1: tmux kill</option>
+                                            <option value="2" data-i18n="settings-stopmode-2">Modus 2: CTRL+c</option>
+                                            <option value="3" data-i18n="settings-stopmode-3">Modus 3: quit</option>
+                                            <option value="4" data-i18n="settings-stopmode-4">Modus 4: quit 120s</option>
+                                            <option value="5" data-i18n="settings-stopmode-5">Modus 5: stop</option>
+                                            <option value="6" data-i18n="settings-stopmode-6">Modus 6: q</option>
+                                            <option value="7" data-i18n="settings-stopmode-7">Modus 7: exit</option>
+                                            <option value="8" data-i18n="settings-stopmode-8">Modus 8: 7 Days to Die</option>
+                                            <option value="9" data-i18n="settings-stopmode-9">Modus 9: GoldSrc</option>
+                                            <option value="10" data-i18n="settings-stopmode-10">Modus 10: Avorion</option>
+                                            <option value="11" data-i18n="settings-stopmode-11">Modus 11: end</option>
+                                            <option value="12" data-i18n="settings-stopmode-12">Modus 12: shutdown</option>
+                                            <option value="13" data-i18n="settings-stopmode-13">Modus 13: Soulmask</option>
+                                        </select>
+                                    </div>
+                                    <button id="settings-stopmode-save-btn" class="btn btn-secondary btn-sm" style="padding: 0.625rem 1rem;" data-i18n="btn-save">Speichern</button>
+                                </div>
+
+                                <div class="form-group mb-0" style="display: flex; align-items: flex-end;">
+                                    <button id="settings-btn-open-clone" class="btn btn-secondary btn-sm" style="padding: 0.625rem 1rem; display: inline-flex; align-items: center; gap: 0.35rem;">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                        <span data-i18n="settings-btn-clone">Instanz klonen</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="tools-split" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+                            <!-- systemd Card -->
+                            <div class="tool-subcard glass-panel" style="padding: 1.5rem;">
+                                <h4 style="margin-bottom:0.5rem; text-transform:none;" data-i18n="settings-tools-systemd-title">Systemd-Dienst (Autostart bei Boot)</h4>
+                                <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="settings-tools-systemd-desc">Erstelle eine Datei unter <code>/etc/systemd/system/lgsm-[server].service</code> als root und füge folgenden Inhalt ein:</p>
+                                <pre class="code-block-template" id="template-systemd" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:1rem; border-radius:8px; font-family:var(--font-mono); font-size:0.8rem; overflow-x:auto; user-select:all; line-height:1.4;">Lädt...</pre>
+                                <button id="settings-tools-btn-systemd" class="btn btn-primary btn-sm mt-2" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
+                                    <span data-i18n="settings-tools-btn-systemd">Dienst automatisch installieren & aktivieren</span>
+                                </button>
+                            </div>
+                            <!-- Cronjob Card -->
+                            <div class="tool-subcard glass-panel" style="padding: 1.5rem;">
+                                <h4 data-i18n="settings-tools-cron-title">Cronjobs (Geplante Wartungsaufgaben)</h4>
+                                <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="settings-tools-cron-desc">Füge diese Zeilen in die Crontab des Serverbenutzers (oder über <code>crontab -e</code> als root) ein:</p>
+                                <pre class="code-block-template" id="template-cron" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:1rem; border-radius:8px; font-family:var(--font-mono); font-size:0.8rem; overflow-x:auto; user-select:all; line-height:1.4;">Lädt...</pre>
+                                <button id="settings-tools-btn-cron" class="btn btn-primary btn-sm mt-2" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                                    <span data-i18n="settings-tools-btn-cron">Cronjobs in Crontab schreiben</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="settings-server-prompt-server" class="glass-panel text-center p-4">
+                        <p class="text-muted mb-0" data-i18n="settings-select-server-prompt">Bitte wähle oben einen Server aus, um Server-Tools und Instanz-Einstellungen anzuzeigen.</p>
+                    </div>
+                </div>
+
+                <!-- Subtab 3: Crontab & Scheduler -->
+                <div id="settings-subtab-panel-cron" class="settings-subtab-panel hidden">
+                    <div id="settings-cron-area" class="hidden">
+                        <div class="glass-panel" style="padding: 1.5rem;">
+                            <h3 style="margin-top:0; margin-bottom:0.5rem;" data-i18n="cron-builder-title">Visueller Crontab-Scheduler</h3>
+                            <p class="text-muted" style="font-size:0.85rem; margin-bottom:1.5rem;" data-i18n="cron-builder-desc">Konfiguriere automatische Intervall-Aufgaben für diesen Server.</p>
+                            <form id="cron-builder-form" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem;">
+                                <div>
+                                    <label style="font-size:0.85rem; font-weight:600;" data-i18n="cron-monitor-label">Crash-Monitoring Intervall</label>
+                                    <select id="cron-monitor-select" class="form-control mt-1">
+                                        <option value="5" data-i18n="cron-option-5m">Alle 5 Minuten</option>
+                                        <option value="10" data-i18n="cron-option-10m">Alle 10 Minuten</option>
+                                        <option value="15" data-i18n="cron-option-15m">Alle 15 Minuten</option>
+                                        <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="font-size:0.85rem; font-weight:600;" data-i18n="cron-update-label">Auto-Update Check Intervall</label>
+                                    <select id="cron-update-select" class="form-control mt-1">
+                                        <option value="30" data-i18n="cron-option-30m">Alle 30 Minuten</option>
+                                        <option value="60" data-i18n="cron-option-1h">Jede Stunde</option>
+                                        <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="font-size:0.85rem; font-weight:600;" data-i18n="cron-restart-label">Täglicher Neustart / Force-Update</label>
+                                    <input type="time" id="cron-restart-time" class="form-control mt-1" value="04:30">
+                                </div>
+                                <div>
+                                    <label style="font-size:0.85rem; font-weight:600;" data-i18n="cron-core-label">Wöchentliches LGSM Update</label>
+                                    <select id="cron-core-select" class="form-control mt-1">
+                                        <option value="0" data-i18n="cron-option-sunday">Sonntags um 00:00 Uhr</option>
+                                        <option value="1" data-i18n="cron-option-monday">Montags um 00:00 Uhr</option>
+                                        <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
+                                    </select>
+                                </div>
+                                <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
+                                    <span id="cron-builder-message" class="info-message" style="font-size: 0.8rem;"></span>
+                                    <button type="submit" class="btn btn-success" id="btn-save-cron-schedule" data-i18n="btn-save-schedule">Zeitplan in Crontab speichern</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                    <div id="settings-server-prompt-cron" class="glass-panel text-center p-4">
+                        <p class="text-muted mb-0" data-i18n="settings-select-server-prompt-cron">Bitte wähle oben einen Server aus, um geplante Wartungsaufgaben zu verwalten.</p>
+                    </div>
+                </div>
+
+                <!-- Subtab 4: Benachrichtigungen & Alerts -->
+                <div id="settings-subtab-panel-alerts" class="settings-subtab-panel hidden">
+                    <div id="alerts-settings-panel" class="glass-panel hidden" style="padding: 1.5rem;">
+                        <h3 style="margin-top: 0; margin-bottom: 1rem; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                            <span data-i18n="alerts-settings-title">Benachrichtigungs-Einstellungen</span>
+                        </h3>
+                        <form id="alerts-settings-form">
+                            <!-- Discord -->
+                            <div class="form-group mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-discord-enabled" disabled>
+                                    <span>Discord-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-discord-container" class="hidden mt-2">
+                                    <label for="alerts-setting-discord-webhook" style="font-size:0.85rem;" data-i18n="alerts-discord-webhook-label">Discord Webhook URL</label>
+                                    <input type="url" id="alerts-setting-discord-webhook" class="form-control mt-1" placeholder="https://discord.com/api/webhooks/..." disabled>
+                                </div>
+                            </div>
+                            
+                            <!-- Telegram -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-telegram-enabled" disabled>
+                                    <span data-i18n="alerts-telegram-label">Telegram-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-telegram-container" class="hidden mt-2">
+                                    <label for="alerts-setting-telegram-token" style="font-size:0.85rem;" data-i18n="alerts-telegram-token-label">Telegram Bot Token</label>
+                                    <input type="text" id="alerts-setting-telegram-token" class="form-control mt-1" placeholder="123456789:ABCdefGhI..." disabled>
+                                    <label for="alerts-setting-telegram-chatid" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-telegram-chatid-label">Telegram Chat ID</label>
+                                    <input type="text" id="alerts-setting-telegram-chatid" class="form-control mt-1" placeholder="123456789" disabled>
+                                </div>
+                            </div>
+                            
+                            <!-- Email -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-email-enabled" disabled>
+                                    <span data-i18n="alerts-email-label">E-Mail-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-email-container" class="hidden mt-2">
+                                    <label for="alerts-setting-email-smtp" style="font-size:0.85rem;" data-i18n="alerts-email-smtp-label">SMTP Server</label>
+                                    <input type="text" id="alerts-setting-email-smtp" class="form-control mt-1" placeholder="mail.smtp.com" disabled>
+                                    <label for="alerts-setting-email-port" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-email-port-label">SMTP Port</label>
+                                    <input type="number" id="alerts-setting-email-port" class="form-control mt-1" placeholder="25" disabled>
+                                    <label for="alerts-setting-email-user" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-email-user-label">SMTP Benutzer</label>
+                                    <input type="text" id="alerts-setting-email-user" class="form-control mt-1" placeholder="user@smtp.com" disabled>
+                                    <label for="alerts-setting-email-pass" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-email-pass-label">SMTP Passwort</label>
+                                    <input type="password" id="alerts-setting-email-pass" class="form-control mt-1" placeholder="••••••••" disabled>
+                                    <label for="alerts-setting-email-dest" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-email-dest-label">Empfänger E-Mail</label>
+                                    <input type="email" id="alerts-setting-email-dest" class="form-control mt-1" placeholder="dest@email.com" disabled>
+                                </div>
+                            </div>
+
+                            <!-- ntfy -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-ntfy-enabled" disabled>
+                                    <span data-i18n="alerts-ntfy-label">ntfy-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-ntfy-container" class="hidden mt-2">
+                                    <label for="alerts-setting-ntfy-url" style="font-size:0.85rem;" data-i18n="alerts-ntfy-url-label">ntfy Server URL</label>
+                                    <input type="text" id="alerts-setting-ntfy-url" class="form-control mt-1" placeholder="https://ntfy.sh" disabled>
+                                    <label for="alerts-setting-ntfy-topic" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-ntfy-topic-label">ntfy Topic</label>
+                                    <input type="text" id="alerts-setting-ntfy-topic" class="form-control mt-1" placeholder="lgsm-alerts" disabled>
+                                    <label for="alerts-setting-ntfy-token" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-ntfy-token-label">Auth Token (Optional)</label>
+                                    <input type="password" id="alerts-setting-ntfy-token" class="form-control mt-1" placeholder="tk_..." disabled>
+                                </div>
+                            </div>
+
+                            <!-- Slack -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-slack-enabled" disabled>
+                                    <span data-i18n="alerts-slack-label">Slack-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-slack-container" class="hidden mt-2">
+                                    <label for="alerts-setting-slack-webhook" style="font-size:0.85rem;" data-i18n="alerts-slack-webhook-label">Slack Webhook URL</label>
+                                    <input type="url" id="alerts-setting-slack-webhook" class="form-control mt-1" placeholder="https://hooks.slack.com/services/..." disabled>
+                                </div>
+                            </div>
+
+                            <!-- Matrix -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-matrix-enabled" disabled>
+                                    <span data-i18n="alerts-matrix-label">Matrix-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-matrix-container" class="hidden mt-2">
+                                    <label for="alerts-setting-matrix-homeserver" style="font-size:0.85rem;" data-i18n="alerts-matrix-homeserver-label">Homeserver URL</label>
+                                    <input type="text" id="alerts-setting-matrix-homeserver" class="form-control mt-1" placeholder="https://matrix.org" disabled>
+                                    <label for="alerts-setting-matrix-roomid" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-matrix-roomid-label">Room ID</label>
+                                    <input type="text" id="alerts-setting-matrix-roomid" class="form-control mt-1" placeholder="!roomid:matrix.org" disabled>
+                                    <label for="alerts-setting-matrix-token" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-matrix-token-label">Access Token</label>
+                                    <input type="password" id="alerts-setting-matrix-token" class="form-control mt-1" placeholder="syt_..." disabled>
+                                </div>
+                            </div>
+
+                            <!-- Pushover -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-pushover-enabled" disabled>
+                                    <span data-i18n="alerts-pushover-label">Pushover-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-pushover-container" class="hidden mt-2">
+                                    <label for="alerts-setting-pushover-token" style="font-size:0.85rem;" data-i18n="alerts-pushover-token-label">App Token</label>
+                                    <input type="text" id="alerts-setting-pushover-token" class="form-control mt-1" placeholder="azgah95..." disabled>
+                                    <label for="alerts-setting-pushover-user" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-pushover-user-label">User Key</label>
+                                    <input type="text" id="alerts-setting-pushover-user" class="form-control mt-1" placeholder="uQi9..." disabled>
+                                </div>
+                            </div>
+
+                            <!-- Pushbullet -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-pushbullet-enabled" disabled>
+                                    <span data-i18n="alerts-pushbullet-label">Pushbullet-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-pushbullet-container" class="hidden mt-2">
+                                    <label for="alerts-setting-pushbullet-token" style="font-size:0.85rem;" data-i18n="alerts-pushbullet-token-label">Access Token</label>
+                                    <input type="text" id="alerts-setting-pushbullet-token" class="form-control mt-1" placeholder="o.v6B..." disabled>
+                                    <label for="alerts-setting-pushbullet-channel" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-pushbullet-channel-label">Channel Tag (Optional)</label>
+                                    <input type="text" id="alerts-setting-pushbullet-channel" class="form-control mt-1" placeholder="mychannel" disabled>
+                                </div>
+                            </div>
+
+                            <!-- IFTTT -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-ifttt-enabled" disabled>
+                                    <span data-i18n="alerts-ifttt-label">IFTTT-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-ifttt-container" class="hidden mt-2">
+                                    <label for="alerts-setting-ifttt-key" style="font-size:0.85rem;" data-i18n="alerts-ifttt-key-label">IFTTT Key</label>
+                                    <input type="text" id="alerts-setting-ifttt-key" class="form-control mt-1" placeholder="d12345..." disabled>
+                                    <label for="alerts-setting-ifttt-event" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-ifttt-event-label">Event Name</label>
+                                    <input type="text" id="alerts-setting-ifttt-event" class="form-control mt-1" placeholder="lgsm_alert" disabled>
+                                </div>
+                            </div>
+
+                            <!-- Rocket.Chat -->
+                            <div class="form-group mt-3 mb-3">
+                                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
+                                    <input type="checkbox" id="alerts-setting-rocketchat-enabled" disabled>
+                                    <span data-i18n="alerts-rocketchat-label">Rocket.Chat-Alerts</span>
+                                </label>
+                                <div id="alerts-setting-rocketchat-container" class="hidden mt-2">
+                                    <label for="alerts-setting-rocketchat-webhook" style="font-size:0.85rem;" data-i18n="alerts-rocketchat-webhook-label">Webhook URL</label>
+                                    <input type="url" id="alerts-setting-rocketchat-webhook" class="form-control mt-1" placeholder="https://rocketchat.example.com/hooks/..." disabled>
+                                </div>
+                            </div>
+                            
+                            <div class="form-actions mt-4" style="display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center;">
+                                <div id="alerts-settings-message" class="info-message" style="margin-right: auto; align-self: center; font-size: 0.8rem; text-align: left;"></div>
+                                <button type="submit" class="btn btn-primary" id="alerts-settings-save-btn" disabled data-i18n="btn-save">Speichern</button>
+                            </div>
                         </form>
                     </div>
-
-                    <div class="settings-card glass-panel">
-                        <h3 data-i18n="settings-info-card">System-Informationen</h3>
-                        <div class="info-list mt-4">
-                            <div class="info-item">
-                                <span class="info-label" data-i18n="settings-info-version">Dashboard Version</span>
-                                <span class="info-value">1.0.7 (Lightweight Edition)</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label" data-i18n="settings-info-os">Operating System</span>
-                                <span class="info-value" id="settings-os">Lädt...</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label" data-i18n="settings-info-pid">Prozess-ID (PID)</span>
-                                <span class="info-value" id="settings-pid">Lädt...</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label" data-i18n="settings-info-mode">Dashboard Mode</span>
-                                <span class="info-value highlight" id="settings-mode">Lädt...</span>
-                            </div>
-                        </div>
+                    <div id="settings-server-prompt-alerts" class="glass-panel text-center p-4">
+                        <p class="text-muted mb-0" data-i18n="settings-select-server-prompt-alerts">Bitte wähle oben einen Server aus, um Benachrichtigungen zu konfigurieren.</p>
                     </div>
+                </div>
 
-                    <div class="settings-card glass-panel" id="settings-update-card">
-                        <h3 data-i18n="settings-update-title">Dashboard-Updates</h3>
-                        <p class="text-muted" data-i18n="settings-update-desc">Überprüfe, ob neue Versionen des Dashboards auf GitHub verfügbar sind.</p>
-                        <div class="update-status-box mt-4">
-                            <div class="update-status-row" style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
-                                <span class="info-label" data-i18n="settings-update-status-label" style="font-weight: 500;">Status:</span>
-                                <span class="info-value text-success" id="update-status-text" data-i18n="update-status-latest" style="font-weight: 600;">Aktuell</span>
-                            </div>
-                            <div class="update-info-row mt-2 hidden" id="update-details-row" style="display: flex; justify-content: space-between;">
-                                <span class="info-label" data-i18n="settings-update-new-version" style="font-weight: 500;">Verfügbare Version:</span>
-                                <span class="info-value highlight" id="update-new-version-text" style="font-weight: 600;">v0.0.0</span>
-                            </div>
-                        </div>
-                        <div class="update-action-box mt-4" style="display: flex; gap: 0.5rem;">
-                            <button id="btn-check-update" class="btn btn-secondary" style="width: 100%;" data-i18n="btn-check-update">Nach Updates suchen</button>
-                            <button id="btn-trigger-update" class="btn btn-primary hidden" style="width: 100%;" data-i18n="btn-trigger-update">Jetzt updaten</button>
-                        </div>
-                        <div id="settings-update-message" class="info-message mt-2" style="font-size: 0.8rem; text-align: center;"></div>
-                    </div>
-
-                    <!-- Firewall Inspector Card -->
-                    <div class="settings-card glass-panel" id="settings-firewall-card">
+                <!-- Subtab 5: Firewall & Sicherheit -->
+                <div id="settings-subtab-panel-security" class="settings-subtab-panel hidden">
+                    <div class="settings-card glass-panel" id="settings-firewall-card" style="max-width: 800px;">
                         <h3 style="display:flex; align-items:center; gap:0.5rem; margin-top:0;">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                             <span data-i18n="firewall-title">Firewall Inspector & Privilege Probe</span>
@@ -589,251 +920,6 @@
                             </div>
                             <div id="firewall-message-text" class="text-muted" style="font-size:0.8rem; line-height:1.4; margin-bottom:0.75rem;"></div>
                             <div id="firewall-rules-box" class="hidden" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:0.75rem; border-radius:6px; font-family:var(--font-mono); font-size:0.8rem; max-height:120px; overflow-y:auto;"></div>
-                        </div>
-                    </div>
-
-                    <!-- Autostart & Cronjob templates -->
-                    <div class="settings-card glass-panel" style="grid-column: 1 / -1; margin-top: 1.5rem;">
-                        <h3 data-i18n="settings-tools-card">Server-specific Tools</h3>
-                        <p class="text-muted" data-i18n="settings-tools-card-desc">Select one of your active servers to show copy-paste templates for systemd and cronjobs.</p>
-                        
-                        <div class="form-group mt-4" style="max-width: 400px;">
-                            <label for="settings-server-select" data-i18n="settings-tools-select-label">Server auswählen</label>
-                            <select id="settings-server-select" class="form-control">
-                                <option value="" data-i18n="settings-tools-select-default">-- Select server --</option>
-                            </select>
-                        </div>
-                        
-                        <div id="settings-tools-area" class="hidden mt-4">
-                            <div class="form-group mb-4" style="max-width: 400px; display: flex; gap: 0.5rem; align-items: flex-end;">
-                                <div style="flex: 1;">
-                                    <label for="settings-server-tag-input" style="font-size:0.85rem;" data-i18n="settings-tag-label">Server Tag / Cluster</label>
-                                    <input type="text" id="settings-server-tag-input" class="form-control mt-1" data-i18n-placeholder="settings-tag-placeholder" placeholder="z. B. Cluster-1, Public, EU-Server">
-                                </div>
-                                <button id="settings-server-tag-save-btn" class="btn btn-secondary btn-sm" style="padding: 0.625rem 1rem;" data-i18n="btn-save">Speichern</button>
-                            </div>
-
-                            <div class="tools-split" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
-                                <!-- systemd Card -->
-                                <div class="tool-subcard">
-                                    <h4 style="margin-bottom:0.5rem; text-transform:none;" data-i18n="settings-tools-systemd-title">Systemd-Dienst (Autostart bei Boot)</h4>
-                                    <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="settings-tools-systemd-desc">Erstelle eine Datei unter <code>/etc/systemd/system/lgsm-[server].service</code> als root und füge folgenden Inhalt ein:</p>
-                                    <pre class="code-block-template" id="template-systemd" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:1rem; border-radius:8px; font-family:var(--font-mono); font-size:0.8rem; overflow-x:auto; user-select:all; line-height:1.4;">Lädt...</pre>
-                                    <button id="settings-tools-btn-systemd" class="btn btn-primary btn-sm mt-2" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;">
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
-                                        <span data-i18n="settings-tools-btn-systemd">Dienst automatisch installieren & aktivieren</span>
-                                    </button>
-                                </div>
-                                <!-- Cronjob Card -->
-                                <div class="tool-subcard">
-                                    <h4 data-i18n="settings-tools-cron-title">Cronjobs (Geplante Wartungsaufgaben)</h4>
-                                    <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="settings-tools-cron-desc">Füge diese Zeilen in die Crontab des Serverbenutzers (oder über <code>crontab -e</code> als root) ein:</p>
-                                    <pre class="code-block-template" id="template-cron" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:1rem; border-radius:8px; font-family:var(--font-mono); font-size:0.8rem; overflow-x:auto; user-select:all; line-height:1.4;">Lädt...</pre>
-                                    <button id="settings-tools-btn-cron" class="btn btn-primary btn-sm mt-2" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;">
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
-                                        <span data-i18n="settings-tools-btn-cron">Cronjobs in Crontab schreiben</span>
-                                    </button>
-                                </div>
-                            </div>
-
-                            <!-- Visual Crontab Scheduler -->
-                            <div class="tool-subcard mt-4" id="settings-tools-cron-builder" style="border-top: 1px solid var(--border-color); padding-top: 1rem;">
-                                <h4 style="margin-bottom:0.5rem;" data-i18n="cron-builder-title">Visueller Crontab-Scheduler</h4>
-                                <p class="text-muted" style="font-size:0.8rem; margin-bottom:0.75rem;" data-i18n="cron-builder-desc">Konfiguriere automatische Intervall-Aufgaben für diesen Server.</p>
-                                <form id="cron-builder-form" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
-                                    <div>
-                                        <label style="font-size:0.85rem;" data-i18n="cron-monitor-label">Crash-Monitoring Intervall</label>
-                                        <select id="cron-monitor-select" class="form-control mt-1">
-                                            <option value="5" data-i18n="cron-option-5m">Alle 5 Minuten</option>
-                                            <option value="10" data-i18n="cron-option-10m">Alle 10 Minuten</option>
-                                            <option value="15" data-i18n="cron-option-15m">Alle 15 Minuten</option>
-                                            <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label style="font-size:0.85rem;" data-i18n="cron-update-label">Auto-Update Check Intervall</label>
-                                        <select id="cron-update-select" class="form-control mt-1">
-                                            <option value="30" data-i18n="cron-option-30m">Alle 30 Minuten</option>
-                                            <option value="60" data-i18n="cron-option-1h">Jede Stunde</option>
-                                            <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label style="font-size:0.85rem;" data-i18n="cron-restart-label">Täglicher Neustart / Force-Update</label>
-                                        <input type="time" id="cron-restart-time" class="form-control mt-1" value="04:30">
-                                    </div>
-                                    <div>
-                                        <label style="font-size:0.85rem;" data-i18n="cron-core-label">Wöchentliches LGSM Update</label>
-                                        <select id="cron-core-select" class="form-control mt-1">
-                                            <option value="0" data-i18n="cron-option-sunday">Sonntags um 00:00 Uhr</option>
-                                            <option value="1" data-i18n="cron-option-monday">Montags um 00:00 Uhr</option>
-                                            <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
-                                        </select>
-                                    </div>
-                                    <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem;">
-                                        <span id="cron-builder-message" class="info-message" style="font-size: 0.8rem;"></span>
-                                        <button type="submit" class="btn btn-success btn-sm" id="btn-save-cron-schedule" data-i18n="btn-save-schedule">Zeitplan in Crontab speichern</button>
-                                    </div>
-                                </form>
-                            </div>
-
-                            <!-- Alert Settings Panel -->
-                            <div id="alerts-settings-panel" class="glass-panel mt-4" style="padding: 1.5rem;">
-                                <h3 style="margin-top: 0; margin-bottom: 1rem; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-                                    <span data-i18n="alerts-settings-title">Benachrichtigungs-Einstellungen</span>
-                                </h3>
-                                <form id="alerts-settings-form">
-                                    <!-- Discord -->
-                                    <div class="form-group mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-discord-enabled" disabled>
-                                            <span>Discord-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-discord-container" class="hidden mt-2">
-                                            <label for="alerts-setting-discord-webhook" style="font-size:0.85rem;" data-i18n="alerts-discord-webhook-label">Discord Webhook URL</label>
-                                            <input type="url" id="alerts-setting-discord-webhook" class="form-control mt-1" placeholder="https://discord.com/api/webhooks/..." disabled>
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- Telegram -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-telegram-enabled" disabled>
-                                            <span data-i18n="alerts-telegram-label">Telegram-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-telegram-container" class="hidden mt-2">
-                                            <label for="alerts-setting-telegram-token" style="font-size:0.85rem;" data-i18n="alerts-telegram-token-label">Telegram Bot Token</label>
-                                            <input type="text" id="alerts-setting-telegram-token" class="form-control mt-1" placeholder="123456789:ABCdefGhI..." disabled>
-                                            <label for="alerts-setting-telegram-chatid" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-telegram-chatid-label">Telegram Chat ID</label>
-                                            <input type="text" id="alerts-setting-telegram-chatid" class="form-control mt-1" placeholder="123456789" disabled>
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- Email -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-email-enabled" disabled>
-                                            <span data-i18n="alerts-email-label">E-Mail-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-email-container" class="hidden mt-2">
-                                            <label for="alerts-setting-email-smtp" style="font-size:0.85rem;" data-i18n="alerts-email-smtp-label">SMTP Server</label>
-                                            <input type="text" id="alerts-setting-email-smtp" class="form-control mt-1" placeholder="mail.smtp.com" disabled>
-                                            <label for="alerts-setting-email-port" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-email-port-label">SMTP Port</label>
-                                            <input type="number" id="alerts-setting-email-port" class="form-control mt-1" placeholder="25" disabled>
-                                            <label for="alerts-setting-email-user" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-email-user-label">SMTP Benutzer</label>
-                                            <input type="text" id="alerts-setting-email-user" class="form-control mt-1" placeholder="user@smtp.com" disabled>
-                                            <label for="alerts-setting-email-pass" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-email-pass-label">SMTP Passwort</label>
-                                            <input type="password" id="alerts-setting-email-pass" class="form-control mt-1" placeholder="••••••••" disabled>
-                                            <label for="alerts-setting-email-dest" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-email-dest-label">Empfänger E-Mail</label>
-                                            <input type="email" id="alerts-setting-email-dest" class="form-control mt-1" placeholder="dest@email.com" disabled>
-                                        </div>
-                                    </div>
-
-                                    <!-- ntfy -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-ntfy-enabled" disabled>
-                                            <span data-i18n="alerts-ntfy-label">ntfy-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-ntfy-container" class="hidden mt-2">
-                                            <label for="alerts-setting-ntfy-url" style="font-size:0.85rem;" data-i18n="alerts-ntfy-url-label">ntfy Server URL</label>
-                                            <input type="text" id="alerts-setting-ntfy-url" class="form-control mt-1" placeholder="https://ntfy.sh" disabled>
-                                            <label for="alerts-setting-ntfy-topic" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-ntfy-topic-label">ntfy Topic</label>
-                                            <input type="text" id="alerts-setting-ntfy-topic" class="form-control mt-1" placeholder="lgsm-alerts" disabled>
-                                            <label for="alerts-setting-ntfy-token" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-ntfy-token-label">Auth Token (Optional)</label>
-                                            <input type="password" id="alerts-setting-ntfy-token" class="form-control mt-1" placeholder="tk_..." disabled>
-                                        </div>
-                                    </div>
-
-                                    <!-- Slack -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-slack-enabled" disabled>
-                                            <span data-i18n="alerts-slack-label">Slack-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-slack-container" class="hidden mt-2">
-                                            <label for="alerts-setting-slack-webhook" style="font-size:0.85rem;" data-i18n="alerts-slack-webhook-label">Slack Webhook URL</label>
-                                            <input type="url" id="alerts-setting-slack-webhook" class="form-control mt-1" placeholder="https://hooks.slack.com/services/..." disabled>
-                                        </div>
-                                    </div>
-
-                                    <!-- Matrix -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-matrix-enabled" disabled>
-                                            <span data-i18n="alerts-matrix-label">Matrix-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-matrix-container" class="hidden mt-2">
-                                            <label for="alerts-setting-matrix-homeserver" style="font-size:0.85rem;" data-i18n="alerts-matrix-homeserver-label">Homeserver URL</label>
-                                            <input type="text" id="alerts-setting-matrix-homeserver" class="form-control mt-1" placeholder="https://matrix.org" disabled>
-                                            <label for="alerts-setting-matrix-roomid" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-matrix-roomid-label">Room ID</label>
-                                            <input type="text" id="alerts-setting-matrix-roomid" class="form-control mt-1" placeholder="!roomid:matrix.org" disabled>
-                                            <label for="alerts-setting-matrix-token" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-matrix-token-label">Access Token</label>
-                                            <input type="password" id="alerts-setting-matrix-token" class="form-control mt-1" placeholder="syt_..." disabled>
-                                        </div>
-                                    </div>
-
-                                    <!-- Pushover -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-pushover-enabled" disabled>
-                                            <span data-i18n="alerts-pushover-label">Pushover-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-pushover-container" class="hidden mt-2">
-                                            <label for="alerts-setting-pushover-token" style="font-size:0.85rem;" data-i18n="alerts-pushover-token-label">App Token</label>
-                                            <input type="text" id="alerts-setting-pushover-token" class="form-control mt-1" placeholder="azgah95..." disabled>
-                                            <label for="alerts-setting-pushover-user" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-pushover-user-label">User Key</label>
-                                            <input type="text" id="alerts-setting-pushover-user" class="form-control mt-1" placeholder="uQi9..." disabled>
-                                        </div>
-                                    </div>
-
-                                    <!-- Pushbullet -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-pushbullet-enabled" disabled>
-                                            <span data-i18n="alerts-pushbullet-label">Pushbullet-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-pushbullet-container" class="hidden mt-2">
-                                            <label for="alerts-setting-pushbullet-token" style="font-size:0.85rem;" data-i18n="alerts-pushbullet-token-label">Access Token</label>
-                                            <input type="text" id="alerts-setting-pushbullet-token" class="form-control mt-1" placeholder="o.v6B..." disabled>
-                                            <label for="alerts-setting-pushbullet-channel" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-pushbullet-channel-label">Channel Tag (Optional)</label>
-                                            <input type="text" id="alerts-setting-pushbullet-channel" class="form-control mt-1" placeholder="mychannel" disabled>
-                                        </div>
-                                    </div>
-
-                                    <!-- IFTTT -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-ifttt-enabled" disabled>
-                                            <span data-i18n="alerts-ifttt-label">IFTTT-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-ifttt-container" class="hidden mt-2">
-                                            <label for="alerts-setting-ifttt-key" style="font-size:0.85rem;" data-i18n="alerts-ifttt-key-label">IFTTT Key</label>
-                                            <input type="text" id="alerts-setting-ifttt-key" class="form-control mt-1" placeholder="d12345..." disabled>
-                                            <label for="alerts-setting-ifttt-event" style="font-size:0.85rem;" class="mt-2" data-i18n="alerts-ifttt-event-label">Event Name</label>
-                                            <input type="text" id="alerts-setting-ifttt-event" class="form-control mt-1" placeholder="lgsm_alert" disabled>
-                                        </div>
-                                    </div>
-
-                                    <!-- Rocket.Chat -->
-                                    <div class="form-group mt-3 mb-3">
-                                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;">
-                                            <input type="checkbox" id="alerts-setting-rocketchat-enabled" disabled>
-                                            <span data-i18n="alerts-rocketchat-label">Rocket.Chat-Alerts</span>
-                                        </label>
-                                        <div id="alerts-setting-rocketchat-container" class="hidden mt-2">
-                                            <label for="alerts-setting-rocketchat-webhook" style="font-size:0.85rem;" data-i18n="alerts-rocketchat-webhook-label">Webhook URL</label>
-                                            <input type="url" id="alerts-setting-rocketchat-webhook" class="form-control mt-1" placeholder="https://rocketchat.example.com/hooks/..." disabled>
-                                        </div>
-                                    </div>
-                                    
-                                    <div class="form-actions mt-4" style="display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center;">
-                                        <div id="alerts-settings-message" class="info-message" style="margin-right: auto; align-self: center; font-size: 0.8rem; text-align: left;"></div>
-                                        <button type="submit" class="btn btn-primary" id="alerts-settings-save-btn" disabled data-i18n="btn-save">Speichern</button>
-                                    </div>
-                                </form>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -959,6 +1045,41 @@
                             <div class="form-actions mt-4" style="display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center;">
                                 <div id="backups-settings-message" class="info-message" style="margin-right: auto; align-self: center; font-size: 0.8rem; text-align: left;"></div>
                                 <button type="submit" class="btn btn-primary" id="backups-settings-save-btn" disabled data-i18n="btn-save">Speichern</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Cloud Backup (rclone) Panel -->
+                    <div class="glass-panel" style="padding: 1.5rem; grid-column: 1 / -1;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h3 style="margin: 0; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>
+                                <span data-i18n="cloudbackup-title">Cloud Backup (rclone Sync)</span>
+                            </h3>
+                            <button id="cloudbackup-btn-sync" class="btn btn-success btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+                                <span data-i18n="cloudbackup-btn-sync">Jetzt synchronisieren</span>
+                            </button>
+                        </div>
+                        <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 1rem;" data-i18n="cloudbackup-desc">Synchronisiere erstellte .tar.gz Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).</p>
+                        <form id="cloudbackup-settings-form" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; align-items: flex-end;">
+                            <div>
+                                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 600; cursor: pointer;">
+                                    <input type="checkbox" id="cloudbackup-enabled" disabled>
+                                    <span data-i18n="cloudbackup-enable-label">Cloud Sync aktivieren</span>
+                                </label>
+                            </div>
+                            <div>
+                                <label for="cloudbackup-remote" style="font-size: 0.85rem;" data-i18n="cloudbackup-remote-label">rclone Remote Name</label>
+                                <input type="text" id="cloudbackup-remote" class="form-control mt-1" placeholder="z. B. gdrive oder s3" data-i18n-placeholder="cloudbackup-remote-placeholder" disabled>
+                            </div>
+                            <div>
+                                <label for="cloudbackup-path" style="font-size: 0.85rem;" data-i18n="cloudbackup-path-label">Ziel-Ordnerpfad</label>
+                                <input type="text" id="cloudbackup-path" class="form-control mt-1" placeholder="backups/linuxgsm" data-i18n-placeholder="cloudbackup-path-placeholder" disabled>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                                <span id="cloudbackup-message" class="info-message" style="font-size: 0.8rem; align-self: center;"></span>
+                                <button type="submit" id="cloudbackup-btn-save" class="btn btn-primary btn-sm" disabled data-i18n="btn-save">Speichern</button>
                             </div>
                         </form>
                     </div>
@@ -1335,6 +1456,78 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Rust Server Wipe -->
+    <div id="modal-rust-wipe" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width: 480px;">
+            <div class="modal-header" style="border-bottom: 1px solid rgba(239, 68, 68, 0.2);">
+                <div>
+                    <h3 id="modal-rust-wipe-title" class="text-danger" data-i18n="modal-wipe-title">🌲 Rust Server Wipe</h3>
+                    <p class="text-muted mb-0" id="modal-rust-wipe-subtitle">rustserver</p>
+                </div>
+                <button id="modal-rust-wipe-close-x" class="btn-icon modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 1.5rem;">
+                <div class="alert alert-warning" style="font-size: 0.8rem; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); color: #fcd34d; padding: 0.75rem; border-radius: 4px; margin-bottom: 1rem;" data-i18n="modal-wipe-warning">
+                    Ein Wipe setzt die Welt des Servers zurück. Stelle sicher, dass du vorher ein Backup angelegt hast.
+                </div>
+                <div class="form-group mb-3">
+                    <label style="font-size: 0.85rem; font-weight: 600;" data-i18n="modal-wipe-type-label">Wipe-Typ wählen:</label>
+                    <div class="mt-2" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                        <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
+                            <input type="radio" name="rust-wipe-type" value="map-wipe" checked style="margin-top: 0.2rem;">
+                            <div>
+                                <strong data-i18n="modal-wipe-map-title">Map Wipe (map-wipe)</strong>
+                                <p class="text-muted mb-0" style="font-size: 0.75rem;" data-i18n="modal-wipe-map-desc">Löscht alle Gebäude und Ressourcen. Spieler-Blueprints bleiben erhalten.</p>
+                            </div>
+                        </label>
+                        <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
+                            <input type="radio" name="rust-wipe-type" value="full-wipe" style="margin-top: 0.2rem;">
+                            <div>
+                                <strong class="text-danger" data-i18n="modal-wipe-full-title">Full Wipe (full-wipe)</strong>
+                                <p class="text-muted mb-0" style="font-size: 0.75rem;" data-i18n="modal-wipe-full-desc">Kompletter Reset: Löscht Map, Gebäude und alle Spieler-Blueprints.</p>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="justify-content: space-between; padding: 1rem 1.5rem; display: flex; align-items: center;">
+                <button id="modal-rust-wipe-cancel" class="btn btn-secondary" data-i18n="btn-cancel">Abbrechen</button>
+                <button id="modal-rust-wipe-submit" class="btn btn-danger" data-i18n="modal-wipe-btn-submit">Wipe jetzt ausführen</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Clone / Multi-Instance -->
+    <div id="modal-clone-instance" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width: 480px;">
+            <div class="modal-header">
+                <div>
+                    <h3 id="modal-clone-title" data-i18n="modal-clone-title">👥 Multi-Instanz klonen</h3>
+                    <p class="text-muted mb-0" id="modal-clone-subtitle">csgoserver</p>
+                </div>
+                <button id="modal-clone-close-x" class="btn-icon modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 1.5rem;">
+                <p class="text-muted" style="font-size: 0.85rem;" data-i18n="modal-clone-desc">
+                    Erstellt eine neue Instanz mit geteilten Serverdateien (Symlink), aber eigener Konfiguration (z. B. für einen zweiten Server auf anderen Ports).
+                </p>
+                <div class="form-group mt-3">
+                    <label for="clone-instance-suffix" data-i18n="modal-clone-suffix-label">Instanz-Suffix (Name):</label>
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+                        <span id="clone-instance-prefix" class="font-mono text-muted" style="font-size: 0.9rem;">csgoserver-</span>
+                        <input type="text" id="clone-instance-suffix" class="form-control font-mono" placeholder="2" required data-i18n-placeholder="modal-clone-suffix-placeholder" style="flex: 1;">
+                    </div>
+                    <small class="text-muted" data-i18n="modal-clone-help" style="font-size: 0.75rem; display: block; margin-top: 0.25rem;">Nur Kleinbuchstaben, Zahlen und Bindestriche (z. B. "2", "pvp", "event").</small>
+                </div>
+                <div id="modal-clone-message" class="info-message mt-3" style="font-size: 0.8rem; text-align: center;"></div>
+            </div>
+            <div class="modal-footer" style="justify-content: space-between; padding: 1rem 1.5rem; display: flex; align-items: center;">
+                <button id="modal-clone-cancel" class="btn btn-secondary" data-i18n="btn-cancel">Abbrechen</button>
+                <button id="modal-clone-submit" class="btn btn-primary" data-i18n="modal-clone-btn-submit">Instanz erstellen</button>
             </div>
         </div>
     </div>
