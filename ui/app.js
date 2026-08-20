@@ -2738,7 +2738,71 @@ const i18n = {
         "cron-preset-12h": "Every 12 Hours",
         "cron-preset-custom": "Custom (Cron Expression)",
         "backups-setting-cron-custom-label": "Cron Expression",
-        "backups-setting-cron-custom-help": "Format: Minute Hour Day-of-Month Month Day-of-Week"
+        "backups-setting-cron-custom-help": "Format: Minute Hour Day-of-Month Month Day-of-Week",
+        "btn-save": "Save",
+        "console-mode-game": "Game Log",
+        "console-mode-script": "Script Log",
+        "console-mode-tmux": "tmux Live Console",
+        "role-label": "Role",
+        "settings-info-pid": "Process ID (PID)",
+        "settings-info-version": "Dashboard Version",
+        "user-password-help": "Password for the web login of this user.",
+        "settings-btn-cron": "Write Cronjobs to Crontab",
+        "settings-btn-systemd": "Auto-Install & Enable Service",
+        "settings-confirm-pass": "Confirm New Password",
+        "settings-new-pass": "New Password",
+        "settings-templates-card": "Server-specific Templates",
+        "col-ip": "IP Address",
+        "col-action": "Action",
+        "col-details": "Details",
+        "col-server": "Server",
+        "settings-tag-label": "Server Tag / Cluster",
+        "settings-tag-placeholder": "e.g. Cluster-1, Public, EU-Server",
+        "alerts-telegram-label": "Telegram-Alerts",
+        "alerts-telegram-token-label": "Telegram Bot Token",
+        "alerts-telegram-chatid-label": "Telegram Chat ID",
+        "alerts-email-label": "E-Mail-Alerts",
+        "alerts-email-smtp-label": "SMTP Server",
+        "alerts-email-port-label": "SMTP Port",
+        "alerts-email-user-label": "SMTP User",
+        "alerts-email-pass-label": "SMTP Password",
+        "alerts-email-dest-label": "Recipient E-Mail",
+        "alerts-ntfy-label": "ntfy-Alerts",
+        "alerts-ntfy-url-label": "ntfy Server URL",
+        "alerts-ntfy-topic-label": "ntfy Topic",
+        "alerts-ntfy-token-label": "Auth Token (Optional)",
+        "alerts-slack-label": "Slack-Alerts",
+        "alerts-slack-webhook-label": "Slack Webhook URL",
+        "alerts-matrix-label": "Matrix-Alerts",
+        "alerts-matrix-homeserver-label": "Homeserver URL",
+        "alerts-matrix-roomid-label": "Room ID",
+        "alerts-matrix-token-label": "Access Token",
+        "alerts-pushover-label": "Pushover-Alerts",
+        "alerts-pushover-token-label": "App Token",
+        "alerts-pushover-user-label": "User Key",
+        "alerts-pushbullet-label": "Pushbullet-Alerts",
+        "alerts-pushbullet-token-label": "Access Token",
+        "alerts-pushbullet-channel-label": "Channel Tag (Optional)",
+        "alerts-ifttt-label": "IFTTT-Alerts",
+        "alerts-ifttt-key-label": "IFTTT Key",
+        "alerts-ifttt-event-label": "Event Name",
+        "alerts-rocketchat-label": "Rocket.Chat-Alerts",
+        "alerts-rocketchat-webhook-label": "Webhook URL",
+        "backups-maxbackups-placeholder": "e.g. 4",
+        "backups-maxbackupdays-placeholder": "e.g. 30",
+        "backups-cron-custom-placeholder": "0 5 * * *",
+        "user-username-placeholder": "e.g. supporter_1",
+        "tag-save-success": "Server tag saved successfully!",
+        "tag-save-error": "Error saving server tag:",
+        "tag-prompt": "Enter tag / cluster name for this server (e.g. Cluster-1, Public, Event - or leave blank to remove):",
+        "cron-option-5m": "Every 5 minutes",
+        "cron-option-10m": "Every 10 minutes",
+        "cron-option-15m": "Every 15 minutes",
+        "cron-option-30m": "Every 30 minutes",
+        "cron-option-1h": "Every hour",
+        "cron-option-sunday": "Sundays at 00:00 AM",
+        "cron-option-monday": "Mondays at 00:00 AM",
+        "cron-option-disabled": "Disabled"
     },
     de: {
         "menu-dashboard": "Dashboard",
@@ -3028,7 +3092,71 @@ const i18n = {
         "cron-preset-12h": "Alle 12 Stunden",
         "cron-preset-custom": "Benutzerdefiniert (Cron-Ausdruck)",
         "backups-setting-cron-custom-label": "Cron-Ausdruck",
-        "backups-setting-cron-custom-help": "Format: Minute Stunde Tag-des-Monats Monat Tag-der-Woche"
+        "backups-setting-cron-custom-help": "Format: Minute Stunde Tag-des-Monats Monat Tag-der-Woche",
+        "btn-save": "Speichern",
+        "console-mode-game": "Spiel-Log",
+        "console-mode-script": "Skript-Log",
+        "console-mode-tmux": "tmux Live-Konsole",
+        "role-label": "Rolle",
+        "settings-info-pid": "Prozess-ID (PID)",
+        "settings-info-version": "Dashboard Version",
+        "user-password-help": "Passwort für den Web-Login dieses Benutzers.",
+        "settings-btn-cron": "Cronjobs in Crontab schreiben",
+        "settings-btn-systemd": "Dienst automatisch installieren & aktivieren",
+        "settings-confirm-pass": "Neues Passwort bestätigen",
+        "settings-new-pass": "Neues Passwort",
+        "settings-templates-card": "Server-spezifische Vorlagen",
+        "col-ip": "IP-Adresse",
+        "col-action": "Aktion",
+        "col-details": "Details",
+        "col-server": "Server",
+        "settings-tag-label": "Server Tag / Cluster",
+        "settings-tag-placeholder": "z. B. Cluster-1, Public, EU-Server",
+        "alerts-telegram-label": "Telegram-Alerts",
+        "alerts-telegram-token-label": "Telegram Bot Token",
+        "alerts-telegram-chatid-label": "Telegram Chat ID",
+        "alerts-email-label": "E-Mail-Alerts",
+        "alerts-email-smtp-label": "SMTP Server",
+        "alerts-email-port-label": "SMTP Port",
+        "alerts-email-user-label": "SMTP Benutzer",
+        "alerts-email-pass-label": "SMTP Passwort",
+        "alerts-email-dest-label": "Empfänger E-Mail",
+        "alerts-ntfy-label": "ntfy-Alerts",
+        "alerts-ntfy-url-label": "ntfy Server URL",
+        "alerts-ntfy-topic-label": "ntfy Topic",
+        "alerts-ntfy-token-label": "Auth Token (Optional)",
+        "alerts-slack-label": "Slack-Alerts",
+        "alerts-slack-webhook-label": "Slack Webhook URL",
+        "alerts-matrix-label": "Matrix-Alerts",
+        "alerts-matrix-homeserver-label": "Homeserver URL",
+        "alerts-matrix-roomid-label": "Room ID",
+        "alerts-matrix-token-label": "Access Token",
+        "alerts-pushover-label": "Pushover-Alerts",
+        "alerts-pushover-token-label": "App Token",
+        "alerts-pushover-user-label": "User Key",
+        "alerts-pushbullet-label": "Pushbullet-Alerts",
+        "alerts-pushbullet-token-label": "Access Token",
+        "alerts-pushbullet-channel-label": "Channel Tag (Optional)",
+        "alerts-ifttt-label": "IFTTT-Alerts",
+        "alerts-ifttt-key-label": "IFTTT Key",
+        "alerts-ifttt-event-label": "Event Name",
+        "alerts-rocketchat-label": "Rocket.Chat-Alerts",
+        "alerts-rocketchat-webhook-label": "Webhook URL",
+        "backups-maxbackups-placeholder": "z.B. 4",
+        "backups-maxbackupdays-placeholder": "z.B. 30",
+        "backups-cron-custom-placeholder": "0 5 * * *",
+        "user-username-placeholder": "z.B. supporter_1",
+        "tag-save-success": "Server-Tag erfolgreich gespeichert!",
+        "tag-save-error": "Fehler beim Speichern des Server-Tags:",
+        "tag-prompt": "Gib den Tag / Cluster-Namen für diesen Server ein (z. B. Cluster-1, Public, Event - oder leer lassen zum Entfernen):",
+        "cron-option-5m": "Alle 5 Minuten",
+        "cron-option-10m": "Alle 10 Minuten",
+        "cron-option-15m": "Alle 15 Minuten",
+        "cron-option-30m": "Alle 30 Minuten",
+        "cron-option-1h": "Jede Stunde",
+        "cron-option-sunday": "Sonntags um 00:00 Uhr",
+        "cron-option-monday": "Montags um 00:00 Uhr",
+        "cron-option-disabled": "Deaktiviert"
     }
 };
 
@@ -3342,7 +3470,7 @@ async function triggerDashboardUpdate() {
     const btnCheck = document.getElementById('btn-check-update');
     
     if (!latestTagName) {
-        alert('Kein Update-Tag vorhanden.');
+        alert(state.language === 'de' ? 'Kein Update-Tag vorhanden.' : 'No update tag available.');
         return;
     }
     
@@ -4786,7 +4914,7 @@ function initFileManager() {
                     alert(state.language === 'de' ? 'Datei erfolgreich hochgeladen!' : 'File uploaded successfully!');
                     loadFilesTree();
                 } else {
-                    alert('Error uploading file');
+                    alert(state.language === 'de' ? 'Fehler beim Hochladen der Datei.' : 'Error uploading file.');
                 }
             } catch (e) {
                 alert('Error: ' + e.message);
@@ -4894,7 +5022,7 @@ async function openFileEditor(path) {
     activeEditingFilePath = path;
     el.filesEditingFilename.textContent = path;
     el.filesEditorCard.classList.remove('hidden');
-    el.filesEditorTextarea.value = 'Loading file content...';
+    el.filesEditorTextarea.value = state.language === 'de' ? 'Lade Dateiinhalt...' : 'Loading file content...';
 
     try {
         const res = await apiFetch(`/api/servers/${currentFilesServer}/files/content?path=${encodeURIComponent(path)}`);
@@ -4902,7 +5030,7 @@ async function openFileEditor(path) {
             const text = await res.text();
             el.filesEditorTextarea.value = text;
         } else {
-            el.filesEditorTextarea.value = 'Error reading file content.';
+            el.filesEditorTextarea.value = state.language === 'de' ? 'Fehler beim Lesen des Dateiinhalts.' : 'Error reading file content.';
         }
     } catch (e) {
         el.filesEditorTextarea.value = 'Error: ' + e.message;
@@ -4922,7 +5050,7 @@ async function saveFileContent() {
         if (res.status === 200) {
             alert(state.language === 'de' ? 'Datei erfolgreich gespeichert!' : 'File saved successfully!');
         } else {
-            alert('Error saving file');
+            alert(state.language === 'de' ? 'Fehler beim Speichern der Datei.' : 'Error saving file.');
         }
     } catch (e) {
         alert('Error: ' + e.message);
@@ -4973,11 +5101,7 @@ function renderAuditTable(logs) {
 if (el.auditBtnRefresh) el.auditBtnRefresh.addEventListener('click', loadAuditLogs);
 
 async function editServerTag(serverId, currentTag) {
-    const isDe = state.language === 'de';
-    const promptText = isDe 
-        ? 'Gib den Tag / Cluster-Namen für diesen Server ein (z. B. Cluster-1, Public, Event - oder leer lassen zum Entfernen):' 
-        : 'Enter tag / cluster name for this server (e.g. Cluster-1, Public, Event - or leave blank to remove):';
-    
+    const promptText = t('tag-prompt');
     const newTag = prompt(promptText, currentTag || '');
     if (newTag === null) return;
     
@@ -4996,11 +5120,11 @@ async function editServerTag(serverId, currentTag) {
             }
         } else {
             const data = await res.json();
-            alert((isDe ? 'Fehler beim Speichern des Tags: ' : 'Error saving tag: ') + (data.error || 'Unknown error'));
+            alert(t('tag-save-error') + ' ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
         console.error('Error setting tag:', e);
-        alert((isDe ? 'Fehler beim Speichern des Tags: ' : 'Error saving tag: ') + e.message);
+        alert(t('tag-save-error') + ' ' + e.message);
     }
 }
 
@@ -5008,7 +5132,6 @@ async function saveServerTagFromSettings() {
     const serverId = el.settingsServerSelect ? el.settingsServerSelect.value : '';
     if (!serverId) return;
     const tagVal = el.settingsServerTagInput ? el.settingsServerTagInput.value.trim() : '';
-    const isDe = state.language === 'de';
     
     try {
         const res = await apiFetch(`/api/servers/${serverId}/tag`, {
@@ -5020,13 +5143,13 @@ async function saveServerTagFromSettings() {
             const server = state.servers.find(s => s.id === serverId);
             if (server) server.tag = tagVal;
             renderServersGrid();
-            alert(isDe ? 'Server-Tag erfolgreich gespeichert!' : 'Server tag saved successfully!');
+            alert(t('tag-save-success'));
         } else {
             const data = await res.json();
-            alert((isDe ? 'Fehler beim Speichern: ' : 'Error saving: ') + (data.error || 'Unknown error'));
+            alert(t('tag-save-error') + ' ' + (data.error || 'Unknown error'));
         }
     } catch (e) {
-        alert((isDe ? 'Fehler beim Speichern: ' : 'Error saving: ') + e.message);
+        alert(t('tag-save-error') + ' ' + e.message);
     }
 }
 
