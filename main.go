@@ -1588,7 +1588,9 @@ func main() {
 				return
 			}
 			if user.Role != "admin" {
-				http.Error(w, "Forbidden - Admins only", http.StatusForbidden)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden - Admins only"})
 				return
 			}
 			var req struct {

@@ -2238,6 +2238,10 @@ WantedBy=multi-user.target`;
     
     // 3. Configure alerts and load settings
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+    if (el.settingsBtnOpenClone) {
+        el.settingsBtnOpenClone.classList.toggle('hidden', !isAdmin);
+    }
+
     if (isAdmin) {
         setAlertFieldsDisabled(false);
         loadAlertSettings();
@@ -5418,6 +5422,10 @@ async function saveServerStopModeFromSettings() {
 let currentCloneServer = null;
 
 function openCloneModal(server) {
+    if (!state.currentUser || state.currentUser.role !== 'admin') {
+        alert(state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.');
+        return;
+    }
     if (!el.modalCloneInstance) return;
     currentCloneServer = server;
     if (el.modalCloneSubtitle) el.modalCloneSubtitle.textContent = `${server.name} (${server.id})`;
@@ -5435,6 +5443,14 @@ async function handleCloneSubmit() {
     const suffix = el.cloneInstanceSuffix.value.trim().toLowerCase();
     if (!suffix) return;
     
+    if (!state.currentUser || state.currentUser.role !== 'admin') {
+        if (el.modalCloneMessage) {
+            el.modalCloneMessage.className = 'info-message text-danger';
+            el.modalCloneMessage.textContent = state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.';
+        }
+        return;
+    }
+
     if (el.modalCloneMessage) {
         el.modalCloneMessage.className = 'info-message text-muted';
         el.modalCloneMessage.textContent = state.language === 'de' ? 'Erstelle Instanz...' : 'Creating instance...';
@@ -5445,7 +5461,20 @@ async function handleCloneSubmit() {
             method: 'POST',
             body: JSON.stringify({ suffix })
         });
-        const data = await res.json();
+        
+        if (res.status === 403) {
+            if (el.modalCloneMessage) {
+                el.modalCloneMessage.className = 'info-message text-danger';
+                el.modalCloneMessage.textContent = state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.';
+            }
+            return;
+        }
+
+        let data = {};
+        try {
+            data = await res.json();
+        } catch (err) {}
+
         if (res.status === 200) {
             if (el.modalCloneMessage) {
                 el.modalCloneMessage.className = 'info-message text-success';
