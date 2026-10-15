@@ -21,6 +21,22 @@ type User struct {
 	Role         string   `json:"role"`        // "admin" or "user"
 	Servers      []string `json:"servers"`     // list of ServerIDs (e.g. ["arkserver"])
 	Permissions  []string `json:"permissions"` // e.g. ["start", "stop", "restart", "console", "config"]
+
+	// Two-factor authentication (see twofactor.go). Each user has an independent secret and
+	// independent recovery codes (stored as hashes bound to the username).
+	TOTPEnabled   bool     `json:"totp_enabled,omitempty"`
+	TOTPSecret    string   `json:"totp_secret,omitempty"`
+	TOTPLastStep  int64    `json:"totp_last_step,omitempty"`
+	RecoveryCodes []string `json:"recovery_codes,omitempty"`
+}
+
+// Sanitized returns a copy without password hash and 2FA secrets (for API responses).
+func (u User) Sanitized() User {
+	u.PasswordHash = ""
+	u.TOTPSecret = ""
+	u.TOTPLastStep = 0
+	u.RecoveryCodes = nil
+	return u
 }
 
 type Config struct {
@@ -51,6 +67,8 @@ type AuthManager struct {
 	configPath string
 	config     Config
 	sessions   map[string]Session
+	challenges map[string]loginChallenge // pending second login steps (2FA)
+	setups     map[string]pendingSetup   // 2FA setups waiting for confirmation, by username
 	mu         sync.RWMutex
 	auditMu    sync.Mutex
 	now        func() time.Time
@@ -66,6 +84,8 @@ func NewAuthManager(configDir string) (*AuthManager, error) {
 	am := &AuthManager{
 		configPath: filepath.Join(configDir, "config.json"),
 		sessions:   make(map[string]Session),
+		challenges: make(map[string]loginChallenge),
+		setups:     make(map[string]pendingSetup),
 		now:        time.Now,
 	}
 
@@ -205,9 +225,22 @@ func (am *AuthManager) loadOrCreateConfig() error {
 	return nil
 }
 
-// Login verifies the credentials and creates a new session. Legacy SHA-256 hashes are
-// transparently upgraded to Argon2id on the first successful login.
+// Login verifies the credentials and creates a new session. Accounts with two-factor
+// authentication return ErrTwoFactorRequired; use BeginLogin/CompleteLogin for those.
 func (am *AuthManager) Login(username, password string) (string, error) {
+	res, err := am.BeginLogin(username, password)
+	if err != nil {
+		return "", err
+	}
+	if res.Challenge != "" {
+		return "", ErrTwoFactorRequired
+	}
+	return res.SessionID, nil
+}
+
+// verifyCredentials checks username and password. Legacy SHA-256 hashes are transparently
+// upgraded to Argon2id on the first successful check.
+func (am *AuthManager) verifyCredentials(username, password string) error {
 	am.mu.RLock()
 	var storedHash string
 	found := false
@@ -223,10 +256,10 @@ func (am *AuthManager) Login(username, password string) (string, error) {
 	if !found {
 		// Burn comparable CPU time so response timing does not reveal valid usernames.
 		VerifyPassword(password, dummyHash)
-		return "", errors.New("invalid credentials")
+		return errors.New("invalid credentials")
 	}
 	if !VerifyPassword(password, storedHash) {
-		return "", errors.New("invalid credentials")
+		return errors.New("invalid credentials")
 	}
 
 	if IsLegacyPasswordHash(storedHash) {
@@ -246,8 +279,7 @@ func (am *AuthManager) Login(username, password string) (string, error) {
 			am.mu.Unlock()
 		}
 	}
-
-	return am.createSession(username)
+	return nil
 }
 
 func (am *AuthManager) createSession(username string) (string, error) {
@@ -503,6 +535,12 @@ func (am *AuthManager) DeleteUser(username string) error {
 		return err
 	}
 	am.invalidateUserSessionsLocked(username, "")
+	delete(am.setups, username)
+	for token, c := range am.challenges {
+		if c.username == username {
+			delete(am.challenges, token)
+		}
+	}
 	return nil
 }
 
@@ -583,6 +621,16 @@ func (am *AuthManager) cleanupSessionsLoop() {
 		for id, session := range am.sessions {
 			if now.After(session.Expiry) || now.Sub(session.Created) > SessionMaxLifetime {
 				delete(am.sessions, id)
+			}
+		}
+		for token, c := range am.challenges {
+			if now.After(c.expiry) {
+				delete(am.challenges, token)
+			}
+		}
+		for user, st := range am.setups {
+			if now.After(st.expiry) {
+				delete(am.setups, user)
 			}
 		}
 		am.mu.Unlock()

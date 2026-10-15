@@ -34,6 +34,16 @@
                 <div id="login-error" class="error-message"></div>
                 <button type="submit" class="btn btn-primary btn-block" data-i18n="btn-login">Anmelden</button>
             </form>
+            <form id="login-2fa-form" class="hidden" autocomplete="off">
+                <p class="mb-4" data-i18n="login-2fa-hint">Gib den Code aus deiner Authenticator-App ein. Ohne Gerät kannst du einen Wiederherstellungscode verwenden.</p>
+                <div class="form-group">
+                    <label for="login-2fa-code" data-i18n="login-2fa-label">Bestätigungscode</label>
+                    <input type="text" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="16" spellcheck="false" class="mono">
+                </div>
+                <div id="login-2fa-error" class="error-message"></div>
+                <button type="submit" class="btn btn-primary btn-block" data-i18n="login-2fa-submit">Bestätigen</button>
+                <button type="button" id="login-2fa-back" class="btn btn-ghost btn-block mt-2" data-i18n="login-2fa-back">Zurück zur Anmeldung</button>
+            </form>
         </div>
     </div>
 
@@ -89,7 +99,7 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
                     <span data-i18n="menu-overview">Übersicht</span>
                 </a>
-                <a href="#console" class="menu-item" data-view="console">
+                <a href="#console" id="menu-console-tab" class="menu-item" data-view="console">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
                     <span data-i18n="menu-console">Live-Konsole</span>
                 </a>
@@ -550,10 +560,10 @@
                 <!-- Subtab 1: Allgemein (General) -->
                 <div id="settings-subtab-panel-general" class="settings-subtab-panel">
                     <div class="settings-layout">
-                        <!-- Dashboard-Zugangsdaten -->
+                        <!-- Eigenes Passwort -->
                         <div class="settings-card glass-panel">
-                            <h3 data-i18n="settings-pass-card">Dashboard-Zugangsdaten</h3>
-                            <p class="text-muted" data-i18n="settings-pass-card-desc">Ändere das Passwort für das Web-Dashboard.</p>
+                            <h3 data-i18n="settings-pass-card">Passwort ändern</h3>
+                            <p class="text-muted" data-i18n="settings-pass-card-desc">Ändere das Passwort deines Dashboard-Kontos.</p>
                             <form id="settings-password-form" class="mt-4">
                                 <div class="form-group">
                                     <label for="settings-old-password" data-i18n="settings-old-pass-label">Current Password</label>
@@ -570,6 +580,71 @@
                                 <div id="settings-password-message" class="info-message"></div>
                                 <button type="submit" class="btn btn-primary" data-i18n="settings-btn-save">Update Password</button>
                             </form>
+                        </div>
+
+                        <!-- Zwei-Faktor-Authentifizierung (eigenes Konto) -->
+                        <div class="settings-card glass-panel" id="settings-2fa-card">
+                            <h3 data-i18n="twofa-title">Zwei-Faktor-Authentifizierung</h3>
+                            <p class="text-muted" data-i18n="twofa-desc">Schützt dein Konto zusätzlich mit einem Code aus einer Authenticator-App (z.B. Google Authenticator).</p>
+                            <div class="info-item mt-4">
+                                <span class="info-label" data-i18n="twofa-status-label">Status</span>
+                                <span class="info-value" id="twofa-status">-</span>
+                            </div>
+
+                            <!-- off: start setup -->
+                            <div id="twofa-off" class="hidden mt-4">
+                                <div class="form-group">
+                                    <label for="twofa-setup-password" data-i18n="twofa-current-password">Aktuelles Passwort</label>
+                                    <input type="password" id="twofa-setup-password" autocomplete="current-password">
+                                </div>
+                                <button type="button" id="twofa-btn-start" class="btn btn-primary" data-i18n="twofa-btn-enable">Einrichten</button>
+                            </div>
+
+                            <!-- setup: scan and confirm -->
+                            <div id="twofa-setup" class="hidden mt-4">
+                                <p data-i18n="twofa-setup-scan">Scanne den QR-Code mit deiner Authenticator-App und gib den angezeigten Code ein.</p>
+                                <div class="twofa-qr-wrap mt-3">
+                                    <img id="twofa-qr" alt="QR code" width="200" height="200">
+                                </div>
+                                <small data-i18n="twofa-setup-manual">Oder den Schlüssel manuell eingeben:</small>
+                                <code id="twofa-secret" class="twofa-secret"></code>
+                                <div class="form-group mt-3">
+                                    <label for="twofa-setup-code" data-i18n="twofa-code-label">Code aus der App</label>
+                                    <input type="text" id="twofa-setup-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="mono">
+                                </div>
+                                <div class="form-actions">
+                                    <button type="button" id="twofa-btn-confirm" class="btn btn-primary" data-i18n="twofa-btn-confirm">Aktivieren</button>
+                                    <button type="button" id="twofa-btn-cancel" class="btn btn-secondary" data-i18n="btn-cancel">Abbrechen</button>
+                                </div>
+                            </div>
+
+                            <!-- recovery codes (shown once) -->
+                            <div id="twofa-codes" class="hidden mt-4">
+                                <div class="warning-panel"><span data-i18n="twofa-codes-warning">Speichere diese Wiederherstellungscodes an einem sicheren Ort. Jeder Code funktioniert genau einmal und wird nur jetzt angezeigt.</span></div>
+                                <ol id="twofa-codes-list" class="twofa-codes-list"></ol>
+                                <div class="form-actions mt-3">
+                                    <button type="button" id="twofa-btn-copy" class="btn btn-secondary" data-i18n="twofa-btn-copy">Kopieren</button>
+                                    <button type="button" id="twofa-btn-download" class="btn btn-secondary" data-i18n="twofa-btn-download">Als Datei speichern</button>
+                                    <button type="button" id="twofa-btn-done" class="btn btn-primary" data-i18n="twofa-btn-done">Gespeichert</button>
+                                </div>
+                            </div>
+
+                            <!-- on: manage -->
+                            <div id="twofa-on" class="hidden mt-4">
+                                <div class="form-group">
+                                    <label for="twofa-manage-password" data-i18n="twofa-current-password">Aktuelles Passwort</label>
+                                    <input type="password" id="twofa-manage-password" autocomplete="current-password">
+                                </div>
+                                <div class="form-group">
+                                    <label for="twofa-manage-code" data-i18n="twofa-code-or-recovery">Code aus der App oder Wiederherstellungscode</label>
+                                    <input type="text" id="twofa-manage-code" autocomplete="one-time-code" maxlength="16" class="mono">
+                                </div>
+                                <div class="form-actions">
+                                    <button type="button" id="twofa-btn-new-codes" class="btn btn-secondary" data-i18n="twofa-btn-new-codes">Neue Wiederherstellungscodes</button>
+                                    <button type="button" id="twofa-btn-disable" class="btn btn-danger" data-i18n="twofa-btn-disable">Deaktivieren</button>
+                                </div>
+                            </div>
+                            <div id="twofa-message" class="info-message"></div>
                         </div>
 
                         <!-- System-Informationen -->

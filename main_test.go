@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yourdawi/linuxgsm-dashboard/backend"
 )
@@ -74,7 +76,12 @@ func newTestEnv(t *testing.T) *testEnv {
 		}
 	}
 
+	ui, err := fs.Sub(uiFS, "ui")
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := &app{
+		uiFS:           ui,
 		auth:           am,
 		inst:           inst,
 		limiter:        backend.NewLoginLimiter(),
@@ -731,6 +738,12 @@ func TestSecurityHeadersAndNoCORS(t *testing.T) {
 	if h.Get("Strict-Transport-Security") != "" {
 		t.Error("HSTS must only be sent over HTTPS")
 	}
+	if rec := e.do(nil, http.MethodGet, "/app.js", nil); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("UI assets must be served and revalidated after updates: %d %q", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+	if cc := e.do(nil, http.MethodGet, "/app.js", nil).Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("UI assets must be revalidated after updates, got Cache-Control %q", cc)
+	}
 }
 
 func TestAdminEndpointsRequireAdmin(t *testing.T) {
@@ -767,6 +780,147 @@ func TestAdminEndpointsRequireAdmin(t *testing.T) {
 	rec = e.do(&admin, http.MethodPut, "/api/admin/server-paths", map[string]interface{}{"paths": []string{"/etc"}})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("system dir accepted as server path: %d", rec.Code)
+	}
+}
+
+// enableTwoFactorViaAPI runs the setup through the HTTP API and returns secret and recovery codes.
+func enableTwoFactorViaAPI(t *testing.T, e *testEnv, s *session) (string, []string) {
+	t.Helper()
+	rec := e.do(s, http.MethodPost, "/api/account/2fa/setup", map[string]string{"password": testPassword})
+	var setup struct{ Secret, URI, QR string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &setup)
+	if rec.Code != http.StatusOK || setup.Secret == "" || !strings.HasPrefix(setup.QR, "data:image/png;base64,") {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	code, _ := backend.TOTPCode(setup.Secret, time.Now().Unix()/30)
+	rec = e.do(s, http.MethodPost, "/api/account/2fa/enable", map[string]string{"code": code})
+	var enabled struct {
+		RecoveryCodes []string `json:"recovery_codes"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &enabled)
+	if rec.Code != http.StatusOK || len(enabled.RecoveryCodes) != 10 {
+		t.Fatalf("enable: %d %s", rec.Code, rec.Body.String())
+	}
+	return setup.Secret, enabled.RecoveryCodes
+}
+
+func loginChallenge(t *testing.T, e *testEnv, user string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"username": user, "password": testPassword})
+	rec := e.do(nil, http.MethodPost, "/api/auth/login", body)
+	var res struct{ Status, Challenge string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if rec.Code != http.StatusOK || res.Status != "2fa_required" || res.Challenge == "" {
+		t.Fatalf("expected 2fa challenge for %s: %d %s", user, rec.Code, rec.Body.String())
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatal("password step must not set session cookies")
+	}
+	return res.Challenge
+}
+
+func TestTwoFactorLoginOverHTTP(t *testing.T) {
+	e := newTestEnv(t)
+	viewer := e.login("viewer")
+	operator := e.login("operator")
+	_, viewerCodes := enableTwoFactorViaAPI(t, e, &viewer)
+	_, operatorCodes := enableTwoFactorViaAPI(t, e, &operator)
+
+	// The second step contains no username; the challenge decides the account.
+	challenge := loginChallenge(t, e, "viewer")
+	rec := e.do(nil, http.MethodPost, "/api/auth/login/2fa", map[string]string{"challenge": challenge, "code": operatorCodes[0]})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("viewer login accepted operator's recovery code: %d", rec.Code)
+	}
+	rec = e.do(nil, http.MethodPost, "/api/auth/login/2fa", map[string]string{"challenge": challenge, "code": viewerCodes[0]})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("own recovery code rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	s := session{cookies: rec.Result().Cookies()}
+	info := e.do(&s, http.MethodGet, "/api/system/info", nil)
+	if !strings.Contains(info.Body.String(), `"username":"viewer"`) {
+		t.Fatalf("logged into the wrong account: %s", info.Body.String())
+	}
+
+	// Unknown / reused challenges are rejected, cross-origin requests too.
+	if rec := e.do(nil, http.MethodPost, "/api/auth/login/2fa", map[string]string{"challenge": challenge, "code": viewerCodes[1]}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("reused challenge: %d", rec.Code)
+	}
+	if rec := e.do(nil, http.MethodPost, "/api/auth/login/2fa", map[string]string{"challenge": "forged", "code": "123456"}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("forged challenge: %d", rec.Code)
+	}
+	c2 := loginChallenge(t, e, "operator")
+	if rec := e.do(nil, http.MethodPost, "/api/auth/login/2fa", map[string]string{"challenge": c2, "code": operatorCodes[1]}, withHeader("Origin", "https://evil.example")); rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin second step: %d", rec.Code)
+	}
+
+	// Secrets never leave the server.
+	admin := e.login("admin2")
+	users := e.do(&admin, http.MethodGet, "/api/admin/users", nil).Body.String()
+	if strings.Contains(users, "totp_secret") || strings.Contains(users, "recovery_codes") || !strings.Contains(users, `"totp_enabled":true`) {
+		t.Fatalf("user list exposes 2FA secrets or misses the status: %s", users)
+	}
+}
+
+func TestTwoFactorAdminReset(t *testing.T) {
+	e := newTestEnv(t)
+	viewer := e.login("viewer")
+	enableTwoFactorViaAPI(t, e, &viewer)
+
+	full := e.login("full")
+	if rec := e.do(&full, http.MethodPost, "/api/admin/users/2fa-reset", map[string]string{"username": "viewer"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin reset: %d", rec.Code)
+	}
+	admin := e.login("admin2")
+	if rec := e.do(&admin, http.MethodPost, "/api/admin/users/2fa-reset", map[string]string{"username": "viewer"}); rec.Code != http.StatusOK {
+		t.Fatalf("admin reset: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := e.do(&viewer, http.MethodGet, "/api/servers", nil); rec.Code != http.StatusUnauthorized {
+		t.Error("reset must log the user out")
+	}
+	e.login("viewer") // password only again
+}
+
+// A user with only start/stop must not be able to use anything on the settings page except
+// changing the own password and reading the (harmless) schedule and stop mode.
+func TestSettingsPageForStartStopUser(t *testing.T) {
+	e := newTestEnv(t)
+	op := e.login("operator")
+
+	denied := []struct{ method, path, body string }{
+		{http.MethodGet, "/api/admin/update/check", ""},
+		{http.MethodPost, "/api/admin/update/trigger", `{"tag_name":"v9.9.9"}`},
+		{http.MethodGet, "/api/system/firewall", ""},
+		{http.MethodPost, "/api/system/firewall/open", `{"port":1234,"protocol":"tcp"}`},
+		{http.MethodGet, "/api/admin/server-paths", ""},
+		{http.MethodPost, "/api/servers/srv1/tag", `{"tag":"x"}`},
+		{http.MethodPost, "/api/servers/srv1/stopmode", `{"stopmode":"1"}`},
+		{http.MethodPost, "/api/servers/srv1/clone", `{"suffix":"x"}`},
+		{http.MethodPost, "/api/servers/srv1/systemd/install", `{}`},
+		{http.MethodPost, "/api/servers/srv1/cron/install", `{}`},
+		{http.MethodPost, "/api/servers/srv1/cron", `{"monitor_interval":"5"}`},
+		{http.MethodGet, "/api/servers/srv1/alerts", ""},
+		{http.MethodPost, "/api/servers/srv1/alerts", `{}`},
+		{http.MethodGet, "/api/servers/srv1/cloudbackup/settings", ""},
+		{http.MethodPost, "/api/servers/srv1/cloudbackup/settings", `{}`},
+	}
+	for _, d := range denied {
+		if rec := e.do(&op, d.method, d.path, d.body); rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s: got %d, want 403 (%s)", d.method, d.path, rec.Code, rec.Body.String())
+		}
+	}
+
+	for _, p := range []string{"/api/servers/srv1/cron", "/api/servers/srv1/stopmode"} {
+		if rec := e.do(&op, http.MethodGet, p, nil); rec.Code != http.StatusOK {
+			t.Errorf("GET %s: got %d", p, rec.Code)
+		}
+	}
+	rec := e.do(&op, http.MethodPost, "/api/settings/password", map[string]string{"oldPassword": testPassword, "newPassword": "operator-new-pass"})
+	if rec.Code != http.StatusOK {
+		t.Errorf("own password change: %d %s", rec.Code, rec.Body.String())
+	}
+	if u, _ := e.app.auth.GetUser("admin2"); !backend.VerifyPassword(testPassword, u.PasswordHash) {
+		t.Error("changing the own password must not touch other accounts")
 	}
 }
 

@@ -37,6 +37,7 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 - [Configuration](#configuration)
 - [Game servers outside of /home](#game-servers-outside-of-home)
 - [Users and permissions](#users-and-permissions)
+- [Two-factor authentication](#two-factor-authentication)
 - [Security](#security)
 - [Updating](#updating)
 - [Releases](#releases)
@@ -106,6 +107,7 @@ Configuration of the LinuxGSM alert channels Discord, Telegram, e-mail (SMTP), M
 ### Users, monitoring and interface
 
 - Multiple dashboard users with roles and per-server permissions (see [Users and permissions](#users-and-permissions)).
+- Optional two-factor authentication per user with an authenticator app (see [Two-factor authentication](#two-factor-authentication)).
 - Audit log of logins, failed logins, server actions, file and configuration changes and administrative changes (last 1000 entries).
 - Host monitoring: CPU, RAM and disk usage of `/` with a history chart, plus players, CPU, RAM, disk usage and process IDs per server.
 - Firewall status for UFW and firewalld, including the active rules. Opening a port is available to administrators through the API (`POST /api/system/firewall/open`).
@@ -203,7 +205,7 @@ The directory is created with mode `0700`; files containing settings are written
 
 | File | Content |
 |------|---------|
-| `config.json` | Port and dashboard users (Argon2id password hashes, roles, permissions) |
+| `config.json` | Port and dashboard users (Argon2id password hashes, roles, permissions, 2FA secrets and hashed recovery codes) |
 | `audit_log.json` | Audit log |
 | `server_tags.json` | Server tags |
 | `server_paths.json` | Additional server directories |
@@ -253,6 +255,22 @@ Only administrators can manage users, install, delete and clone servers, set tag
 
 Note that `config` and `files` give a lot of control: LinuxGSM `.cfg` files are executed by bash and the game server loads its own files. Only grant these permissions to people you would also give shell access as the game server user.
 
+## Two-factor authentication
+
+Every user can protect the own account with a one-time code from an authenticator app such as Google Authenticator, Microsoft Authenticator, Authy, Aegis, 2FAS, 1Password or Bitwarden (TOTP, RFC 6238). It is optional and configured by each user under **Settings > General > Two-factor authentication**:
+
+1. Enter the current password and click **Set up**.
+2. Scan the QR code (or enter the key manually) and enter the code the app shows. Two-factor authentication is only active after this confirmation.
+3. Save the 10 recovery codes. They are shown only once; each code works exactly once.
+
+After that, signing in asks for the code after the password. Without the phone, a recovery code can be entered instead. New recovery codes can be created and two-factor authentication can be disabled in the same card (both need the password and a current code).
+
+Two-factor authentication is independent for every user: each account has its own key and its own recovery codes. After the password step the server issues a short-lived token that is bound to that account, and the code step does not accept a username, so a code is only ever checked against the account whose password was entered. Recovery codes are stored as hashes bound to the username.
+
+**Lost device:** sign in with a recovery code, or ask an administrator. Administrators can remove two-factor authentication from an account under **Users > Reset 2FA**; the user is signed out and can then sign in with the password and set it up again. If the only administrator has lost both device and recovery codes, the entries `totp_enabled`, `totp_secret`, `totp_last_step` and `recovery_codes` of that user can be removed from `config/config.json` on the server (stop the service first).
+
+The codes depend on the time, so the server clock must be correct (NTP). Codes from 30 seconds before or after are accepted, a code can only be used once.
+
 ## Security
 
 The dashboard runs as root, so all requests are checked on the server side; the interface only hides what a user cannot use.
@@ -264,7 +282,8 @@ The dashboard runs as root, so all requests are checked on the server side; the 
 **Login and sessions**
 - Passwords are stored as Argon2id hashes. Hashes from older versions (unsalted SHA-256) are converted automatically at the next successful login.
 - Failed logins are limited per IP address and per user name with a growing waiting time (5 free attempts, then from 2 seconds up to 15 minutes).
-- Session cookies are `HttpOnly` and `SameSite=Lax`. Sessions expire after 24 hours of inactivity and after 7 days at the latest. Logging out, changing or resetting a password and deleting a user end the affected sessions.
+- Session cookies are `HttpOnly` and `SameSite=Lax`. Sessions expire after 24 hours of inactivity and after 7 days at the latest. Logging out, changing or resetting a password, enabling, disabling or resetting two-factor authentication and deleting a user end the affected sessions.
+- Optional two-factor authentication (TOTP) with one-time recovery codes; the code step has its own attempt limit and rate limiting.
 
 **Browser**
 - All actions that change something use `POST` and require a CSRF token bound to the session. Requests from other origins are rejected.

@@ -715,7 +715,12 @@ function handleRouting() {
     if (state.currentUser) {
         const isAdmin = state.currentUser.role === 'admin';
         const hasBackup = state.currentUser.permissions && state.currentUser.permissions.includes('backup');
-        const hasFiles = state.currentUser.permissions && (state.currentUser.permissions.includes('files') || state.currentUser.permissions.includes('config'));
+        const hasFiles = state.currentUser.permissions && state.currentUser.permissions.includes('files');
+        const hasConsole = state.currentUser.permissions && state.currentUser.permissions.includes('console');
+        if (viewName === 'console' && !isAdmin && !hasConsole) {
+            window.location.hash = '#dashboard';
+            return;
+        }
         if (viewName === 'users' || viewName === 'installer' || viewName === 'audit') {
             if (!isAdmin) {
                 window.location.hash = '#dashboard';
@@ -912,7 +917,7 @@ async function hideLogin() {
 
             const menuFilesTab = document.getElementById('menu-files-tab');
             if (menuFilesTab) {
-                if (state.currentUser && (state.currentUser.role === 'admin' || (state.currentUser.permissions && (state.currentUser.permissions.includes('files') || state.currentUser.permissions.includes('config'))))) {
+                if (hasPerm('files')) {
                     menuFilesTab.classList.remove('hidden');
                 } else {
                     menuFilesTab.classList.add('hidden');
@@ -921,6 +926,16 @@ async function hideLogin() {
                     }
                 }
             }
+
+            const menuConsoleTab = document.getElementById('menu-console-tab');
+            if (menuConsoleTab) {
+                menuConsoleTab.classList.toggle('hidden', !hasPerm('console'));
+                if (!hasPerm('console') && window.location.hash === '#console') {
+                    window.location.hash = '#dashboard';
+                }
+            }
+
+            applySettingsPermissions();
 
             const menuAuditTab = document.getElementById('menu-audit-tab');
             if (menuAuditTab) {
@@ -953,18 +968,267 @@ async function handleLogin(e) {
             body: JSON.stringify({ username, password })
         });
         
-        if (res.status === 200) {
-            hideLogin();
-            window.location.hash = '#dashboard';
-            handleRouting();
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 200 && data.status === '2fa_required') {
+            showSecondFactorStep(data.challenge);
+        } else if (res.status === 200) {
+            completeLogin();
         } else {
-            const data = await res.json();
             el.loginError.textContent = data.error || 'Ungültige Zugangsdaten';
             el.loginError.style.display = 'block';
         }
     } catch (err) {
         el.loginError.textContent = 'Serververbindung fehlgeschlagen';
         el.loginError.style.display = 'block';
+    }
+}
+
+function completeLogin() {
+    el.passwordInput.value = '';
+    hideLogin();
+    window.location.hash = '#dashboard';
+    handleRouting();
+}
+
+// The challenge is bound to the account whose password was just verified; the second step does
+// not send a username.
+let loginChallengeToken = '';
+
+function showSecondFactorStep(challenge) {
+    loginChallengeToken = challenge;
+    el.loginForm.classList.add('hidden');
+    const form = document.getElementById('login-2fa-form');
+    const err = document.getElementById('login-2fa-error');
+    err.style.display = 'none';
+    form.classList.remove('hidden');
+    const input = document.getElementById('login-2fa-code');
+    input.value = '';
+    input.focus();
+}
+
+function resetLoginSteps() {
+    loginChallengeToken = '';
+    document.getElementById('login-2fa-form').classList.add('hidden');
+    el.loginForm.classList.remove('hidden');
+    el.passwordInput.value = '';
+    el.passwordInput.focus();
+}
+
+async function handleSecondFactorLogin(e) {
+    e.preventDefault();
+    const err = document.getElementById('login-2fa-error');
+    err.style.display = 'none';
+    const code = document.getElementById('login-2fa-code').value.trim();
+    try {
+        const res = await fetch('/api/auth/login/2fa', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ challenge: loginChallengeToken, code })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 200) {
+            loginChallengeToken = '';
+            document.getElementById('login-2fa-form').classList.add('hidden');
+            el.loginForm.classList.remove('hidden');
+            completeLogin();
+            return;
+        }
+        if (res.status === 401 && /expired/i.test(data.error || '')) {
+            resetLoginSteps();
+            el.loginError.textContent = t('login-2fa-expired');
+            el.loginError.style.display = 'block';
+            return;
+        }
+        err.textContent = res.status === 429 ? (data.error || t('login-2fa-invalid')) : t('login-2fa-invalid');
+        err.style.display = 'block';
+        document.getElementById('login-2fa-code').select();
+    } catch (ex) {
+        err.textContent = t('connection-error');
+        err.style.display = 'block';
+    }
+}
+
+document.getElementById('login-2fa-form').addEventListener('submit', handleSecondFactorLogin);
+document.getElementById('login-2fa-back').addEventListener('click', resetLoginSteps);
+
+// -------------------------------------------------------------
+// Two-factor authentication (own account, Settings > General)
+// -------------------------------------------------------------
+
+let twoFactorCodes = [];
+
+function twoFactorShow(section) {
+    ['off', 'setup', 'codes', 'on'].forEach(name => {
+        document.getElementById(`twofa-${name}`).classList.toggle('hidden', name !== section);
+    });
+}
+
+function twoFactorMessage(text, kind = '') {
+    const m = document.getElementById('twofa-message');
+    m.textContent = text || '';
+    m.className = `info-message ${kind}`;
+}
+
+async function loadTwoFactorStatus() {
+    const status = document.getElementById('twofa-status');
+    if (!status) return;
+    try {
+        const res = await apiFetch('/api/account/2fa');
+        if (res.status !== 200) return;
+        const data = await res.json();
+        if (data.enabled) {
+            status.textContent = t('twofa-status-on').replace('{n}', data.recovery_codes_left);
+            status.className = 'info-value text-success';
+        } else {
+            status.textContent = t('twofa-status-off');
+            status.className = 'info-value text-muted';
+        }
+        if (!document.getElementById('twofa-codes').classList.contains('hidden')) return; // codes still shown
+        twoFactorShow(data.enabled ? 'on' : 'off');
+    } catch (e) {
+        console.error('2FA status failed:', e);
+    }
+}
+
+async function twoFactorPost(url, body) {
+    const res = await apiFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status !== 200) throw new Error(data.error || t('status-error'));
+    return data;
+}
+
+function showRecoveryCodes(codes) {
+    twoFactorCodes = codes;
+    const list = document.getElementById('twofa-codes-list');
+    list.innerHTML = '';
+    codes.forEach(code => {
+        const li = document.createElement('li');
+        li.textContent = code;
+        list.appendChild(li);
+    });
+    twoFactorShow('codes');
+}
+
+function initTwoFactorSettings() {
+    if (!document.getElementById('settings-2fa-card')) return;
+
+    document.getElementById('twofa-btn-start').addEventListener('click', async () => {
+        const pw = document.getElementById('twofa-setup-password');
+        try {
+            const data = await twoFactorPost('/api/account/2fa/setup', { password: pw.value });
+            pw.value = '';
+            document.getElementById('twofa-qr').src = data.qr;
+            document.getElementById('twofa-secret').textContent = data.secret.replace(/(.{4})/g, '$1 ').trim();
+            document.getElementById('twofa-setup-code').value = '';
+            twoFactorMessage('');
+            twoFactorShow('setup');
+        } catch (e) {
+            twoFactorMessage(e.message, 'text-danger');
+        }
+    });
+
+    document.getElementById('twofa-btn-confirm').addEventListener('click', async () => {
+        try {
+            const data = await twoFactorPost('/api/account/2fa/enable', { code: document.getElementById('twofa-setup-code').value });
+            document.getElementById('twofa-qr').removeAttribute('src');
+            document.getElementById('twofa-secret').textContent = '';
+            twoFactorMessage(t('twofa-enabled'), 'text-success');
+            showRecoveryCodes(data.recovery_codes);
+            loadTwoFactorStatus();
+        } catch (e) {
+            twoFactorMessage(e.message, 'text-danger');
+        }
+    });
+
+    document.getElementById('twofa-btn-cancel').addEventListener('click', () => {
+        document.getElementById('twofa-qr').removeAttribute('src');
+        document.getElementById('twofa-secret').textContent = '';
+        twoFactorMessage('');
+        twoFactorShow('off');
+    });
+
+    const manageInputs = () => ({
+        password: document.getElementById('twofa-manage-password').value,
+        code: document.getElementById('twofa-manage-code').value.trim()
+    });
+    const clearManageInputs = () => {
+        document.getElementById('twofa-manage-password').value = '';
+        document.getElementById('twofa-manage-code').value = '';
+    };
+
+    document.getElementById('twofa-btn-new-codes').addEventListener('click', async () => {
+        try {
+            const data = await twoFactorPost('/api/account/2fa/recovery-codes', manageInputs());
+            clearManageInputs();
+            twoFactorMessage(t('twofa-new-codes'), 'text-success');
+            showRecoveryCodes(data.recovery_codes);
+            loadTwoFactorStatus();
+        } catch (e) {
+            twoFactorMessage(e.message, 'text-danger');
+        }
+    });
+
+    document.getElementById('twofa-btn-disable').addEventListener('click', async () => {
+        if (!confirm(t('twofa-confirm-disable'))) return;
+        try {
+            await twoFactorPost('/api/account/2fa/disable', manageInputs());
+            clearManageInputs();
+            twoFactorMessage(t('twofa-disabled'), 'text-success');
+            twoFactorShow('off');
+            loadTwoFactorStatus();
+        } catch (e) {
+            twoFactorMessage(e.message, 'text-danger');
+        }
+    });
+
+    document.getElementById('twofa-btn-copy').addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(twoFactorCodes.join('\n'));
+            twoFactorMessage(t('twofa-copied'), 'text-success');
+        } catch (e) {
+            twoFactorMessage(t('twofa-copy-failed'), 'text-danger');
+        }
+    });
+
+    document.getElementById('twofa-btn-download').addEventListener('click', () => {
+        const user = state.currentUser ? state.currentUser.username : 'user';
+        const text = `LinuxGSM Dashboard - ${t('twofa-file-title')} (${user}@${location.host})\n\n` + twoFactorCodes.join('\n') + '\n';
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+        link.download = `lgsm-dashboard-recovery-codes-${user}.txt`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    });
+
+    document.getElementById('twofa-btn-done').addEventListener('click', () => {
+        twoFactorCodes = [];
+        document.getElementById('twofa-codes-list').innerHTML = '';
+        twoFactorMessage('');
+        twoFactorShow('on');
+        loadTwoFactorStatus();
+    });
+}
+
+initTwoFactorSettings();
+
+// Administrator: remove 2FA from an account whose owner lost the device.
+async function resetUserTwoFactor(username) {
+    if (!confirm(t('twofa-confirm-reset').replace('{user}', username))) return;
+    try {
+        const res = await apiFetch('/api/admin/users/2fa-reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status !== 200) throw new Error(data.error || t('status-error'));
+        loadUsersList();
+    } catch (e) {
+        alert(e.message);
     }
 }
 
@@ -2004,8 +2268,13 @@ async function loadSettingsInfo() {
         // Populate tools dropdown
         populateSettingsServerSelect();
 
-        // Check Firewall Status & Rights
-        loadFirewallStatus();
+        applySettingsPermissions();
+        loadTwoFactorStatus();
+
+        // Check Firewall Status & Rights (administrators only)
+        if (state.currentUser && state.currentUser.role === 'admin') {
+            loadFirewallStatus();
+        }
     } catch (e) {
         console.error(e);
     }
@@ -2058,7 +2327,40 @@ async function saveServerPaths() {
     }
 }
 
+// Settings sub tabs and the permission they need. "general" (own password, system info) is always
+// available; everything else mirrors the server-side checks.
+function allowedSettingsSubtabs() {
+    const isAdmin = !!(state.currentUser && state.currentUser.role === 'admin');
+    return {
+        general: true,
+        server: isAdmin,
+        cron: hasPerm('schedule'),
+        alerts: hasPerm('alerts'),
+        security: isAdmin,
+    };
+}
+
+function applySettingsPermissions() {
+    const allowed = allowedSettingsSubtabs();
+    Object.keys(allowed).forEach(tab => {
+        const btn = document.getElementById(`settings-tab-btn-${tab}`);
+        if (btn) btn.classList.toggle('hidden', !allowed[tab]);
+    });
+    // The tab bar is pointless when only "general" is left.
+    const nav = document.querySelector('.settings-subtabs-nav');
+    if (nav) nav.classList.toggle('hidden', Object.values(allowed).filter(Boolean).length <= 1);
+
+    const isAdmin = !!(state.currentUser && state.currentUser.role === 'admin');
+    const updateCard = document.getElementById('settings-update-card');
+    if (updateCard) updateCard.classList.toggle('hidden', !isAdmin);
+
+    if (state.settingsSubtab && !allowed[state.settingsSubtab]) {
+        switchSettingsSubtab('general');
+    }
+}
+
 function switchSettingsSubtab(subtabName) {
+    if (!allowedSettingsSubtabs()[subtabName]) subtabName = 'general';
     state.settingsSubtab = subtabName;
     const subtabs = ['general', 'server', 'cron', 'alerts', 'security'];
     subtabs.forEach(tab => {
@@ -2613,6 +2915,39 @@ const i18n = {
         "menu-settings": "Settings",
         "menu-update-badge": "Update",
         "update-badge-title": "Version {version} is available",
+        "login-2fa-hint": "Enter the code from your authenticator app. Without your device you can use a recovery code.",
+        "login-2fa-label": "Verification code",
+        "login-2fa-submit": "Verify",
+        "login-2fa-back": "Back to sign in",
+        "login-2fa-invalid": "Invalid code.",
+        "login-2fa-expired": "The sign in expired. Please enter your password again.",
+        "twofa-title": "Two-factor authentication",
+        "twofa-desc": "Protects your account with an additional code from an authenticator app (e.g. Google Authenticator).",
+        "twofa-status-label": "Status",
+        "twofa-status-on": "Enabled ({n} recovery codes left)",
+        "twofa-status-off": "Not enabled",
+        "twofa-current-password": "Current password",
+        "twofa-btn-enable": "Set up",
+        "twofa-setup-scan": "Scan the QR code with your authenticator app and enter the code it shows.",
+        "twofa-setup-manual": "Or enter the key manually:",
+        "twofa-code-label": "Code from the app",
+        "twofa-btn-confirm": "Enable",
+        "twofa-codes-warning": "Store these recovery codes in a safe place. Each code works exactly once and is only shown now.",
+        "twofa-btn-copy": "Copy",
+        "twofa-btn-download": "Save as file",
+        "twofa-btn-done": "I saved them",
+        "twofa-code-or-recovery": "Code from the app or recovery code",
+        "twofa-btn-new-codes": "New recovery codes",
+        "twofa-btn-disable": "Disable",
+        "twofa-enabled": "Two-factor authentication is enabled. Other sessions of your account were signed out.",
+        "twofa-disabled": "Two-factor authentication is disabled.",
+        "twofa-new-codes": "New recovery codes created. The old ones no longer work.",
+        "twofa-confirm-disable": "Disable two-factor authentication for your account?",
+        "twofa-copied": "Recovery codes copied.",
+        "twofa-copy-failed": "Copying failed, please save the codes as file.",
+        "twofa-file-title": "Recovery codes",
+        "twofa-btn-reset": "Reset 2FA",
+        "twofa-confirm-reset": "Remove two-factor authentication from {user}? The user is signed out and can then sign in with the password only.",
         "update-dev-build": "Development build",
         "update-dev-build-hint": "This is a build from source. Latest release: {version}. Run the installer without --source/--dev to switch to the release.",
         "menu-logout": "Logout",
@@ -2689,8 +3024,8 @@ const i18n = {
         "inst-pass-label": "User Password (Optional)",
         "inst-btn-install": "Install Game Server",
         "settings-title": "Settings & Info",
-        "settings-subtitle": "Change administrative credentials and view system templates.",
-        "settings-pass-card": "Change Administrator Password",
+        "settings-subtitle": "Your account, dashboard settings and server tools.",
+        "settings-pass-card": "Change password",
         "settings-new-pass": "New Password",
         "settings-confirm-pass": "Confirm New Password",
         "settings-btn-save": "Update Password",
@@ -2705,7 +3040,7 @@ const i18n = {
         "settings-old-pass-label": "Current Password",
         "settings-new-pass-label": "New Password",
         "settings-confirm-pass-label": "Confirm New Password",
-        "settings-pass-card-desc": "Change the web dashboard password.",
+        "settings-pass-card-desc": "Change the password of your dashboard account.",
         "settings-tools-card": "Server-specific Tools",
         "settings-tools-card-desc": "Select one of your active servers to show copy-paste templates for systemd and cronjobs.",
         "settings-tools-select-label": "Select server",
@@ -3046,6 +3381,39 @@ const i18n = {
         "menu-settings": "Einstellungen",
         "menu-update-badge": "Update",
         "update-badge-title": "Version {version} ist verfügbar",
+        "login-2fa-hint": "Gib den Code aus deiner Authenticator-App ein. Ohne Gerät kannst du einen Wiederherstellungscode verwenden.",
+        "login-2fa-label": "Bestätigungscode",
+        "login-2fa-submit": "Bestätigen",
+        "login-2fa-back": "Zurück zur Anmeldung",
+        "login-2fa-invalid": "Ungültiger Code.",
+        "login-2fa-expired": "Die Anmeldung ist abgelaufen. Bitte gib dein Passwort erneut ein.",
+        "twofa-title": "Zwei-Faktor-Authentifizierung",
+        "twofa-desc": "Schützt dein Konto zusätzlich mit einem Code aus einer Authenticator-App (z.B. Google Authenticator).",
+        "twofa-status-label": "Status",
+        "twofa-status-on": "Aktiv ({n} Wiederherstellungscodes übrig)",
+        "twofa-status-off": "Nicht aktiv",
+        "twofa-current-password": "Aktuelles Passwort",
+        "twofa-btn-enable": "Einrichten",
+        "twofa-setup-scan": "Scanne den QR-Code mit deiner Authenticator-App und gib den angezeigten Code ein.",
+        "twofa-setup-manual": "Oder den Schlüssel manuell eingeben:",
+        "twofa-code-label": "Code aus der App",
+        "twofa-btn-confirm": "Aktivieren",
+        "twofa-codes-warning": "Speichere diese Wiederherstellungscodes an einem sicheren Ort. Jeder Code funktioniert genau einmal und wird nur jetzt angezeigt.",
+        "twofa-btn-copy": "Kopieren",
+        "twofa-btn-download": "Als Datei speichern",
+        "twofa-btn-done": "Gespeichert",
+        "twofa-code-or-recovery": "Code aus der App oder Wiederherstellungscode",
+        "twofa-btn-new-codes": "Neue Wiederherstellungscodes",
+        "twofa-btn-disable": "Deaktivieren",
+        "twofa-enabled": "Zwei-Faktor-Authentifizierung ist aktiv. Andere Sitzungen deines Kontos wurden abgemeldet.",
+        "twofa-disabled": "Zwei-Faktor-Authentifizierung ist deaktiviert.",
+        "twofa-new-codes": "Neue Wiederherstellungscodes erstellt. Die alten funktionieren nicht mehr.",
+        "twofa-confirm-disable": "Zwei-Faktor-Authentifizierung für dein Konto deaktivieren?",
+        "twofa-copied": "Wiederherstellungscodes kopiert.",
+        "twofa-copy-failed": "Kopieren fehlgeschlagen, bitte als Datei speichern.",
+        "twofa-file-title": "Wiederherstellungscodes",
+        "twofa-btn-reset": "2FA zurücksetzen",
+        "twofa-confirm-reset": "Zwei-Faktor-Authentifizierung von {user} entfernen? Der Benutzer wird abgemeldet und kann sich danach nur mit dem Passwort anmelden.",
         "update-dev-build": "Entwicklungs-Build",
         "update-dev-build-hint": "Dies ist ein selbst kompilierter Build. Aktuelles Release: {version}. Den Installer ohne --source/--dev ausführen, um zum Release zu wechseln.",
         "menu-logout": "Abmelden",
@@ -3122,9 +3490,9 @@ const i18n = {
         "inst-pass-label": "Passwort (Optional)",
         "inst-btn-install": "Gameserver installieren",
         "settings-title": "Einstellungen & Info",
-        "settings-subtitle": "Ändere Administrator-Anmeldedaten und kopiere Automatisierungs-Templates.",
-        "settings-pass-card": "Dashboard-Zugangsdaten",
-        "settings-pass-card-desc": "Ändere das Passwort für das Web-Dashboard.",
+        "settings-subtitle": "Dein Konto, Dashboard-Einstellungen und Server-Werkzeuge.",
+        "settings-pass-card": "Passwort ändern",
+        "settings-pass-card-desc": "Ändere das Passwort deines Dashboard-Kontos.",
         "settings-old-pass-label": "Aktuelles Passwort",
         "settings-new-pass-label": "Neues Passwort",
         "settings-confirm-pass-label": "Neues Passwort bestätigen",
@@ -3914,11 +4282,12 @@ async function loadUsersList() {
                 `<button class="btn btn-danger btn-sm" onclick="deleteUser(${jsArg(user.username)})">${state.language === 'de' ? 'Löschen' : 'Delete'}</button>`;
                 
             tr.innerHTML = `
-                <td style="padding: 0.75rem;"><strong>${escapeHtml(user.username)}</strong> ${isSelf ? `<small class="text-muted">(${state.language === 'de' ? 'Du' : 'You'})</small>` : ''}</td>
+                <td style="padding: 0.75rem;"><strong>${escapeHtml(user.username)}</strong> ${isSelf ? `<small class="text-muted">(${state.language === 'de' ? 'Du' : 'You'})</small>` : ''} ${user.totp_enabled ? `<span class="badge badge-primary" title="${t('twofa-title')}">2FA</span>` : ''}</td>
                 <td style="padding: 0.75rem;">${roleBadge}</td>
                 <td style="padding: 0.75rem;">${servers}</td>
                 <td style="padding: 0.75rem;">${perms}</td>
                 <td style="padding: 0.75rem; text-align: right; display: flex; gap: 0.5rem; justify-content: flex-end;">
+                    ${user.totp_enabled ? `<button class="btn btn-secondary btn-sm" onclick="resetUserTwoFactor(${jsArg(user.username)})">${t('twofa-btn-reset')}</button>` : ''}
                     <button class="btn btn-secondary btn-sm" onclick="openEditUserModal(${jsArg(user.username)})">${state.language === 'de' ? 'Bearbeiten' : 'Edit'}</button>
                     ${deleteBtn}
                 </td>

@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skip2/go-qrcode"
 	"github.com/yourdawi/linuxgsm-dashboard/backend"
 )
 
@@ -349,6 +351,10 @@ func (a *app) securityHeaders(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
+		} else if !strings.HasPrefix(r.URL.Path, "/fastdl/") {
+			// The embedded UI must be revalidated, otherwise browsers combine a cached app.js with
+			// a newer backend after an update.
+			h.Set("Cache-Control", "no-cache")
 		}
 		if a.isHTTPS(r) {
 			h.Set("Strict-Transport-Security", "max-age=31536000")
@@ -403,7 +409,7 @@ func (a *app) csrfProtect(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "Forbidden - cross-origin request")
 			return
 		}
-		if r.URL.Path == "/api/auth/login" {
+		if r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/login/2fa" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -471,6 +477,13 @@ func (a *app) routes() http.Handler {
 	}
 
 	mux.HandleFunc("/api/auth/login", methodOnly(http.MethodPost, a.handleLogin))
+	mux.HandleFunc("/api/auth/login/2fa", methodOnly(http.MethodPost, a.handleLoginSecondFactor))
+	mux.HandleFunc("/api/account/2fa", methodOnly(http.MethodGet, a.requireAuth(a.handleTwoFactorStatus)))
+	mux.HandleFunc("/api/account/2fa/setup", methodOnly(http.MethodPost, a.requireAuth(a.handleTwoFactorSetup)))
+	mux.HandleFunc("/api/account/2fa/enable", methodOnly(http.MethodPost, a.requireAuth(a.handleTwoFactorEnable)))
+	mux.HandleFunc("/api/account/2fa/disable", methodOnly(http.MethodPost, a.requireAuth(a.handleTwoFactorDisable)))
+	mux.HandleFunc("/api/account/2fa/recovery-codes", methodOnly(http.MethodPost, a.requireAuth(a.handleTwoFactorRecoveryCodes)))
+	mux.HandleFunc("/api/admin/users/2fa-reset", methodOnly(http.MethodPost, a.requireAdmin(a.handleTwoFactorReset)))
 	mux.HandleFunc("/api/auth/logout", methodOnly(http.MethodPost, a.handleLogout))
 
 	mux.HandleFunc("/api/servers", methodOnly(http.MethodGet, a.requireAuth(a.handleListServers)))
@@ -479,7 +492,7 @@ func (a *app) routes() http.Handler {
 
 	mux.HandleFunc("/api/system/stats", methodOnly(http.MethodGet, a.requireAuth(a.handleStats)))
 	mux.HandleFunc("/api/system/info", methodOnly(http.MethodGet, a.requireAuth(a.handleInfo)))
-	mux.HandleFunc("/api/system/firewall", methodOnly(http.MethodGet, a.requireAuth(a.handleFirewallStatus)))
+	mux.HandleFunc("/api/system/firewall", methodOnly(http.MethodGet, a.requireAdmin(a.handleFirewallStatus)))
 	mux.HandleFunc("/api/system/firewall/open", methodOnly(http.MethodPost, a.requireAdmin(a.handleFirewallOpen)))
 	mux.HandleFunc("/api/system/audit", methodOnly(http.MethodGet, a.requireAdmin(a.handleAudit)))
 	mux.HandleFunc("/api/settings/password", methodOnly(http.MethodPost, a.requireAuth(a.handleChangePassword)))
@@ -548,7 +561,7 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, err := a.auth.Login(creds.Username, creds.Password)
+	result, err := a.auth.BeginLogin(creds.Username, creds.Password)
 	if err != nil {
 		a.limiter.Failure(keys...)
 		a.auth.LogAudit(creds.Username, ip, "LOGIN_FAILED", "Invalid username or password", "")
@@ -557,6 +570,17 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	a.limiter.Success(keys...)
 
+	if result.Challenge != "" {
+		// Password correct, the account uses 2FA: the browser gets a short-lived challenge that is
+		// bound to this account, no session yet.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "2fa_required", "challenge": result.Challenge})
+		return
+	}
+	a.finishLogin(w, r, creds.Username, result.SessionID, "User logged in successfully")
+}
+
+// finishLogin sets the session cookies after a successful login.
+func (a *app) finishLogin(w http.ResponseWriter, r *http.Request, username, sessionID, auditDetails string) {
 	// Session fixation: discard any session the browser presented before logging in.
 	if old, err := r.Cookie(backend.SessionCookieName); err == nil && old.Value != sessionID {
 		a.auth.Logout(old.Value)
@@ -565,8 +589,154 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
 	session, _ := a.auth.GetSession(sessionID)
 	a.setSessionCookies(w, r, sessionID, session.CSRFToken, int(backend.SessionMaxLifetime.Seconds()))
 
-	a.auth.LogAudit(creds.Username, ip, "LOGIN", "User logged in successfully", "")
+	a.auth.LogAudit(username, a.clientIP(r), "LOGIN", auditDetails, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "csrf_token": session.CSRFToken})
+}
+
+// handleLoginSecondFactor completes a login with a TOTP or recovery code. The request contains no
+// username: the challenge determines the account, so codes are only checked against that account.
+func (a *app) handleLoginSecondFactor(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Challenge string `json:"challenge"`
+		Code      string `json:"code"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	username, ok := a.auth.ChallengeUser(payload.Challenge)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Login expired, please sign in again")
+		return
+	}
+	ip := a.clientIP(r)
+	keys := []string{"ip:" + ip, "2fa:" + strings.ToLower(username)}
+	if ok, wait := a.limiter.Allow(keys...); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "Too many failed attempts. Please try again later.")
+		return
+	}
+	sessionID, usedRecovery, err := a.auth.CompleteLogin(payload.Challenge, payload.Code)
+	if err != nil {
+		a.limiter.Failure(keys...)
+		a.auth.LogAudit(username, ip, "LOGIN_2FA_FAILED", "Invalid two-factor code", "")
+		if errors.Is(err, backend.ErrChallengeExpired) {
+			writeError(w, http.StatusUnauthorized, "Login expired, please sign in again")
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "Invalid code")
+		return
+	}
+	a.limiter.Success(keys...)
+	details := "User logged in with two-factor authentication"
+	if usedRecovery {
+		details = "User logged in with a recovery code"
+	}
+	a.finishLogin(w, r, username, sessionID, details)
+}
+
+// -------------------------------------------------------------
+// Two-factor authentication (own account)
+// -------------------------------------------------------------
+
+func (a *app) handleTwoFactorStatus(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
+	writeJSON(w, http.StatusOK, a.auth.TwoFactorStatusFor(user.Username))
+}
+
+func requestHostName(r *http.Request) string {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.Trim(host, "[]")
+}
+
+func (a *app) handleTwoFactorSetup(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
+	var payload struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	setup, err := a.auth.StartTwoFactorSetup(user.Username, payload.Password, requestHostName(r))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	png, err := qrcode.Encode(setup.URI, qrcode.Medium, 240)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to create QR code")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"secret": setup.Secret,
+		"uri":    setup.URI,
+		"qr":     "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
+	})
+}
+
+func (a *app) handleTwoFactorEnable(w http.ResponseWriter, r *http.Request, user backend.User, sessionID string) {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	codes, err := a.auth.ConfirmTwoFactorSetup(user.Username, payload.Code, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.LogAudit(user.Username, a.clientIP(r), "2FA_ENABLED", "Enabled two-factor authentication", "")
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "recovery_codes": codes})
+}
+
+func (a *app) handleTwoFactorDisable(w http.ResponseWriter, r *http.Request, user backend.User, sessionID string) {
+	var payload struct {
+		Password string `json:"password"`
+		Code     string `json:"code"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	if err := a.auth.DisableTwoFactor(user.Username, payload.Password, payload.Code, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.LogAudit(user.Username, a.clientIP(r), "2FA_DISABLED", "Disabled two-factor authentication", "")
+	writeOK(w)
+}
+
+func (a *app) handleTwoFactorRecoveryCodes(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
+	var payload struct {
+		Password string `json:"password"`
+		Code     string `json:"code"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	codes, err := a.auth.RegenerateRecoveryCodes(user.Username, payload.Password, payload.Code)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.LogAudit(user.Username, a.clientIP(r), "2FA_RECOVERY_CODES", "Generated new recovery codes", "")
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "recovery_codes": codes})
+}
+
+// handleTwoFactorReset lets an administrator remove 2FA from an account (lost device).
+func (a *app) handleTwoFactorReset(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	var payload struct {
+		Username string `json:"username"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	if err := a.auth.ResetTwoFactor(payload.Username); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.LogAudit(admin.Username, a.clientIP(r), "2FA_RESET", "Reset two-factor authentication of "+payload.Username, "")
+	writeOK(w)
 }
 
 func (a *app) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -644,10 +814,11 @@ func (a *app) handleInfo(w http.ResponseWriter, r *http.Request, user backend.Us
 		"pid":     os.Getpid(),
 		"version": Version,
 		"user": map[string]interface{}{
-			"username":    user.Username,
-			"role":        user.Role,
-			"servers":     user.Servers,
-			"permissions": user.Permissions,
+			"username":     user.Username,
+			"role":         user.Role,
+			"servers":      user.Servers,
+			"permissions":  user.Permissions,
+			"totp_enabled": user.TOTPEnabled,
 		},
 		"csrf_token": session.CSRFToken,
 	})
@@ -1510,7 +1681,7 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request, admin backend.
 	case http.MethodGet:
 		users := a.auth.GetUsers()
 		for i := range users {
-			users[i].PasswordHash = "" // sanitise
+			users[i] = users[i].Sanitized()
 		}
 		writeJSON(w, http.StatusOK, users)
 
