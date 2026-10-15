@@ -12,11 +12,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
 
@@ -24,7 +24,14 @@ jobs:
         run: |
           test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::Run gofmt -w ."; exit 1; }
           go vet ./...
-          go test ./...
+          # Report every failed test as annotation so it shows up in the run summary.
+          go test ./... 2>&1 | tee test.log; status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '^\s*--- FAIL|^\s+[a-z_]+_test\.go:[0-9]+:' test.log | head -n 40 | while IFS= read -r line; do
+              echo "::error::$(echo "$line" | sed 's/^[[:space:]]*//')"
+            done
+          fi
+          exit "$status"
 
       - name: Build
         run: go build -trimpath -o lgsm-dashboard .

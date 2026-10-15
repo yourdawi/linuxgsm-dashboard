@@ -25,3 +25,7 @@ release-signing.key
 *.swp
 .DS_Store
 Thumbs.db
+
+# Temporary test directories (removed by the tests themselves)
+.test-*/
+test.log

@@ -120,13 +120,33 @@ func TestResolveAbsInRoots(t *testing.T) {
 	}
 }
 
-func TestServerSubRootSymlinkedToSystemDir(t *testing.T) {
-	tmp := t.TempDir()
-	serverDir := filepath.Join(tmp, "srv")
+// nonTmpDir creates a temporary directory below the package directory. t.TempDir() lives in /tmp
+// on Linux, which the dashboard deliberately refuses as a location for game server files.
+func nonTmpDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(".", ".test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
+}
+
+func TestServerSubRootSymlinkedServerfiles(t *testing.T) {
+	if IsForbiddenServerDir("/etc") == false || IsForbiddenServerDir("/mnt/ssd/x") {
+		t.Fatal("IsForbiddenServerDir broken")
+	}
+
+	base := nonTmpDir(t)
+	serverDir := filepath.Join(base, "srv")
 	if err := os.MkdirAll(serverDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	other := filepath.Join(tmp, "ssd", "serverfiles")
+	other := filepath.Join(base, "ssd", "serverfiles")
 	if err := os.MkdirAll(other, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +155,16 @@ func TestServerSubRootSymlinkedToSystemDir(t *testing.T) {
 	if _, err := ServerSubRoot(serverDir, "serverfiles", -1); err != nil {
 		t.Fatalf("symlinked serverfiles rejected: %v", err)
 	}
-	if IsForbiddenServerDir("/etc") == false || IsForbiddenServerDir("/mnt/ssd/x") {
-		t.Fatal("IsForbiddenServerDir broken")
+
+	// A link into a system directory is never accepted.
+	if _, err := os.Stat("/etc"); err == nil {
+		evilDir := filepath.Join(base, "evil")
+		if err := os.MkdirAll(evilDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		trySymlink(t, "/etc", filepath.Join(evilDir, "serverfiles"))
+		if _, err := ServerSubRoot(evilDir, "serverfiles", -1); err == nil {
+			t.Fatal("serverfiles linked to /etc was accepted")
+		}
 	}
 }

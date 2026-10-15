@@ -18,13 +18,13 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # RELEASE_SIGNING_KEY lives in this environment; restrict it to tags matching v*.
     environment: release
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -40,14 +40,20 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
 
       - name: Test
         run: |
           go vet ./...
-          go test ./...
+          go test ./... 2>&1 | tee test.log; status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '^\s*--- FAIL|^\s+[a-z_]+_test\.go:[0-9]+:' test.log | head -n 40 | while IFS= read -r line; do
+              echo "::error::$(echo "$line" | sed 's/^[[:space:]]*//')"
+            done
+          fi
+          exit "$status"
 
       - name: Build
         run: |
