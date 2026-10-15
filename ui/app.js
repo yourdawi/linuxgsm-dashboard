@@ -48,6 +48,124 @@ const state = {
     lastActiveView: 'dashboard'
 };
 
+// -------------------------------------------------------------
+// CSRF protection: every state-changing request carries the per-session token
+// -------------------------------------------------------------
+
+function readCookie(name) {
+    const prefix = name + '=';
+    for (const part of document.cookie.split(';')) {
+        const c = part.trim();
+        if (c.startsWith(prefix)) return decodeURIComponent(c.slice(prefix.length));
+    }
+    return '';
+}
+
+function getCsrfToken() {
+    return readCookie('csrf_token') || state.csrfToken || '';
+}
+
+const nativeFetch = window.fetch.bind(window);
+window.fetch = (input, init = {}) => {
+    const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+        const headers = new Headers((init && init.headers) || {});
+        const token = getCsrfToken();
+        if (token) headers.set('X-CSRF-Token', token);
+        init = Object.assign({}, init, { headers, credentials: 'same-origin' });
+    }
+    return nativeFetch(input, init);
+};
+
+// Streams the Server-Sent-Event formatted output of a POST request. EventSource only supports
+// GET, but actions that change state must never be triggered by a GET request.
+async function streamPost(url, body, onEvent) {
+    const res = await apiFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {})
+    });
+    if (!res.ok || !res.body) {
+        let msg = `HTTP ${res.status}`;
+        try {
+            const text = await res.text();
+            try {
+                const data = JSON.parse(text);
+                if (data.error) msg = data.error;
+            } catch (e) {
+                if (text) msg = text.trim();
+            }
+        } catch (e) {
+            // keep HTTP status message
+        }
+        throw new Error(msg);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep;
+        while ((sep = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const data = frame.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n');
+            if (data) {
+                try {
+                    onEvent(JSON.parse(data));
+                } catch (e) {
+                    console.error('Invalid stream event:', e);
+                }
+            }
+        }
+    }
+}
+
+// Opens the live log modal and streams a POST action into it.
+async function runStreamModal({ title, runningText, url, body, errorText, onExit }) {
+    el.modalStreamTitle.textContent = title;
+    el.modalStreamStatus.textContent = t('status-connecting');
+    el.modalStreamStatus.className = 'badge badge-warning animate-pulse';
+    el.modalStreamOutput.innerHTML = '';
+    el.modalStreamClose.disabled = true;
+    el.modalStream.classList.remove('hidden');
+
+    const appendLine = (text, className = 'terminal-row') => {
+        const line = document.createElement('div');
+        line.className = className;
+        line.textContent = text;
+        el.modalStreamOutput.appendChild(line);
+        if (el.modalStreamAutoscroll.checked) {
+            el.modalStreamOutput.scrollTop = el.modalStreamOutput.scrollHeight;
+        }
+    };
+
+    let exited = false;
+    try {
+        el.modalStreamStatus.textContent = runningText;
+        el.modalStreamStatus.className = 'badge badge-warning badge-pulse animate-pulse';
+        await streamPost(url, body, (data) => {
+            if (data.type === 'log') {
+                appendLine(data.text);
+            } else if (data.type === 'exit') {
+                exited = true;
+                el.modalStreamStatus.textContent = data.code === 0 ? t('status-success') : t('status-error');
+                el.modalStreamStatus.className = data.code === 0 ? 'badge badge-success' : 'badge badge-danger';
+                el.modalStreamClose.disabled = false;
+                if (onExit) onExit(data.code);
+            }
+        });
+        if (!exited) throw new Error('stream closed');
+    } catch (e) {
+        appendLine(errorText + (e && e.message ? ` (${e.message})` : ''), 'terminal-row text-danger');
+        el.modalStreamStatus.textContent = t('status-cancelled');
+        el.modalStreamStatus.className = 'badge badge-danger';
+        el.modalStreamClose.disabled = false;
+    }
+}
+
 // DOM Elements
 const el = {
     loginContainer: document.getElementById('login-container'),
@@ -744,6 +862,9 @@ async function hideLogin() {
         if (res.status === 200) {
             const data = await res.json();
             state.currentUser = data.user;
+            if (data.csrf_token) state.csrfToken = data.csrf_token;
+            applyUpdateStatus(data.update);
+            startUpdateStatusPolling();
             state.lastSettingsData = data;
             renderSettingsMode(data);
             
@@ -893,6 +1014,12 @@ async function refreshDashboard() {
     }
 }
 
+document.addEventListener('click', (e) => {
+    document.querySelectorAll('.sc-menu[open]').forEach(menu => {
+        if (!menu.contains(e.target)) menu.removeAttribute('open');
+    });
+});
+
 function updateStatsOverview() {
     const total = state.servers.length;
     const running = state.servers.filter(s => s.status === 'running').length;
@@ -936,9 +1063,9 @@ function renderServersGrid() {
     
     if (filtered.length === 0) {
         el.serversContainer.innerHTML = `
-            <div class="glass-panel" style="grid-column: 1/-1; text-align: center; padding: 3rem;">
-                <p class="text-muted">${t('no-servers-found')}</p>
-                <a href="#installer" class="btn btn-primary mt-4" style="display:inline-flex;">${t('inst-btn-install')}</a>
+            <div class="empty-state">
+                <p>${t('no-servers-found')}</p>
+                <a href="#installer" class="btn btn-primary mt-4">${t('inst-btn-install')}</a>
             </div>
         `;
         return;
@@ -955,61 +1082,30 @@ function renderServersGrid() {
 function renderServersGridQuiet() {
     const filter = el.searchServers.value.toLowerCase();
     const tagFilter = el.filterTagSelect ? el.filterTagSelect.value : '';
-    
+
     const filtered = state.servers.filter(s => {
-        const matchesText = s.name.toLowerCase().includes(filter) || s.user.toLowerCase().includes(filter);
+        const matchesText = s.name.toLowerCase().includes(filter) || s.user.toLowerCase().includes(filter) || s.script.toLowerCase().includes(filter);
         const matchesTag = !tagFilter || s.tag === tagFilter;
         return matchesText && matchesTag;
     });
-    
+
     filtered.forEach(server => {
         const card = document.getElementById(`server-card-${server.id}`);
-        if (card) {
-            // Update status badge (using status-badge class to avoid collision with tag-badge)
-            const badge = card.querySelector('.status-badge') || card.querySelector('.card-header > .badge');
-            const statusDot = card.querySelector('.status-dot');
-            
-            card.className = `server-card ${server.status}`;
-            
-            let statusText = server.status;
-            if (server.status === 'running') {
-                if (badge) badge.className = 'badge status-badge badge-success';
-                if (statusDot) statusDot.className = 'status-dot status-online';
-                statusText = t('status-online');
-            } else if (server.status === 'stopped') {
-                if (badge) badge.className = 'badge status-badge badge-danger';
-                if (statusDot) statusDot.className = 'status-dot status-offline';
-                statusText = t('status-offline');
-            } else {
-                if (badge) badge.className = 'badge status-badge badge-warning badge-pulse animate-pulse';
-                if (statusDot) statusDot.className = 'status-dot status-busy';
-                statusText = server.status === 'installing' ? t('status-installing') : t('status-updating');
-            }
-            if (badge) badge.innerHTML = `<span class="${statusDot ? statusDot.className : ''}"></span> ${statusText}`;
-            
-            // Update resource meters
-            const cpuMeter = card.querySelector('.cpu-meter-fill');
-            const cpuLabel = card.querySelector('.cpu-meter-label');
-            const ramMeter = card.querySelector('.ram-meter-fill');
-            const ramLabel = card.querySelector('.ram-meter-label');
-            
-            const cpuVal = server.cpu !== undefined ? server.cpu : 0;
-            const ramVal = server.ram !== undefined ? server.ram : 0;
-            
-            cpuMeter.style.width = `${cpuVal}%`;
-            cpuLabel.textContent = `${cpuVal.toFixed(1)}%`;
-            ramMeter.style.width = `${ramVal > 0 ? (ramVal / 16 * 100) : 0}%`; // Assuming max 16GB default for visual
-            ramLabel.textContent = `${ramVal.toFixed(1)} GB`;
-            
-            // Enable/disable buttons based on status
-            const isBusy = server.status === 'installing' || server.status === 'updating';
-            card.querySelectorAll('.btn-server-action').forEach(btn => {
-                btn.disabled = isBusy;
-            });
-        } else {
+        if (!card) {
             // Server was newly detected, full redraw
             renderServersGrid();
+            return;
         }
+        const menuOpen = card.querySelector('.sc-menu[open]');
+        if (card.dataset.status !== server.status && !menuOpen) {
+            // Status changed: the available actions differ, so rebuild this card only.
+            const checked = card.querySelector('.bulk-server-checkbox')?.checked;
+            const fresh = createServerCard(server);
+            card.replaceWith(fresh);
+            if (checked) fresh.querySelector('.bulk-server-checkbox').checked = true;
+            return;
+        }
+        fillServerCardStats(card, server);
     });
 }
 
@@ -1019,206 +1115,154 @@ function hasUserPermission(permission) {
     return state.currentUser.permissions && state.currentUser.permissions.includes(permission);
 }
 
-function createServerCard(server) {
-    const card = document.createElement('div');
-    card.id = `server-card-${server.id}`;
-    card.className = `server-card ${server.status}`;
-    
-    let badgeClass = 'badge-danger';
-    let dotClass = 'status-offline';
-    let statusText = t('status-offline');
-    let isBusy = false;
-    
-    if (server.status === 'running') {
-        badgeClass = 'badge-success';
-        dotClass = 'status-online';
-        statusText = t('status-online');
-    } else if (server.status === 'installing') {
-        badgeClass = 'badge-warning badge-pulse animate-pulse';
-        dotClass = 'status-busy';
-        statusText = t('status-installing');
-        isBusy = true;
-    } else if (server.status === 'updating') {
-        badgeClass = 'badge-warning badge-pulse animate-pulse';
-        dotClass = 'status-busy';
-        statusText = t('status-updating');
-        isBusy = true;
+function serverStatusInfo(server) {
+    if (server.status === 'running') return { cls: 'is-running', dot: 'status-online', text: t('status-online'), busy: false };
+    if (server.status === 'installing') return { cls: 'is-busy', dot: 'status-busy', text: t('status-installing'), busy: true };
+    if (server.status === 'updating') return { cls: 'is-busy', dot: 'status-busy', text: t('status-updating'), busy: true };
+    return { cls: 'is-stopped', dot: 'status-offline', text: t('status-offline'), busy: false };
+}
+
+function formatSize(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const v = bytes / Math.pow(1024, i);
+    return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
+}
+
+function diskSummary(disk) {
+    if (!disk) return { text: '-', title: t('card-disk-pending') };
+    const measured = disk.updated && !String(disk.updated).startsWith('0001-');
+    if (!measured) {
+        return disk.scanning ? { text: t('card-measuring'), title: t('card-disk-scanning') } : { text: '-', title: t('card-disk-pending') };
     }
-    
-    const cpu = server.cpu || 0;
-    const ram = server.ram || 0;
-    
+    const parts = [];
+    if (disk.backups) parts.push(`${t('card-disk-backups')}: ${formatSize(disk.backups)}`);
+    if (disk.fs_total) parts.push(`${t('card-disk-free')}: ${formatSize(disk.fs_free)} / ${formatSize(disk.fs_total)}`);
+    if (disk.shared) parts.push(t('card-disk-shared'));
+    if (disk.scanning) parts.push(t('card-disk-scanning'));
+    parts.push(`${t('card-disk-updated')}: ${new Date(disk.updated).toLocaleTimeString()}`);
+    if (disk.error) {
+        // Incomplete measurement: show what was counted, marked as lower bound.
+        parts.unshift(`${t('card-disk-error')}: ${disk.error}`);
+        return { text: disk.used ? `>= ${formatSize(disk.used)}` : 'n/a', title: parts.join(' | ') };
+    }
+    return { text: formatSize(disk.used), title: parts.join(' | ') };
+}
+
+// Updates the values of a card without rebuilding it.
+function fillServerCardStats(card, server) {
+    const set = (field, text, title) => {
+        const node = card.querySelector(`[data-field="${field}"]`);
+        if (!node) return;
+        node.textContent = text;
+        if (title !== undefined) node.title = title;
+    };
+    const running = server.status === 'running';
+    const q = server.query_data || {};
+    const online = running && q.online;
+
+    set('players', online ? `${q.num_players || 0} / ${q.max_players || 0}` : '-', online ? '' : (running ? t('card-no-query') : ''));
+    set('map', online && q.map ? q.map : '-', online && q.name ? q.name : '');
+    set('cpu', running ? `${(server.cpu || 0).toFixed(1)} %` : '-');
+    set('ram', running ? `${(server.ram || 0).toFixed(1)} GB` : '-');
+    const disk = diskSummary(server.disk);
+    set('disk', disk.text, disk.title);
+
+    const playersBtn = card.querySelector('[data-field="players"]');
+    if (playersBtn) playersBtn.disabled = !online;
+
+    const busy = serverStatusInfo(server).busy;
+    card.querySelectorAll('.btn-server-action').forEach(btn => { btn.disabled = busy; });
+}
+
+function createServerCard(server) {
+    const status = serverStatusInfo(server);
+    const card = document.createElement('article');
+    card.id = `server-card-${server.id}`;
+    card.className = `server-card ${status.cls}`;
+    card.dataset.status = server.status;
+
+    const id = jsArg(server.id);
+    const dis = status.busy ? 'disabled' : '';
+    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
     const canStart = hasUserPermission('start');
     const canStop = hasUserPermission('stop');
     const canRestart = hasUserPermission('restart');
     const canConsole = hasUserPermission('console');
     const canConfig = hasUserPermission('config');
-    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
-
-    // Build buttons HTML based on permissions
-    let actionsHtml = '';
-    if (canStart || canStop || canRestart) {
-        actionsHtml += `<div class="card-actions">`;
-        if (server.status === 'running') {
-            if (canStop) {
-                actionsHtml += `
-                    <button class="btn btn-danger btn-server-action" onclick="runServerAction('${server.id}', 'stop')" ${isBusy ? 'disabled' : ''}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg> ${t('btn-stop')}
-                    </button>`;
-            }
-        } else {
-            if (canStart) {
-                actionsHtml += `
-                    <button class="btn btn-success btn-server-action" onclick="runServerAction('${server.id}', 'start')" ${isBusy ? 'disabled' : ''}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg> ${t('btn-start')}
-                    </button>`;
-            }
-        }
-        if (canRestart) {
-            actionsHtml += `
-                <button class="btn btn-warning btn-server-action" onclick="runServerAction('${server.id}', 'restart')" ${isBusy ? 'disabled' : ''}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg> ${t('btn-restart')}
-                </button>`;
-        }
-        actionsHtml += `</div>`;
-    }
-
-    let subActionsHtml = '';
-    if (canConsole || canConfig || isAdmin) {
-        subActionsHtml += `<div class="card-actions-row-3">`;
-        if (canConsole) {
-            subActionsHtml += `
-                <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConsole('${server.id}')" ${isBusy ? 'disabled' : ''}>
-                    ${t('btn-console')}
-                </button>`;
-        }
-        if (canConfig) {
-            subActionsHtml += `
-                <button class="btn btn-secondary btn-sm btn-server-action" onclick="openConfigEditor('${server.id}')" ${isBusy ? 'disabled' : ''}>
-                    ${t('btn-configs')}
-                </button>`;
-        }
-        if (isAdmin) {
-            subActionsHtml += `
-                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'update')" ${isBusy ? 'disabled' : ''}>
-                    ${t('btn-update')}
-                </button>`;
-        }
-        subActionsHtml += `</div>`;
-    }
-
-    let adminActionsHtml = '';
     const canBackup = hasUserPermission('backup');
-    if (isAdmin || canBackup) {
-        adminActionsHtml += `
-            <div class="card-actions-row-${(isAdmin ? 3 : 2)}" style="margin-top: 0.4rem;">
-                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'details')" ${isBusy ? 'disabled' : ''}>
-                    ${t('btn-details')}
-                </button>
-                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'backup')" ${isBusy ? 'disabled' : ''}>
-                    ${t('btn-backup')}
-                </button>`;
-        if (isAdmin) {
-            adminActionsHtml += `
-                <button class="btn btn-secondary btn-sm btn-server-action" onclick="runServerAction('${server.id}', 'validate')" ${isBusy ? 'disabled' : ''}>
-                    ${t('btn-validate')}
-                </button>`;
-        }
-        adminActionsHtml += `</div>`;
-        
-        if (isAdmin) {
-            const isRust = (server.game || '').toLowerCase() === 'rust' || server.script === 'rustserver';
-            adminActionsHtml += `
-            <div class="card-actions-row-${isRust ? 3 : 2}" style="margin-top: 0.4rem; display: grid; grid-template-columns: ${isRust ? '1fr 1fr 1fr' : '1fr 1fr'}; gap: 0.4rem;">
-                <button class="btn btn-primary btn-sm btn-server-action" onclick="checkServerPorts('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg> ${t('btn-portcheck')}
-                </button>
-                ${isRust ? `
-                <button class="btn btn-warning btn-sm btn-server-action" onclick="openRustWipeModal(state.servers.find(s=>s.id==='${server.id}'))" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
-                    🌲 ${t('btn-wipe-server')}
-                </button>
-                ` : ''}
-                <button class="btn btn-danger btn-sm btn-server-action" onclick="openDeleteServerModal('${server.id}')" style="display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0.35rem 0.25rem; font-size: 0.75rem;">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> ${t('btn-delete-server')}
-                </button>
-            </div>`;
-        }
+    const isRust = (server.game || '').toLowerCase() === 'rust' || server.script === 'rustserver';
+
+    // Primary actions: the things done every day.
+    let primary = '';
+    if (server.status === 'running' && canStop) {
+        primary += `<button class="btn btn-sm btn-danger btn-server-action" onclick="runServerAction(${id}, 'stop')" ${dis}>${t('btn-stop')}</button>`;
+    } else if (server.status !== 'running' && canStart) {
+        primary += `<button class="btn btn-sm btn-success btn-server-action" onclick="runServerAction(${id}, 'start')" ${dis}>${t('btn-start')}</button>`;
     }
-    
-    let tagBadgeHtml = '';
+    if (canRestart) {
+        primary += `<button class="btn btn-sm btn-secondary btn-server-action" onclick="runServerAction(${id}, 'restart')" ${dis}>${t('btn-restart')}</button>`;
+    }
+    if (canConsole) {
+        primary += `<button class="btn btn-sm btn-secondary btn-server-action" onclick="openConsole(${id})" ${dis}>${t('btn-console')}</button>`;
+    }
+
+    // Everything else lives in a menu.
+    const menuItems = [];
+    if (canConfig) menuItems.push(`<button class="btn-server-action" onclick="openConfigEditor(${id})" ${dis}>${t('btn-configs')}</button>`);
+    if (canBackup) {
+        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'backup')" ${dis}>${t('btn-backup')}</button>`);
+        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'details')" ${dis}>${t('btn-details')}</button>`);
+    }
     if (isAdmin) {
-        tagBadgeHtml = `<span class="badge tag-badge ${server.tag ? 'badge-secondary' : 'badge-secondary'}" 
-            style="font-size:0.7rem; margin-left:0.5rem; cursor:pointer; opacity: ${server.tag ? '1' : '0.6'}; border: 1px dashed rgba(255,255,255,0.3);" 
-            onclick="editServerTag('${server.id}', '${escapeJs(server.tag || '')}')" 
-            title="${state.language === 'de' ? 'Tag / Cluster bearbeiten' : 'Edit Tag / Cluster'}">
-            🏷️ ${server.tag ? escapeHtml(server.tag) : '+ Tag'}
-        </span>`;
-    } else if (server.tag) {
-        tagBadgeHtml = `<span class="badge tag-badge badge-secondary" style="font-size:0.7rem; margin-left:0.5rem;">🏷️ ${escapeHtml(server.tag)}</span>`;
+        menuItems.push('<hr>');
+        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'update')" ${dis}>${t('btn-update')}</button>`);
+        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'validate')" ${dis}>${t('btn-validate')}</button>`);
+        menuItems.push(`<button onclick="checkServerPorts(${id})">${t('btn-portcheck')}</button>`);
+        if (isRust) {
+            menuItems.push(`<button class="btn-server-action" onclick="openRustWipeModal(state.servers.find(s => s.id === ${id}))" ${dis}>${t('btn-wipe-server')}</button>`);
+        }
+        menuItems.push(`<button onclick="editServerTag(${id}, ${jsArg(server.tag || '')})">${t('card-edit-tag')}</button>`);
+        menuItems.push('<hr>');
+        menuItems.push(`<button class="is-danger btn-server-action" onclick="openDeleteServerModal(${id})" ${dis}>${t('btn-delete-server')}</button>`);
     }
-    
-    let queryRowHtml = '';
-    if (server.query_data) {
-        const q = server.query_data;
-        queryRowHtml = `
-            <div class="card-query-info" style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.25); padding:0.4rem 0.6rem; border-radius:6px; font-size:0.8rem; margin-bottom:0.75rem;">
-                <span class="text-muted" style="display:flex; align-items:center; gap:0.25rem;">🗺️ ${escapeHtml(q.map || 'N/A')}</span>
-                <div style="display:flex; align-items:center; gap:0.4rem;">
-                    <span class="${q.online ? 'text-success' : 'text-muted'}" style="font-weight:600;">👥 ${q.numplayers || 0}/${q.maxplayers || 0}</span>
-                    <button class="btn btn-sm btn-secondary" onclick="openPlayersModal('${server.id}')" style="padding:0.15rem 0.4rem; font-size:0.75rem;">👥 Spieler</button>
-                </div>
-            </div>
-        `;
-    }
-    
+    const menu = menuItems.length ? `
+        <details class="sc-menu">
+            <summary class="btn btn-sm btn-ghost" title="${t('card-more')}">${t('card-more')}</summary>
+            <div class="sc-menu-list">${menuItems.join('')}</div>
+        </details>` : '';
+
+    const tag = server.tag ? `<span class="tag-chip">${escapeHtml(server.tag)}</span>` : '';
+    const dirTitle = server.dir ? ` title="${escapeHtml(server.dir)}"` : '';
+
     card.innerHTML = `
-        <div class="card-header">
-            <div style="display:flex; align-items:center; gap:0.5rem;">
-                <input type="checkbox" class="bulk-server-checkbox" data-id="${server.id}" onchange="updateBulkToolbarState()">
-                <div class="card-title-group">
-                    <h3 style="display:flex; align-items:center; flex-wrap:wrap;">${server.name} ${tagBadgeHtml}</h3>
-                    <div class="card-subtitle">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                        <span>${server.user}</span>
-                        <span class="text-muted">| ${t('card-port')}: ${server.port || '--'}</span>
-                    </div>
+        <header class="sc-head">
+            <input type="checkbox" class="bulk-server-checkbox" data-id="${escapeHtml(server.id)}" onchange="updateBulkToolbarState()" aria-label="${t('card-select')}">
+            <div class="sc-title">
+                <h3>${escapeHtml(server.name)}</h3>
+                <div class="sc-meta"${dirTitle}>
+                    <span class="mono">${escapeHtml(server.script)}</span>
+                    <span>${escapeHtml(server.user)}</span>
+                    ${server.port ? `<span class="mono">:${escapeHtml(server.port)}</span>` : ''}
+                    ${tag}
                 </div>
             </div>
-            <span class="badge status-badge ${badgeClass}">
-                <span class="status-dot ${dotClass}"></span>
-                ${statusText}
-            </span>
-        </div>
-        
-        ${queryRowHtml}
-        
-        <div class="card-resources">
-            <div class="meter-group">
-                <div class="meter-label">
-                    <span>CPU</span>
-                    <span class="cpu-meter-label">${cpu.toFixed(1)}%</span>
-                </div>
-                <div class="meter-bar">
-                    <div class="meter-fill cpu-meter-fill" style="width: ${cpu}%"></div>
-                </div>
-            </div>
-            
-            <div class="meter-group">
-                <div class="meter-label">
-                    <span>RAM</span>
-                    <span class="ram-meter-label">${ram.toFixed(1)} GB</span>
-                </div>
-                <div class="meter-bar">
-                    <div class="meter-fill ram-meter-fill" style="width: ${ram > 0 ? Math.min((ram / 8 * 100), 100) : 0}%"></div>
-                </div>
-            </div>
-        </div>
-        
-        ${actionsHtml}
-        ${subActionsHtml}
-        ${adminActionsHtml}
+            <span class="status-pill"><span class="status-dot ${status.dot}"></span>${status.text}</span>
+        </header>
+        <dl class="sc-stats">
+            <div><dt>${t('card-players')}</dt><dd><button type="button" class="link-btn" data-field="players" onclick="openPlayersModal(${id})">-</button></dd></div>
+            <div><dt>${t('card-map')}</dt><dd data-field="map">-</dd></div>
+            <div><dt>CPU</dt><dd data-field="cpu">-</dd></div>
+            <div><dt>RAM</dt><dd data-field="ram">-</dd></div>
+            <div><dt>${t('card-disk')}</dt><dd data-field="disk">-</dd></div>
+        </dl>
+        <footer class="sc-actions">
+            <div class="sc-primary">${primary}</div>
+            ${menu}
+        </footer>
     `;
-    
+    fillServerCardStats(card, server);
     return card;
 }
 
@@ -1226,57 +1270,19 @@ function createServerCard(server) {
 // Action Logs Live Stream Handler
 function runServerAction(serverId, action) {
     const tAction = t('btn-' + action) || action.toUpperCase();
-    el.modalStreamTitle.textContent = t('modal-stream-title-run').replace('{action}', tAction).replace('{server}', serverId);
-    el.modalStreamStatus.textContent = t('status-connecting');
-    el.modalStreamStatus.className = 'badge badge-warning animate-pulse';
-    el.modalStreamOutput.innerHTML = '';
-    el.modalStreamClose.disabled = true;
-    el.modalStream.classList.remove('hidden');
-    
-    // Connect to Server-Sent Events stream for command execution
-    const url = `/api/servers/${serverId}/action?action=${action}&lang=${state.language}`;
-    const eventSource = new EventSource(url);
-    
-    eventSource.onopen = () => {
-        el.modalStreamStatus.textContent = t('status-running-action');
-        el.modalStreamStatus.className = 'badge badge-warning badge-pulse animate-pulse';
-    };
-    
-    eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-            const line = document.createElement('div');
-            line.className = 'terminal-row';
-            line.textContent = data.text;
-            el.modalStreamOutput.appendChild(line);
-            
-            if (el.modalStreamAutoscroll.checked) {
-                el.modalStreamOutput.scrollTop = el.modalStreamOutput.scrollHeight;
-            }
-        } else if (data.type === 'exit') {
-            const exitCode = data.code;
-            el.modalStreamStatus.textContent = exitCode === 0 ? t('status-success') : t('status-error');
-            el.modalStreamStatus.className = exitCode === 0 ? 'badge badge-success' : 'badge badge-danger';
-            el.modalStreamClose.disabled = false;
-            eventSource.close();
-            
+    runStreamModal({
+        title: t('modal-stream-title-run').replace('{action}', tAction).replace('{server}', serverId),
+        runningText: t('status-running-action'),
+        url: `/api/servers/${encodeURIComponent(serverId)}/action`,
+        body: { action, lang: state.language },
+        errorText: t('modal-stream-err-run'),
+        onExit: () => {
             // If in console tab, refresh console button states
             if (state.lastActiveView === 'console' && state.selectedConsoleServer === serverId) {
                 setTimeout(updateConsoleViewButtons, 1000);
             }
         }
-    };
-    
-    eventSource.onerror = (err) => {
-        const line = document.createElement('div');
-        line.className = 'terminal-row text-danger';
-        line.textContent = t('modal-stream-err-run');
-        el.modalStreamOutput.appendChild(line);
-        el.modalStreamStatus.textContent = t('status-cancelled');
-        el.modalStreamStatus.className = 'badge badge-danger';
-        el.modalStreamClose.disabled = false;
-        eventSource.close();
-    };
+    });
 }
 
 // -------------------------------------------------------------
@@ -1686,16 +1692,18 @@ function renderGamesList() {
         
         let iconHtml = '';
         if (game.icon && game.icon.startsWith('/api/games/icon/')) {
-            iconHtml = `<img class="game-card-icon" src="${game.icon}" alt="${game.name}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`;
+            iconHtml = `<img class="game-card-icon" src="${escapeHtml(game.icon)}" alt="${escapeHtml(game.name)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`;
         }
         
         card.innerHTML = `
             ${iconHtml}
             <div class="game-icon-placeholder game-card-icon-placeholder" style="display: ${game.icon ? 'none' : 'flex'};">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
             </div>
-            <h4>${game.name}</h4>
-            <span>${t('label-script')} ${game.cmd}</span>
+            <div>
+                <h4 title="${escapeHtml(game.name)}">${escapeHtml(game.name)}</h4>
+                <span>${escapeHtml(game.cmd)}</span>
+            </div>
         `;
         card.addEventListener('click', () => selectGameForInstall(game, card));
         el.gamesContainer.appendChild(card);
@@ -1724,60 +1732,24 @@ function selectGameForInstall(game, cardElement) {
 
 function handleGameInstall(e) {
     e.preventDefault();
-    
+
     const gameId = el.installGameId.value;
     const gamesList = state.games.length > 0 ? state.games : popularGames;
     const game = gamesList.find(g => g.id === gameId);
     if (!game) return;
-    
+
     const username = el.installUsername.value;
     const password = el.installPassword.value;
-    
-    el.modalStreamTitle.textContent = t('modal-stream-title-install').replace('{game}', game.name);
-    el.modalStreamStatus.textContent = t('status-creating-user');
-    el.modalStreamStatus.className = 'badge badge-warning animate-pulse';
-    el.modalStreamOutput.innerHTML = '';
-    el.modalStreamClose.disabled = true;
-    el.modalStream.classList.remove('hidden');
-    
-    // Connect to EventSource for install logs
-    const queryParams = `?game=${encodeURIComponent(game.cmd)}&user=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&lang=${state.language}`;
-    const eventSource = new EventSource(`/api/games/install${queryParams}`);
-    
-    eventSource.onopen = () => {
-        el.modalStreamStatus.textContent = t('status-installing-action');
-    };
-    
-    eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-            const line = document.createElement('div');
-            line.className = 'terminal-row';
-            line.textContent = data.text;
-            el.modalStreamOutput.appendChild(line);
-            
-            if (el.modalStreamAutoscroll.checked) {
-                el.modalStreamOutput.scrollTop = el.modalStreamOutput.scrollHeight;
-            }
-        } else if (data.type === 'exit') {
-            const exitCode = data.code;
-            el.modalStreamStatus.textContent = exitCode === 0 ? t('status-success') : t('status-error');
-            el.modalStreamStatus.className = exitCode === 0 ? 'badge badge-success' : 'badge badge-danger';
-            el.modalStreamClose.disabled = false;
-            eventSource.close();
-        }
-    };
-    
-    eventSource.onerror = (err) => {
-        const line = document.createElement('div');
-        line.className = 'terminal-row text-danger';
-        line.textContent = t('modal-stream-err-install');
-        el.modalStreamOutput.appendChild(line);
-        el.modalStreamStatus.textContent = t('status-cancelled');
-        el.modalStreamStatus.className = 'badge badge-danger';
-        el.modalStreamClose.disabled = false;
-        eventSource.close();
-    };
+    const installDirInput = document.getElementById('install-dir');
+    const installDir = installDirInput ? installDirInput.value.trim() : '';
+
+    runStreamModal({
+        title: t('modal-stream-title-install').replace('{game}', game.name),
+        runningText: t('status-installing-action'),
+        url: '/api/games/install',
+        body: { game: game.cmd, user: username, password, install_dir: installDir, lang: state.language },
+        errorText: t('modal-stream-err-install')
+    });
 }
 
 // -------------------------------------------------------------
@@ -1877,11 +1849,16 @@ function drawSystemHistoryChart() {
     const chartWidth = canvas.width - padding.left - padding.right;
     const chartHeight = canvas.height - padding.top - padding.bottom;
     
+    // Canvas cannot resolve CSS variables, so read the theme colours explicitly.
+    const theme = getComputedStyle(document.body);
+    const cssVar = (name, fallback) => theme.getPropertyValue(name).trim() || fallback;
+    const mutedColor = cssVar('--text-muted', '#8b929b');
+
     // Draw Grid Lines & Y Labels
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.strokeStyle = cssVar('--chart-grid', 'rgba(255, 255, 255, 0.06)');
     ctx.lineWidth = 1;
-    ctx.fillStyle = 'var(--text-muted)';
-    ctx.font = '10px var(--font-sans)';
+    ctx.fillStyle = mutedColor;
+    ctx.font = `11px ${cssVar('--font-mono', 'monospace')}`;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     
@@ -1898,7 +1875,7 @@ function drawSystemHistoryChart() {
     }
     
     // Draw lines helper
-    const drawLine = (data, color, fillGradient) => {
+    const drawLine = (data, color) => {
         ctx.beginPath();
         const xStep = len > 1 ? chartWidth / (len - 1) : chartWidth;
         
@@ -1915,32 +1892,25 @@ function drawSystemHistoryChart() {
         
         // Stroke line
         ctx.strokeStyle = color;
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = 1.5;
         ctx.stroke();
         
-        // Fill area
+        // Light area fill
         ctx.lineTo(padding.left + (len - 1) * xStep, padding.top + chartHeight);
         ctx.lineTo(padding.left, padding.top + chartHeight);
         ctx.closePath();
-        ctx.fillStyle = fillGradient;
+        ctx.globalAlpha = 0.08;
+        ctx.fillStyle = color;
         ctx.fill();
+        ctx.globalAlpha = 1;
     };
     
-    // CPU Gradient
-    const cpuGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartHeight);
-    cpuGrad.addColorStop(0, 'rgba(124, 77, 255, 0.15)');
-    cpuGrad.addColorStop(1, 'rgba(124, 77, 255, 0.01)');
-    drawLine(cpuData, '#7c4dff', cpuGrad);
-    
-    // RAM Gradient
-    const ramGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartHeight);
-    ramGrad.addColorStop(0, 'rgba(0, 176, 255, 0.12)');
-    ramGrad.addColorStop(1, 'rgba(0, 176, 255, 0.01)');
-    drawLine(ramData, '#00b0ff', ramGrad);
+    drawLine(cpuData, cssVar('--chart-cpu', '#3fa7a0'));
+    drawLine(ramData, cssVar('--chart-ram', '#c9a24a'));
     
     // Draw X labels (Timestamps, show 5 labels max)
     if (len > 0) {
-        ctx.fillStyle = 'var(--text-muted)';
+        ctx.fillStyle = mutedColor;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         const labelCount = Math.min(len, 5);
@@ -1962,7 +1932,7 @@ function renderMonitorServerTable(serversMetrics) {
     if (!serversMetrics || serversMetrics.length === 0) {
         el.monitorServerTable.innerHTML = `
             <tr>
-                <td colspan="6" class="text-center text-muted" style="padding:2rem;">${t('overview-no-active-processes')}</td>
+                <td colspan="8" class="text-center text-muted" style="padding:2rem;">${t('overview-no-active-processes')}</td>
             </tr>
         `;
         return;
@@ -1979,12 +1949,15 @@ function renderMonitorServerTable(serversMetrics) {
             statusBadge = `<span class="badge badge-warning badge-pulse animate-pulse"><span class="status-dot status-busy"></span> ${statusLabel}</span>`;
         }
         
+        const disk = diskSummary(srv.disk);
         tr.innerHTML = `
-            <td><strong>${srv.name}</strong></td>
-            <td><code>${srv.user}</code></td>
+            <td><strong>${escapeHtml(srv.name)}</strong></td>
+            <td><code>${escapeHtml(srv.user)}</code></td>
             <td>${statusBadge}</td>
-            <td>${srv.status === 'running' ? `${srv.cpu.toFixed(1)} %` : '--'}</td>
-            <td>${srv.status === 'running' ? `${srv.ram.toFixed(2)} GB` : '--'}</td>
+            <td>${srv.status === 'running' && srv.query_online ? `${escapeHtml(srv.num_players)} / ${escapeHtml(srv.max_players)}` : '-'}</td>
+            <td>${srv.status === 'running' ? `${srv.cpu.toFixed(1)} %` : '-'}</td>
+            <td>${srv.status === 'running' ? `${srv.ram.toFixed(2)} GB` : '-'}</td>
+            <td title="${escapeHtml(disk.title)}">${escapeHtml(disk.text)}</td>
             <td>${srv.status === 'running' && srv.pids ? srv.pids.map(p => `<code>${p}</code>`).join(', ') : `<span class="text-muted">${t('overview-none')}</span>`}</td>
         `;
         el.monitorServerTable.appendChild(tr);
@@ -2002,6 +1975,8 @@ async function loadSettingsInfo() {
         
         state.lastSettingsData = data;
         state.currentUser = data.user;
+        if (data.csrf_token) state.csrfToken = data.csrf_token;
+        applyUpdateStatus(data.update);
         
         el.settingsOs.textContent = data.os;
         el.settingsPid.textContent = data.pid;
@@ -2014,8 +1989,13 @@ async function loadSettingsInfo() {
         renderSettingsMode();
         el.settingsMode.className = 'info-value highlight text-success';
         
+        const pathsCard = document.getElementById('settings-server-paths-card');
         if (state.currentUser && state.currentUser.role === 'admin') {
             checkDashboardUpdate(false);
+            if (pathsCard) pathsCard.classList.remove('hidden');
+            loadServerPaths();
+        } else if (pathsCard) {
+            pathsCard.classList.add('hidden');
         }
         
         // Ensure active subtab is visible
@@ -2028,6 +2008,53 @@ async function loadSettingsInfo() {
         loadFirewallStatus();
     } catch (e) {
         console.error(e);
+    }
+}
+
+// -------------------------------------------------------------
+// Additional server directories (e.g. servers on a separate SSD)
+// -------------------------------------------------------------
+
+async function loadServerPaths() {
+    const textarea = document.getElementById('server-paths-input');
+    if (!textarea) return;
+    try {
+        const res = await apiFetch('/api/admin/server-paths');
+        if (res.status !== 200) return;
+        const data = await res.json();
+        textarea.value = (data.paths || []).join('\n');
+    } catch (e) {
+        console.error('Failed to load server paths:', e);
+    }
+}
+
+async function saveServerPaths() {
+    const textarea = document.getElementById('server-paths-input');
+    const message = document.getElementById('server-paths-message');
+    if (!textarea || !message) return;
+    const paths = textarea.value.split('\n').map(p => p.trim()).filter(p => p !== '');
+    message.className = 'info-message';
+    message.textContent = t('saving');
+    try {
+        const res = await apiFetch('/api/admin/server-paths', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths })
+        });
+        const data = await res.json();
+        if (res.status === 200) {
+            textarea.value = (data.paths || []).join('\n');
+            message.className = 'info-message text-success';
+            message.textContent = t('settings-paths-saved');
+            state.servers = [];
+            ensureServersLoaded();
+        } else {
+            message.className = 'info-message text-danger';
+            message.textContent = data.error || t('status-error');
+        }
+    } catch (e) {
+        message.className = 'info-message text-danger';
+        message.textContent = t('connection-error');
     }
 }
 
@@ -2202,6 +2229,7 @@ function handleSettingsServerChange() {
     loadServerStopMode(serverID);
     
     // 1. Generate Systemd template
+    const serverDir = server.dir || `/home/${server.user}`;
     const systemdCode = `[Unit]
 Description=LinuxGSM ${server.name} Server
 After=network.target
@@ -2209,9 +2237,9 @@ After=network.target
 [Service]
 Type=simple
 User=${server.user}
-WorkingDirectory=/home/${server.user}
-ExecStart=/home/${server.user}/${server.script} start
-ExecStop=/home/${server.user}/${server.script} stop
+WorkingDirectory=${serverDir}
+ExecStart=${serverDir}/${server.script} start
+ExecStop=${serverDir}/${server.script} stop
 Restart=always
 RestartSec=10
 
@@ -2222,16 +2250,16 @@ WantedBy=multi-user.target`;
     const isDe = state.language === 'de';
     const cronCode = `# LinuxGSM ${server.name} ${isDe ? 'Geplante Wartungsaufgaben' : 'Scheduled Maintenance Tasks'}
 # 1. ${isDe ? 'Server auf Abstürze überwachen (alle 5 Minuten)' : 'Monitor server for crashes (every 5 minutes)'}
-*/5 * * * * /home/${server.user}/${server.script} monitor > /dev/null 2>&1
+*/5 * * * * ${serverDir}/${server.script} monitor > /dev/null 2>&1
 
 # 2. ${isDe ? 'Automatische Updateprüfung (alle 30 Minuten, startet bei Update neu)' : 'Automatic update check (every 30 minutes, restarts on update)'}
-*/30 * * * * /home/${server.user}/${server.script} update > /dev/null 2>&1
+*/30 * * * * ${serverDir}/${server.script} update > /dev/null 2>&1
 
 # 3. ${isDe ? 'Täglicher Updatecheck & Neustart um 04:30 Uhr nachts' : 'Daily update check & restart at 04:30 AM'}
-30 4 * * * /home/${server.user}/${server.script} force-update > /dev/null 2>&1
+30 4 * * * ${serverDir}/${server.script} force-update > /dev/null 2>&1
 
 # 4. ${isDe ? 'Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)' : 'Weekly update of LinuxGSM itself (every Sunday at 00:00 AM)'}
-0 0 * * 0 /home/${server.user}/${server.script} update-lgsm > /dev/null 2>&1`;
+0 0 * * 0 ${serverDir}/${server.script} update-lgsm > /dev/null 2>&1`;
 
     if (el.templateSystemd) el.templateSystemd.textContent = systemdCode;
     if (el.templateCron) el.templateCron.textContent = cronCode;
@@ -2242,12 +2270,20 @@ WantedBy=multi-user.target`;
         el.settingsBtnOpenClone.classList.toggle('hidden', !isAdmin);
     }
 
-    if (isAdmin) {
+    if (hasPerm('alerts')) {
         setAlertFieldsDisabled(false);
         loadAlertSettings();
     } else {
         resetSettingsAlerts();
     }
+}
+
+// Permission check mirroring the backend RBAC (admins hold every permission).
+function hasPerm(permission) {
+    const u = state.currentUser;
+    if (!u) return false;
+    if (u.role === 'admin') return true;
+    return Array.isArray(u.permissions) && u.permissions.includes(permission);
 }
 
 function setAlertFieldsDisabled(disabled) {
@@ -2442,7 +2478,7 @@ function buildConfigForm(items) {
             gsltBtn.href = 'https://steamcommunity.com/dev/managegameservers';
             gsltBtn.target = '_blank';
             gsltBtn.className = 'btn btn-secondary btn-xs mt-1';
-            gsltBtn.innerHTML = '🔑 Valve GSLT Portal ↗';
+            gsltBtn.textContent = 'Valve GSLT Portal';
             gsltBtn.style.display = 'inline-block';
             gsltBtn.style.marginTop = '0.3rem';
             left.appendChild(gsltBtn);
@@ -2553,11 +2589,32 @@ function serializeJsonForm(originalContent, formValues) {
 
 const i18n = {
     en: {
+        "card-players": "Players",
+        "card-map": "Map",
+        "card-disk": "Disk",
+        "card-more": "More",
+        "card-select": "Select server",
+        "card-edit-tag": "Edit tag",
+        "card-measuring": "measuring",
+        "card-no-query": "The server does not answer queries (not supported or port blocked)",
+        "card-disk-backups": "Backups",
+        "card-disk-free": "Free on disk",
+        "card-disk-shared": "Directory shared with other instances",
+        "card-disk-pending": "Not measured yet",
+        "card-disk-scanning": "Measurement in progress",
+        "card-disk-updated": "Measured at",
+        "card-disk-error": "Incomplete",
+        "overview-col-players": "Players",
+        "overview-col-disk": "Disk",
         "menu-dashboard": "Dashboard",
         "menu-installer": "Game Installer",
         "menu-overview": "Overview",
         "menu-console": "Live Console",
         "menu-settings": "Settings",
+        "menu-update-badge": "Update",
+        "update-badge-title": "Version {version} is available",
+        "update-dev-build": "Development build",
+        "update-dev-build-hint": "This is a build from source. Latest release: {version}. Run the installer without --source/--dev to switch to the release.",
         "menu-logout": "Logout",
         "login-title": "LinuxGSM WebAdmin",
         "login-subtitle": "Sign in to manage your game servers.",
@@ -2601,7 +2658,7 @@ const i18n = {
         "cron-restart-label": "Daily Restart / Force-Update Time",
         "cron-core-label": "Weekly LGSM Core Update",
         "btn-save-schedule": "Save Schedule to Crontab",
-        "modal-players-title": "👥 Active Players List",
+        "modal-players-title": "Players",
         "col-player-name": "Player",
         "col-player-score": "Score",
         "col-player-time": "Playtime",
@@ -2616,7 +2673,7 @@ const i18n = {
         "audit-title": "Security Audit Log",
         "audit-subtitle": "Unfiltered log of administrative actions and user logins.",
         "audit-empty": "No audit entries recorded.",
-        "modal-mods-title": "🔌 Installed Mods & Plugins",
+        "modal-mods-title": "Installed mods and plugins",
         "modal-mods-desc": "Manage installed addons and plugins for this server.",
         "mods-loading": "Loading mods list...",
         "alerts-settings-title": "Notification Alerts Settings",
@@ -2694,6 +2751,9 @@ const i18n = {
         "inst-user-help": "Allowed: lowercase letters, numbers, and underscores (3-16 chars). The user will be created on the host.",
         "inst-pass-placeholder": "Leave blank for random password",
         "inst-pass-help": "Password for SSH/system login. Not required by LinuxGSM itself.",
+        "inst-dir-label": "Installation directory (optional)",
+        "inst-dir-placeholder": "e.g. /mnt/ssd/gameservers/valheim",
+        "inst-dir-help": "Leave empty to install into /home/<user>. The directory must not exist yet; its parent (e.g. the mount point of a second SSD) must exist.",
         "inst-warning-text": "The installation downloads SteamCMD and all game files. This can take 5-30 minutes depending on your internet connection.",
         "card-port": "Port",
         "status-offline": "Offline",
@@ -2783,6 +2843,11 @@ const i18n = {
         "perm-config": "Edit configs",
         "settings-update-title": "Dashboard Updates",
         "settings-update-desc": "Check for new versions of the dashboard on GitHub.",
+        "settings-paths-title": "Additional server directories",
+        "settings-paths-desc": "LinuxGSM servers outside of /home (e.g. on a separate SSD). Each directory and its direct sub directories are scanned. The owner of a directory is the Linux user the server runs as; directories owned by root are ignored.",
+        "settings-paths-label": "One absolute path per line",
+        "settings-paths-save": "Save directories",
+        "settings-paths-saved": "Directories saved. Servers are being rescanned.",
         "settings-update-status-label": "Status:",
         "update-status-latest": "Up to date",
         "settings-update-new-version": "Available Version:",
@@ -2810,6 +2875,8 @@ const i18n = {
         "btn-restore": "Restore",
         "btn-delete": "Delete",
         "perm-backup": "Manage backups",
+        "perm-schedule": "Edit schedules (cron)",
+        "perm-alerts": "Notifications & webhooks",
         "confirm-delete-backup-title": "Delete Backup",
         "confirm-delete-backup-text": "Are you sure you want to delete this backup? This action cannot be undone.",
         "confirm-restore-backup-title": "Restore Backup",
@@ -2924,7 +2991,7 @@ const i18n = {
         "cloudbackup-remote-placeholder": "e.g. gdrive or s3",
         "cloudbackup-path-label": "Target Directory Path",
         "cloudbackup-path-placeholder": "backups/linuxgsm",
-        "modal-wipe-title": "🌲 Rust Server Wipe",
+        "modal-wipe-title": "Rust server wipe",
         "modal-wipe-warning": "A wipe resets the world of the server. Ensure you have created a backup beforehand.",
         "modal-wipe-type-label": "Select Wipe Type:",
         "modal-wipe-map-title": "Map Wipe (map-wipe)",
@@ -2932,7 +2999,7 @@ const i18n = {
         "modal-wipe-full-title": "Full Wipe (full-wipe)",
         "modal-wipe-full-desc": "Complete reset: Deletes map, buildings, and all player blueprints.",
         "modal-wipe-btn-submit": "Execute Wipe Now",
-        "modal-clone-title": "👥 Clone Multi-Instance",
+        "modal-clone-title": "Clone instance",
         "modal-clone-desc": "Creates a new instance with shared game binaries (symlink), but separate configuration (e.g. for a secondary server on different ports).",
         "modal-clone-suffix-label": "Instance Suffix (Name):",
         "modal-clone-suffix-placeholder": "2",
@@ -2955,11 +3022,32 @@ const i18n = {
         "settings-select-server-prompt-alerts": "Please select a server above to configure notification alerts."
     },
     de: {
+        "card-players": "Spieler",
+        "card-map": "Karte",
+        "card-disk": "Speicher",
+        "card-more": "Mehr",
+        "card-select": "Server auswählen",
+        "card-edit-tag": "Tag bearbeiten",
+        "card-measuring": "wird gemessen",
+        "card-no-query": "Der Server beantwortet keine Abfragen (nicht unterstützt oder Port blockiert)",
+        "card-disk-backups": "Backups",
+        "card-disk-free": "Frei auf dem Datenträger",
+        "card-disk-shared": "Verzeichnis wird mit anderen Instanzen geteilt",
+        "card-disk-pending": "Noch nicht gemessen",
+        "card-disk-scanning": "Messung läuft",
+        "card-disk-updated": "Gemessen um",
+        "card-disk-error": "Unvollständig",
+        "overview-col-players": "Spieler",
+        "overview-col-disk": "Speicher",
         "menu-dashboard": "Dashboard",
         "menu-installer": "Spiele-Installer",
         "menu-overview": "Übersicht",
         "menu-console": "Live-Konsole",
         "menu-settings": "Einstellungen",
+        "menu-update-badge": "Update",
+        "update-badge-title": "Version {version} ist verfügbar",
+        "update-dev-build": "Entwicklungs-Build",
+        "update-dev-build-hint": "Dies ist ein selbst kompilierter Build. Aktuelles Release: {version}. Den Installer ohne --source/--dev ausführen, um zum Release zu wechseln.",
         "menu-logout": "Abmelden",
         "login-title": "LinuxGSM WebAdmin",
         "login-subtitle": "Melde dich an, um deine Gameserver zu verwalten.",
@@ -3003,7 +3091,7 @@ const i18n = {
         "cron-restart-label": "Täglicher Neustart / Force-Update",
         "cron-core-label": "Wöchentliches LGSM Update",
         "btn-save-schedule": "Zeitplan in Crontab speichern",
-        "modal-players-title": "👥 Live-Spielerliste",
+        "modal-players-title": "Spieler",
         "col-player-name": "Spieler",
         "col-player-score": "Score",
         "col-player-time": "Spieldauer",
@@ -3018,7 +3106,7 @@ const i18n = {
         "audit-title": "Sicherheits Audit-Log",
         "audit-subtitle": "Ungefiltertes Protokoll aller administrativen Aktionen und System-Anmeldungen.",
         "audit-empty": "Keine Audit-Einträge vorhanden.",
-        "modal-mods-title": "🔌 Installierte Mods & Plugins",
+        "modal-mods-title": "Installierte Mods und Plugins",
         "modal-mods-desc": "Verwalte installierte Addons und Plugins für diesen Server.",
         "mods-loading": "Lade Mod-Liste...",
         "alerts-settings-title": "Benachrichtigungs-Einstellungen",
@@ -3106,6 +3194,9 @@ const i18n = {
         "inst-user-help": "Erlaubt sind Kleinbuchstaben, Zahlen und Unterstriche (3-16 Zeichen). Der Benutzer wird auf dem Server angelegt.",
         "inst-pass-placeholder": "Frei lassen für zufälliges Passwort",
         "inst-pass-help": "Passwort für den SSH/System-Login des Benutzers. Wird für LinuxGSM selbst nicht benötigt.",
+        "inst-dir-label": "Installationsverzeichnis (optional)",
+        "inst-dir-placeholder": "z.B. /mnt/ssd/gameserver/valheim",
+        "inst-dir-help": "Leer lassen für /home/<benutzer>. Das Verzeichnis darf noch nicht existieren, der übergeordnete Ordner (z.B. der Mountpoint einer zweiten SSD) muss existieren.",
         "inst-warning-text": "Die Installation lädt SteamCMD und alle Spieldateien herunter. Dies kann je nach Spiel und Internetleitung 5-30 Minuten dauern.",
         "card-port": "Port",
         "status-offline": "Offline",
@@ -3193,6 +3284,11 @@ const i18n = {
         "perm-config": "Configs bearbeiten",
         "settings-update-title": "Dashboard-Updates",
         "settings-update-desc": "Überprüfe, ob neue Versionen des Dashboards auf GitHub verfügbar sind.",
+        "settings-paths-title": "Zusätzliche Server-Verzeichnisse",
+        "settings-paths-desc": "LinuxGSM-Server außerhalb von /home (z.B. auf einer separaten SSD). Jedes Verzeichnis und seine direkten Unterordner werden durchsucht. Der Besitzer eines Verzeichnisses ist der Linux-Benutzer, unter dem der Server läuft; Verzeichnisse von root werden ignoriert.",
+        "settings-paths-label": "Ein absoluter Pfad pro Zeile",
+        "settings-paths-save": "Verzeichnisse speichern",
+        "settings-paths-saved": "Verzeichnisse gespeichert. Server werden neu eingelesen.",
         "settings-update-status-label": "Status:",
         "update-status-latest": "Aktuell",
         "settings-update-new-version": "Verfügbare Version:",
@@ -3220,6 +3316,8 @@ const i18n = {
         "btn-restore": "Wiederherstellen",
         "btn-delete": "Löschen",
         "perm-backup": "Backups verwalten",
+        "perm-schedule": "Zeitpläne bearbeiten (Cron)",
+        "perm-alerts": "Benachrichtigungen & Webhooks",
         "confirm-delete-backup-title": "Backup löschen",
         "confirm-delete-backup-text": "Möchtest du dieses Backup wirklich löschen? Dieser Schritt kann nicht rückgängig gemacht werden.",
         "confirm-restore-backup-title": "Backup wiederherstellen",
@@ -3334,7 +3432,7 @@ const i18n = {
         "cloudbackup-remote-placeholder": "z. B. gdrive oder s3",
         "cloudbackup-path-label": "Ziel-Ordnerpfad",
         "cloudbackup-path-placeholder": "backups/linuxgsm",
-        "modal-wipe-title": "🌲 Rust Server Wipe",
+        "modal-wipe-title": "Rust-Server-Wipe",
         "modal-wipe-warning": "Ein Wipe setzt die Welt des Servers zurück. Stelle sicher, dass du vorher ein Backup angelegt hast.",
         "modal-wipe-type-label": "Wipe-Typ wählen:",
         "modal-wipe-map-title": "Map Wipe (map-wipe)",
@@ -3342,7 +3440,7 @@ const i18n = {
         "modal-wipe-full-title": "Full Wipe (full-wipe)",
         "modal-wipe-full-desc": "Kompletter Reset: Löscht Map, Gebäude und alle Spieler-Blueprints.",
         "modal-wipe-btn-submit": "Wipe jetzt ausführen",
-        "modal-clone-title": "👥 Multi-Instanz klonen",
+        "modal-clone-title": "Instanz klonen",
         "modal-clone-desc": "Erstellt eine neue Instanz mit geteilten Serverdateien (Symlink), aber eigener Konfiguration (z. B. für einen zweiten Server auf anderen Ports).",
         "modal-clone-suffix-label": "Instanz-Suffix (Name):",
         "modal-clone-suffix-placeholder": "2",
@@ -3525,7 +3623,7 @@ async function syncGamesList() {
     el.gamesSyncProgressText.textContent = t('games-sync-initializing');
     
     try {
-        const res = await apiFetch('/api/games/sync');
+        const res = await apiFetch('/api/games/sync', { method: 'POST' });
         if (res.status !== 200) {
             throw new Error('Sync endpoint failed');
         }
@@ -3620,6 +3718,33 @@ async function confirmDeleteServer() {
 // -------------------------------------------------------------
 let latestTagName = '';
 
+// -------------------------------------------------------------
+// Update notice (sidebar badge for administrators)
+// -------------------------------------------------------------
+
+let updateStatusInterval = null;
+
+function applyUpdateStatus(update) {
+    const badge = document.getElementById('menu-update-badge');
+    if (!badge) return;
+    const show = !!(update && update.has_update && state.currentUser && state.currentUser.role === 'admin');
+    badge.classList.toggle('hidden', !show);
+    badge.title = show ? t('update-badge-title').replace('{version}', update.latest_version) : '';
+}
+
+// The server checks GitHub every few hours; the page only re-reads that cached result.
+function startUpdateStatusPolling() {
+    if (updateStatusInterval || !state.currentUser || state.currentUser.role !== 'admin') return;
+    updateStatusInterval = setInterval(async () => {
+        try {
+            const res = await fetch('/api/system/info');
+            if (res.status === 200) applyUpdateStatus((await res.json()).update);
+        } catch (e) {
+            // offline: keep the current state
+        }
+    }, 30 * 60 * 1000);
+}
+
 async function checkDashboardUpdate(manual = false) {
     const statusText = document.getElementById('update-status-text');
     const detailsRow = document.getElementById('update-details-row');
@@ -3637,6 +3762,18 @@ async function checkDashboardUpdate(manual = false) {
     try {
         const res = await apiFetch('/api/admin/update/check');
         const data = await res.json();
+        applyUpdateStatus(data);
+        if (data.development_build) {
+            statusText.textContent = t('update-dev-build');
+            statusText.className = 'info-value text-muted';
+            detailsRow.classList.add('hidden');
+            btnTrigger.classList.add('hidden');
+            if (manual) {
+                messageArea.textContent = t('update-dev-build-hint').replace('{version}', data.latest_version || '-');
+                messageArea.className = 'info-message text-muted';
+            }
+            return;
+        }
         
         if (data.has_update) {
             statusText.textContent = state.language === 'de' ? 'Update verfügbar' : 'Update Available';
@@ -3684,7 +3821,7 @@ async function triggerDashboardUpdate() {
         return;
     }
     
-    messageArea.textContent = state.language === 'de' ? 'Update wird lokal kompiliert... Bitte warten.' : 'Update compiling locally... Please wait.';
+    messageArea.textContent = state.language === 'de' ? 'Update wird heruntergeladen und geprüft... Bitte warten.' : 'Downloading and verifying the update... Please wait.';
     messageArea.className = 'info-message text-warning';
     btnTrigger.disabled = true;
     btnCheck.disabled = true;
@@ -3748,7 +3885,7 @@ async function loadUsersList() {
             const servers = user.role === 'admin' ? 
                 `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Alle Server' : 'All Servers'}</span>` : 
                 (user.servers && user.servers.length > 0 ? 
-                    user.servers.map(s => `<code style="font-size: 0.8rem;">${s}</code>`).join(', ') : 
+                    user.servers.map(s => `<code style="font-size: 0.8rem;">${escapeHtml(s)}</code>`).join(', ') : 
                     `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Keine' : 'None'}</span>`);
                     
             const perms = user.role === 'admin' ? 
@@ -3764,23 +3901,25 @@ async function loadUsersList() {
                             if (p === 'config') label = 'Configs';
                             if (p === 'files') label = 'Dateimanager';
                             if (p === 'backup') label = 'Backups';
+                            if (p === 'schedule') label = 'Zeitpläne';
+                            if (p === 'alerts') label = 'Benachrichtigungen';
                         }
-                        return `<span class="badge badge-pulse" style="font-size: 0.7rem; background: rgba(255,255,255,0.05); color: var(--text-color); border: 1px solid var(--border-color);">${label}</span>`;
+                        return `<span class="badge badge-pulse" style="font-size: 0.7rem; background: rgba(255,255,255,0.05); color: var(--text-color); border: 1px solid var(--border-color);">${escapeHtml(label)}</span>`;
                     }).join(' ') : 
                     `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Keine' : 'None'}</span>`);
             
             const isSelf = state.currentUser && state.currentUser.username === user.username;
             const deleteBtn = isSelf ? 
                 `<button class="btn btn-danger btn-sm" disabled style="opacity: 0.4;">${state.language === 'de' ? 'Löschen' : 'Delete'}</button>` : 
-                `<button class="btn btn-danger btn-sm" onclick="deleteUser('${user.username}')">${state.language === 'de' ? 'Löschen' : 'Delete'}</button>`;
+                `<button class="btn btn-danger btn-sm" onclick="deleteUser(${jsArg(user.username)})">${state.language === 'de' ? 'Löschen' : 'Delete'}</button>`;
                 
             tr.innerHTML = `
-                <td style="padding: 0.75rem;"><strong>${user.username}</strong> ${isSelf ? `<small class="text-muted">(${state.language === 'de' ? 'Du' : 'You'})</small>` : ''}</td>
+                <td style="padding: 0.75rem;"><strong>${escapeHtml(user.username)}</strong> ${isSelf ? `<small class="text-muted">(${state.language === 'de' ? 'Du' : 'You'})</small>` : ''}</td>
                 <td style="padding: 0.75rem;">${roleBadge}</td>
                 <td style="padding: 0.75rem;">${servers}</td>
                 <td style="padding: 0.75rem;">${perms}</td>
                 <td style="padding: 0.75rem; text-align: right; display: flex; gap: 0.5rem; justify-content: flex-end;">
-                    <button class="btn btn-secondary btn-sm" onclick="openEditUserModal('${user.username}')">${state.language === 'de' ? 'Bearbeiten' : 'Edit'}</button>
+                    <button class="btn btn-secondary btn-sm" onclick="openEditUserModal(${jsArg(user.username)})">${state.language === 'de' ? 'Bearbeiten' : 'Edit'}</button>
                     ${deleteBtn}
                 </td>
             `;
@@ -3817,8 +3956,8 @@ async function populateUserServerCheckboxes() {
                 label.style.fontSize = '0.85rem';
                 
                 label.innerHTML = `
-                    <input type="checkbox" name="user-assigned-servers" value="${srv.id}">
-                    <span>${srv.name} (<code>${srv.user}</code>)</span>
+                    <input type="checkbox" name="user-assigned-servers" value="${escapeHtml(srv.id)}">
+                    <span>${escapeHtml(srv.name)} (<code>${escapeHtml(srv.user)}</code>)</span>
                 `;
                 listDiv.appendChild(label);
             });
@@ -4156,11 +4295,11 @@ async function loadBackupsList() {
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
                             ${t('btn-download')}
                         </a>
-                        <button class="btn btn-warning btn-sm" onclick="confirmRestoreBackup('${serverId}', '${escapeJs(backup.name)}')" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                        <button class="btn btn-warning btn-sm" onclick="confirmRestoreBackup(${jsArg(serverId)}, ${jsArg(backup.name)})" style="display: inline-flex; align-items: center; gap: 0.25rem;">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0-.57-8.38l5.67-5.67"></path></svg>
                             ${t('btn-restore')}
                         </button>
-                        <button class="btn btn-danger btn-sm" onclick="confirmDeleteBackup('${serverId}', '${escapeJs(backup.name)}')" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                        <button class="btn btn-danger btn-sm" onclick="confirmDeleteBackup(${jsArg(serverId)}, ${jsArg(backup.name)})" style="display: inline-flex; align-items: center; gap: 0.25rem;">
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                             ${t('btn-delete')}
                         </button>
@@ -4331,7 +4470,8 @@ async function handleBackupsUpload(e) {
         alert(t('backups-upload-error'));
     });
 
-    xhr.open('POST', `/api/servers/${serverId}/backups/upload`);
+    xhr.open('POST', `/api/servers/${encodeURIComponent(serverId)}/backups/upload`);
+    xhr.setRequestHeader('X-CSRF-Token', getCsrfToken());
     xhr.send(formData);
 }
 
@@ -4372,54 +4512,14 @@ function confirmRestoreBackup(serverId, filename) {
 }
 
 function runBackupRestoreAction(serverId, filename) {
-    const tAction = state.language === 'de' ? 'Wiederherstellung' : 'Restore';
-    el.modalStreamTitle.textContent = (state.language === 'de' ? `Backup-Wiederherstellung für {server}` : `Backup Restore for {server}`).replace('{server}', serverId);
-    el.modalStreamStatus.textContent = t('status-connecting');
-    el.modalStreamStatus.className = 'badge badge-warning animate-pulse';
-    el.modalStreamOutput.innerHTML = '';
-    el.modalStreamClose.disabled = true;
-    el.modalStream.classList.remove('hidden');
-    
-    const url = `/api/servers/${serverId}/backups/restore?file=${encodeURIComponent(filename)}&lang=${state.language}`;
-    const eventSource = new EventSource(url);
-    
-    eventSource.onopen = () => {
-        el.modalStreamStatus.textContent = state.language === 'de' ? 'Wiederherstellung läuft...' : 'Restoring backup...';
-        el.modalStreamStatus.className = 'badge badge-warning badge-pulse animate-pulse';
-    };
-    
-    eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-            const line = document.createElement('div');
-            line.className = 'terminal-row';
-            line.textContent = data.text;
-            el.modalStreamOutput.appendChild(line);
-            
-            if (el.modalStreamAutoscroll.checked) {
-                el.modalStreamOutput.scrollTop = el.modalStreamOutput.scrollHeight;
-            }
-        } else if (data.type === 'exit') {
-            const exitCode = data.code;
-            el.modalStreamStatus.textContent = exitCode === 0 ? t('status-success') : t('status-error');
-            el.modalStreamStatus.className = exitCode === 0 ? 'badge badge-success' : 'badge badge-danger';
-            el.modalStreamClose.disabled = false;
-            eventSource.close();
-            
-            loadBackupsList();
-        }
-    };
-    
-    eventSource.onerror = (err) => {
-        const line = document.createElement('div');
-        line.className = 'terminal-row text-danger';
-        line.textContent = state.language === 'de' ? 'Fehler beim Verbinden mit der Wiederherstellung.' : 'Error connecting to the restore stream.';
-        el.modalStreamOutput.appendChild(line);
-        el.modalStreamStatus.textContent = t('status-cancelled');
-        el.modalStreamStatus.className = 'badge badge-danger';
-        el.modalStreamClose.disabled = false;
-        eventSource.close();
-    };
+    runStreamModal({
+        title: (state.language === 'de' ? `Backup-Wiederherstellung für {server}` : `Backup Restore for {server}`).replace('{server}', serverId),
+        runningText: state.language === 'de' ? 'Wiederherstellung läuft...' : 'Restoring backup...',
+        url: `/api/servers/${encodeURIComponent(serverId)}/backups/restore`,
+        body: { file: filename, lang: state.language },
+        errorText: state.language === 'de' ? 'Fehler bei der Wiederherstellung.' : 'Restore failed.',
+        onExit: () => loadBackupsList()
+    });
 }
 
 function formatBytes(bytes) {
@@ -4431,11 +4531,14 @@ function formatBytes(bytes) {
 }
 
 function escapeHtml(str) {
-    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    return String(str ?? '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
-function escapeJs(str) {
-    return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
+// Encodes a value as JavaScript string literal for use inside an inline event handler attribute
+// (onclick="fn(${jsArg(value)})"). The browser HTML-decodes attribute values before the JS is
+// parsed, so the value must be JSON-encoded first and HTML-escaped second.
+function jsArg(value) {
+    return escapeHtml(JSON.stringify(String(value ?? '')));
 }
 
 function toggleContainer(checkbox, container) {
@@ -4735,13 +4838,13 @@ function renderConsoleGameActions(server) {
                 <span>${isDe ? 'Full Wipe' : 'Full Wipe'}</span>
             </button>
             <button id="game-act-map-compressor" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>📦 ${isDe ? 'Map Komprimieren' : 'Compress Map'}</span>
+                <span>${isDe ? 'Map komprimieren' : 'Compress map'}</span>
             </button>
             <button id="game-act-mods-install" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>🔌 ${isDe ? 'Oxide / uMod Installieren' : 'Install Oxide / uMod'}</span>
+                <span>${isDe ? 'Oxide / uMod installieren' : 'Install Oxide / uMod'}</span>
             </button>
             <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>🔄 ${isDe ? 'Oxide / uMod Updaten' : 'Update Oxide / uMod'}</span>
+                <span>${isDe ? 'Oxide / uMod aktualisieren' : 'Update Oxide / uMod'}</span>
             </button>
         `;
         clickHandlers.push(
@@ -4757,7 +4860,7 @@ function renderConsoleGameActions(server) {
         buttonsHtml += `
             <button id="game-act-ts3-pw" class="btn btn-warning btn-sm" ${disabledAttr}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                <span>🔑 ${isDe ? 'Query Admin-Passwort zurücksetzen' : 'Reset Query Admin Password'}</span>
+                <span>${isDe ? 'Query-Admin-Passwort zurücksetzen' : 'Reset query admin password'}</span>
             </button>
         `;
         clickHandlers.push({
@@ -4770,14 +4873,14 @@ function renderConsoleGameActions(server) {
     else if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih', 'cod4', 'sven', 'xon'].includes(game)) {
         buttonsHtml += `
             <button id="game-act-fastdl" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>⚡ ${isDe ? 'FastDL Web-Sync (Bzip2)' : 'FastDL Web Sync (Bzip2)'}</span>
+                <span>${isDe ? 'FastDL erzeugen (bzip2)' : 'Build FastDL (bzip2)'}</span>
             </button>
             <div style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;">
                 <span style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.35rem;">
-                    ⚡ <strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${window.location.protocol}//${window.location.host}/fastdl/${server.id}/</code>
+                    <strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${window.location.protocol}//${window.location.host}/fastdl/${server.id}/</code>
                 </span>
                 <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText('${window.location.protocol}//${window.location.host}/fastdl/${server.id}/'); alert(state.language === 'de' ? 'FastDL URL in die Zwischenablage kopiert!' : 'FastDL URL copied to clipboard!');">
-                    📋 ${isDe ? 'Kopieren' : 'Copy'}
+                    ${isDe ? 'Kopieren' : 'Copy'}
                 </button>
             </div>
         `;
@@ -4786,10 +4889,10 @@ function renderConsoleGameActions(server) {
         if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih'].includes(game)) {
             buttonsHtml += `
                 <button id="game-act-mods-install" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                    <span>🔌 ${isDe ? 'Metamod / SourceMod Installieren' : 'Install Metamod / SourceMod'}</span>
+                    <span>${isDe ? 'Metamod / SourceMod installieren' : 'Install Metamod / SourceMod'}</span>
                 </button>
                 <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                    <span>🔄 ${isDe ? 'Metamod / SourceMod Updaten' : 'Update Metamod / SourceMod'}</span>
+                    <span>${isDe ? 'Metamod / SourceMod aktualisieren' : 'Update Metamod / SourceMod'}</span>
                 </button>
             `;
             clickHandlers.push(
@@ -4802,7 +4905,7 @@ function renderConsoleGameActions(server) {
     else if (game === 'mta' || game === 'multitheftauto') {
         buttonsHtml += `
             <button id="game-act-mta-resources" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>📦 ${isDe ? 'MTA Default Resources Installieren' : 'Install MTA Default Resources'}</span>
+                <span>${isDe ? 'MTA-Standardressourcen installieren' : 'Install MTA default resources'}</span>
             </button>
         `;
         clickHandlers.push({ id: 'game-act-mta-resources', action: 'install-default-resources' });
@@ -4823,10 +4926,10 @@ function renderConsoleGameActions(server) {
 
         buttonsHtml += `
             <button id="game-act-mods-install" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>🔌 ${isDe ? `${modFrameworkLabel} Installieren` : `Install ${modFrameworkLabel}`}</span>
+                <span>${isDe ? `${modFrameworkLabel} installieren` : `Install ${modFrameworkLabel}`}</span>
             </button>
             <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>🔄 ${isDe ? `${modFrameworkLabel} Updaten` : `Update ${modFrameworkLabel}`}</span>
+                <span>${isDe ? `${modFrameworkLabel} aktualisieren` : `Update ${modFrameworkLabel}`}</span>
             </button>
         `;
         clickHandlers.push(
@@ -4838,7 +4941,7 @@ function renderConsoleGameActions(server) {
     else if (['ut2k4', 'ut3', 'ut99'].includes(game)) {
         buttonsHtml += `
             <button id="game-act-map-compressor" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>📦 ${isDe ? 'UT Map Komprimieren (Redirect)' : 'Compress UT Maps (Redirect)'}</span>
+                <span>${isDe ? 'UT-Maps komprimieren (Redirect)' : 'Compress UT maps (redirect)'}</span>
             </button>
         `;
         clickHandlers.push({ id: 'game-act-map-compressor', action: 'map-compressor' });
@@ -4904,27 +5007,37 @@ async function runBulkAction(action) {
 function openPlayersModal(serverId) {
     const server = state.servers.find(s => s.id === serverId);
     if (!server || !el.modalPlayers) return;
+    const isDe = state.language === 'de';
 
-    el.modalPlayersTitle.textContent = `👥 ${server.name} - ${state.language === 'de' ? 'Live-Spielerliste' : 'Live Players'}`;
-    
+    el.modalPlayersTitle.textContent = `${server.name} - ${isDe ? 'Spieler' : 'Players'}`;
+
     const query = server.query_data || {};
-    el.modalPlayersInfo.innerHTML = `<strong>Map:</strong> ${escapeHtml(query.map || 'N/A')} &nbsp;|&nbsp; <strong>${state.language === 'de' ? 'Spieler' : 'Players'}:</strong> ${query.numplayers || 0} / ${query.maxplayers || 0} &nbsp;|&nbsp; <strong>Ping:</strong> ${query.ping || 0}ms`;
+    const updated = query.updated ? new Date(query.updated).toLocaleTimeString() : '-';
+    el.modalPlayersInfo.innerHTML = `
+        <span><strong>${isDe ? 'Karte' : 'Map'}:</strong> ${escapeHtml(query.map || '-')}</span>
+        <span><strong>${isDe ? 'Spieler' : 'Players'}:</strong> ${escapeHtml(query.num_players || 0)} / ${escapeHtml(query.max_players || 0)}${query.bots ? ` (${escapeHtml(query.bots)} Bots)` : ''}</span>
+        <span><strong>Ping:</strong> ${escapeHtml(query.ping || 0)} ms</span>
+        <span class="text-muted">${isDe ? 'Stand' : 'Updated'}: ${escapeHtml(updated)}</span>`;
 
     el.modalPlayersTbody.innerHTML = '';
     const players = query.players || [];
-    
+    const canKick = hasUserPermission('console');
+
     if (players.length === 0) {
-        el.modalPlayersTbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding:1.5rem;">${state.language === 'de' ? 'Keine aktiven Spieler online.' : 'No active players online.'}</td></tr>`;
+        const msg = query.num_players > 0
+            ? (isDe ? 'Der Server liefert keine Spielernamen.' : 'The server does not report player names.')
+            : (isDe ? 'Keine Spieler online.' : 'No players online.');
+        el.modalPlayersTbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding:1.5rem;">${msg}</td></tr>`;
     } else {
         players.forEach(p => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><strong>${escapeHtml(p.name)}</strong></td>
-                <td>${p.score || 0}</td>
-                <td>${escapeHtml(p.time || '--')}</td>
-                <td>
-                    <button class="btn btn-warning btn-sm" onclick="sendRconCommand('${server.id}', 'kick ${escapeHtml(p.name)}')" style="padding:0.2rem 0.4rem; font-size:0.75rem;">Kick</button>
-                    <button class="btn btn-danger btn-sm" onclick="sendRconCommand('${server.id}', 'ban ${escapeHtml(p.name)}')" style="padding:0.2rem 0.4rem; font-size:0.75rem;">Ban</button>
+                <td>${escapeHtml(p.score || 0)}</td>
+                <td>${escapeHtml(p.time || '-')}</td>
+                <td class="text-right">${canKick ? `
+                    <button class="btn btn-secondary btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg('kick ' + p.name)})">Kick</button>
+                    <button class="btn btn-danger btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg('ban ' + p.name)})">Ban</button>` : ''}
                 </td>
             `;
             el.modalPlayersTbody.appendChild(tr);
@@ -5073,7 +5186,7 @@ function openModsModal(server) {
             } else {
                 let html = '<ul class="list-group">';
                 installed.forEach(mod => {
-                    html += `<li class="list-group-item flex-between align-center"><span>🔌 <strong>${escapeHtml(mod)}</strong></span></li>`;
+                    html += `<li class="list-group-item flex-between align-center"><span class="mono">${escapeHtml(mod)}</span></li>`;
                 });
                 html += '</ul>';
                 el.modalModsList.innerHTML = html;
@@ -5183,7 +5296,7 @@ async function loadFilesTree() {
         }
     } catch (e) {
         console.error('File manager error:', e);
-        el.filesTableBody.innerHTML = `<tr><td colspan="4" class="text-danger text-center py-4">${e.message}</td></tr>`;
+        el.filesTableBody.innerHTML = `<tr><td colspan="4" class="text-danger text-center py-4">${escapeHtml(e.message)}</td></tr>`;
     }
 }
 
@@ -5194,7 +5307,7 @@ function renderFilesTable(files) {
         const backTr = document.createElement('tr');
         backTr.innerHTML = `
             <td colspan="4" class="font-mono text-sm cursor-pointer hover:bg-black-10 py-2" onclick="navigateFilesUp()">
-                📁 <strong>.. (Parent Directory)</strong>
+                <strong>..</strong> <span class="text-muted">(${state.language === 'de' ? 'übergeordneter Ordner' : 'parent directory'})</span>
             </td>
         `;
         el.filesTableBody.appendChild(backTr);
@@ -5209,12 +5322,12 @@ function renderFilesTable(files) {
 
     files.forEach(f => {
         const tr = document.createElement('tr');
-        const icon = f.is_dir ? '📁' : '📄';
+        const icon = f.is_dir ? '<span class="file-kind is-dir">DIR</span>' : '<span class="file-kind">FILE</span>';
         const sizeText = f.is_dir ? '--' : formatBytes(f.size);
 
         tr.innerHTML = `
             <td>
-                <span class="font-mono cursor-pointer" onclick="${f.is_dir ? `openFileDir('${escapeHtml(f.path)}')` : `openFileEditor('${escapeHtml(f.path)}')`}">
+                <span class="font-mono cursor-pointer" onclick="${f.is_dir ? `openFileDir(${jsArg(f.path)})` : `openFileEditor(${jsArg(f.path)})`}">
                     ${icon} <strong>${escapeHtml(f.name)}</strong>
                 </span>
             </td>
@@ -5222,7 +5335,7 @@ function renderFilesTable(files) {
             <td class="text-sm text-muted">${escapeHtml(f.mod_time)}</td>
             <td>
                 ${f.is_dir ? '' : `
-                    <button class="btn btn-secondary btn-xs" onclick="openFileEditor('${escapeHtml(f.path)}')">Edit</button>
+                    <button class="btn btn-secondary btn-xs" onclick="openFileEditor(${jsArg(f.path)})">Edit</button>
                     <a href="/api/servers/${currentFilesServer}/files/download?path=${encodeURIComponent(f.path)}" class="btn btn-secondary btn-xs" download style="text-decoration:none;">Download</a>
                 `}
             </td>
@@ -5575,35 +5688,13 @@ async function handleCloudBackupSave(e) {
 
 function handleCloudBackupSync() {
     if (!state.selectedBackupServer) return;
-    openActionModal('rclone sync', state.selectedBackupServer);
-    actionEventSource = new EventSource(`/api/servers/${state.selectedBackupServer}/cloudbackup/sync?lang=${state.language}`);
-    actionEventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-            appendActionLog(data.text);
-        } else if (data.type === 'exit') {
-            actionEventSource.close();
-            actionEventSource = null;
-            if (data.code === 0) {
-                el.actionModalStatus.textContent = t('action-success');
-                el.actionModalStatus.className = 'status-badge status-online';
-            } else {
-                el.actionModalStatus.textContent = t('action-failed');
-                el.actionModalStatus.className = 'status-badge status-offline';
-            }
-            el.btnActionClose.disabled = false;
-        }
-    };
-    actionEventSource.onerror = () => {
-        if (actionEventSource) {
-            actionEventSource.close();
-            actionEventSource = null;
-        }
-        appendActionLog('\n' + t('action-failed'));
-        el.actionModalStatus.textContent = t('action-failed');
-        el.actionModalStatus.className = 'status-badge status-offline';
-        el.btnActionClose.disabled = false;
-    };
+    runStreamModal({
+        title: `rclone sync - ${state.selectedBackupServer}`,
+        runningText: t('status-running-action'),
+        url: `/api/servers/${encodeURIComponent(state.selectedBackupServer)}/cloudbackup/sync`,
+        body: { lang: state.language },
+        errorText: t('action-failed')
+    });
 }
 
 window.openCloneModal = openCloneModal;

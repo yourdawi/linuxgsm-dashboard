@@ -1,0 +1,80 @@
+name: Release
+
+# Runs for stable version tags (v1.2.3), no matter whether the tag was pushed (git / GitHub
+# Desktop) or created together with a release on the GitHub website.
+# Tags that do not point to a commit on main fail before anything is built or signed, so nothing
+# from the dev branch can ever become an update.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # RELEASE_SIGNING_KEY lives in this environment; restrict it to tags matching v*.
+    environment: release
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the tag is a stable release on main
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$TAG is not a stable release tag (vX.Y.Z)"; exit 1
+          fi
+          git fetch --no-tags origin main
+          commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "::error::Tag $TAG points to $commit, which is not on main. Merge the pull request into main first and tag the merge commit."
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Test
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build
+        run: |
+          VERSION="${TAG#v}"
+          mkdir dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.Version=$VERSION" \
+              -o "dist/lgsm-dashboard-linux-$arch" .
+          done
+          test "$(./dist/lgsm-dashboard-linux-amd64 -version)" = "$VERSION"
+          (cd dist && sha256sum lgsm-dashboard-linux-* > SHA256SUMS)
+
+      - name: Sign checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          go run ./tools/releasekey check-embedded -file main.go -file install-dashboard.sh
+          go run ./tools/releasekey sign -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # Release was created on the website: keep its text, attach the signed files.
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --generate-notes --title "$TAG"
+          fi

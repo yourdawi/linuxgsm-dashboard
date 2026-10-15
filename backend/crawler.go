@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 type GameCrawlItem struct {
@@ -32,13 +33,13 @@ type GameCrawler struct {
 func NewGameCrawler(configDir string) *GameCrawler {
 	cachePath := filepath.Join(configDir, "games_cache.json")
 	iconsDir := filepath.Join(configDir, "icons")
-	
+
 	crawler := &GameCrawler{
 		status:    "idle",
 		cachePath: cachePath,
 		iconsDir:  iconsDir,
 	}
-	
+
 	// Load cached games on startup if file exists
 	crawler.LoadCache()
 	return crawler
@@ -47,13 +48,13 @@ func NewGameCrawler(configDir string) *GameCrawler {
 func (gc *GameCrawler) LoadCache() {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
-	
+
 	file, err := os.Open(gc.cachePath)
 	if err != nil {
 		return
 	}
 	defer file.Close()
-	
+
 	var games []GameCrawlItem
 	if err := json.NewDecoder(file).Decode(&games); err == nil {
 		gc.games = games
@@ -99,7 +100,7 @@ func (gc *GameCrawler) StartSync() {
 	gc.progress = "Starting fetch..."
 	gc.lastError = ""
 	gc.mu.Unlock()
-	
+
 	go gc.runSync()
 }
 
@@ -109,12 +110,12 @@ func (gc *GameCrawler) runSync() {
 		gc.status = "idle"
 		gc.mu.Unlock()
 	}()
-	
+
 	// Create icons directory if missing
 	os.MkdirAll(gc.iconsDir, 0755)
-	
+
 	// 1. Fetch HTML of linuxgsm.com/servers/
-	resp, err := http.Get("https://linuxgsm.com/servers/")
+	resp, err := crawlerHTTPClient.Get("https://linuxgsm.com/servers/")
 	if err != nil {
 		gc.mu.Lock()
 		gc.lastError = "Failed to fetch LinuxGSM page: " + err.Error()
@@ -122,58 +123,58 @@ func (gc *GameCrawler) runSync() {
 		return
 	}
 	defer resp.Body.Close()
-	
-	bodyBytes, err := io.ReadAll(resp.Body)
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		gc.mu.Lock()
 		gc.lastError = "Failed to read response body: " + err.Error()
 		gc.mu.Unlock()
 		return
 	}
-	
+
 	html := string(bodyBytes)
-	
+
 	// 2. Parse anchor cards matching server detail pages
 	// Pattern: <a ... href=".../servers/([a-z0-9\-]+server)/?" ... > (content) </a>
 	anchorRegex := regexp.MustCompile(`<a[^>]*href="[^"]*/servers/([a-z0-9\-]+server)/?"[^>]*>([\s\S]*?)</a>`)
 	matches := anchorRegex.FindAllStringSubmatch(html, -1)
-	
+
 	if len(matches) == 0 {
 		gc.mu.Lock()
 		gc.lastError = "No gameserver cards found in HTML. Check page selector."
 		gc.mu.Unlock()
 		return
 	}
-	
+
 	imgRegex := regexp.MustCompile(`src="([^"]+)"`)
 	tagRegex := regexp.MustCompile(`<[^>]*>`)
-	
+
 	var crawledGames []GameCrawlItem
 	seenGames := make(map[string]int) // maps scriptName -> index in crawledGames
-	
+
 	gc.mu.Lock()
 	gc.progress = fmt.Sprintf("Found %d raw HTML elements, scanning for games...", len(matches))
 	gc.mu.Unlock()
-	
+
 	for _, match := range matches {
 		scriptName := match[1]
 		innerContent := match[2]
-		
+
 		// Extract Image URL
 		imgSrc := ""
 		imgMatch := imgRegex.FindStringSubmatch(innerContent)
 		if len(imgMatch) > 1 {
 			imgSrc = imgMatch[1]
 		}
-		
+
 		// Clean Game Name
 		cleanName := tagRegex.ReplaceAllString(innerContent, " ")
 		cleanName = strings.Join(strings.Fields(cleanName), " ") // collapse spaces
-		
+
 		if len(cleanName) < 2 {
 			cleanName = ""
 		}
-		
+
 		existingIdx, seen := seenGames[scriptName]
 		if seen {
 			// Deduplication: if we've seen this command, we update it if we found an icon now
@@ -184,28 +185,28 @@ func (gc *GameCrawler) runSync() {
 				} else if strings.Contains(imgSrc, ".webp") {
 					ext = ".webp"
 				}
-				
+
 				destPath := filepath.Join(gc.iconsDir, scriptName+ext)
 				if _, statErr := os.Stat(destPath); statErr != nil {
 					gc.downloadFile(imgSrc, destPath)
 				}
-				
+
 				crawledGames[existingIdx].Icon = "/api/games/icon/" + scriptName
 			}
-			
+
 			// Update name if we found a better/longer name
 			if cleanName != "" && len(crawledGames[existingIdx].Name) < len(cleanName) {
 				crawledGames[existingIdx].Name = cleanName
 			}
 			continue
 		}
-		
+
 		// New game entry
 		if cleanName == "" {
 			cleanName = strings.TrimSuffix(scriptName, "server")
 			cleanName = strings.ToUpper(cleanName[0:1]) + cleanName[1:]
 		}
-		
+
 		// Download and cache icon
 		hasIcon := false
 		if imgSrc != "" {
@@ -215,42 +216,42 @@ func (gc *GameCrawler) runSync() {
 			} else if strings.Contains(imgSrc, ".webp") {
 				ext = ".webp"
 			}
-			
+
 			destPath := filepath.Join(gc.iconsDir, scriptName+ext)
 			if _, statErr := os.Stat(destPath); statErr != nil {
 				gc.downloadFile(imgSrc, destPath)
 			}
 			hasIcon = true
 		}
-		
+
 		iconPath := ""
 		if hasIcon {
 			iconPath = "/api/games/icon/" + scriptName
 		}
-		
+
 		gameID := strings.TrimSuffix(scriptName, "server")
-		
+
 		crawledGames = append(crawledGames, GameCrawlItem{
 			ID:   gameID,
 			Name: cleanName,
 			Cmd:  scriptName,
 			Icon: iconPath,
 		})
-		
+
 		seenGames[scriptName] = len(crawledGames) - 1
-		
+
 		gc.mu.Lock()
 		gc.progress = fmt.Sprintf("Processing games (%d discovered so far)...", len(crawledGames))
 		gc.mu.Unlock()
 	}
-	
+
 	// 3. Save cache
 	cacheFile, err := os.Create(gc.cachePath)
 	if err == nil {
 		json.NewEncoder(cacheFile).Encode(crawledGames)
 		cacheFile.Close()
 	}
-	
+
 	gc.mu.Lock()
 	gc.games = crawledGames
 	gc.progress = fmt.Sprintf("Successfully synced %d servers!", len(crawledGames))
@@ -258,18 +259,25 @@ func (gc *GameCrawler) runSync() {
 }
 
 func (gc *GameCrawler) downloadFile(url string, destPath string) error {
-	resp, err := http.Get(url)
+	// Icons are fetched from the public LinuxGSM site only via HTTPS and with a size cap.
+	if !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("refusing non-https icon url")
+	}
+	resp, err := crawlerHTTPClient.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	
-	out, err := os.Create(destPath)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	
-	_, err = io.Copy(out, resp.Body)
-	return err
+	return os.WriteFile(destPath, data, 0644)
 }
+
+// crawlerHTTPClient bounds every request made by the crawler.
+var crawlerHTTPClient = &http.Client{Timeout: 30 * time.Second}

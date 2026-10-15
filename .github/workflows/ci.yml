@@ -1,0 +1,33 @@
+name: Tests
+
+# Runs the test suite on Linux for every push to dev/main and every pull request.
+# It never publishes anything.
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Vet and test
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::Run gofmt -w ."; exit 1; }
+          go vet ./...
+          go test ./...
+
+      - name: Build
+        run: go build -trimpath -o lgsm-dashboard .
+
+      - name: Shellcheck installer
+        run: shellcheck install-dashboard.sh
