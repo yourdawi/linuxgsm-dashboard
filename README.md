@@ -2,7 +2,7 @@
 
 A web interface for managing game servers that run under [LinuxGSM](https://linuxgsm.com/). The dashboard is a single Go binary with the web interface embedded, runs as a systemd service and controls the LinuxGSM scripts of each game server through the server's own Linux user.
 
-<img width="100%" alt="Dashboard" src="https://github.com/user-attachments/assets/a82c1587-5b43-411a-9ff4-321e041764b9" />
+<img width="80%" alt="dashboard" src="https://github.com/user-attachments/assets/9d55ae4f-f335-4c0c-89f3-0bcfd48c95c1" />
 
 <details>
   <summary>More screenshots</summary>
@@ -10,22 +10,27 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 
   **Server console with command input**
   <p align="center">
-    <img width="80%" alt="Console" src="https://github.com/user-attachments/assets/1b96721a-b8f6-4214-840b-ac0c441c1e9b" />
+    <img width="80%" alt="liveconsole" src="https://github.com/user-attachments/assets/a8458425-e7cc-42bc-b0bb-5781636c68e2" />
   </p>
 
   **Config editor (form and raw view)**
   <p align="center">
-    <img width="80%" alt="Config editor" src="https://github.com/user-attachments/assets/00dd7558-8b9a-4e32-a75d-559b409a847c" />
+    <img width="80%" alt="config" src="https://github.com/user-attachments/assets/9b748768-1c05-40d8-beb6-59ce03b0f217" />
+  </p>
+  
+  **File manager**
+  <p align="center">
+    <img width="80%" alt="filemanager" src="https://github.com/user-attachments/assets/6613dc2e-fc93-47f9-82a8-93ba076ed822" />
   </p>
 
   **Game installer**
   <p align="center">
-    <img width="80%" alt="Game installer" src="https://github.com/user-attachments/assets/478d3ac0-24df-4f61-b35b-104a4320f3f3" />
+    <img width="80%" alt="gameinstaller" src="https://github.com/user-attachments/assets/1251b841-984f-4c98-b2de-a847bce4bd1a" />
   </p>
 
   **Overview and monitoring**
   <p align="center">
-    <img width="60%" alt="Server overview" src="https://github.com/user-attachments/assets/39fc2c08-57d2-40d4-8b30-b607ce5e17cc" />
+    <img width="80%" alt="overview" src="https://github.com/user-attachments/assets/dc0e6965-7011-4528-8de3-ba4cff2fd240" />
   </p>
 </details>
 
@@ -320,35 +325,6 @@ When upgrading from version 1.0.7 or older:
 - all users are logged out once,
 - users who changed cron schedules or notifications before need the new `schedule` or `alerts` permission.
 
-## Releases
-
-Releases are built by GitHub Actions. A release only exists for commits on `main`; nothing from `dev` can become an update.
-
-### One-time setup
-
-1. Create the signing key on your computer:
-
-   ```bash
-   go run ./tools/releasekey generate -out release-signing.key
-   ```
-
-   It prints a public key. Put it into `releasePublicKey` in `main.go` and into `RELEASE_PUBLIC_KEY` in `install-dashboard.sh`, and commit both.
-2. On GitHub open **Settings > Environments**, create the environment `release` and under **Deployment branches and tags** allow only tags matching `v*`. Add the secret `RELEASE_SIGNING_KEY` with the content of `release-signing.key`.
-3. Delete `release-signing.key` (or keep it only in a password manager). It is listed in `.gitignore` and must never be committed. If the key is lost, create a new one and publish a release with the new public key; dashboards with the old key then have to be updated once with the installer.
-
-### Publishing a release
-
-1. Work on `dev` and push it (for example with GitHub Desktop). The **Tests** workflow runs on every push and pull request.
-2. Open a pull request from `dev` to `main` on GitHub and merge it.
-3. Create the tag `vX.Y.Z` on the merge commit on `main`, either
-   - on the website: **Releases > Draft a new release**, enter a new tag such as `v1.1.0`, set the target to `main`, write the notes and publish, or
-   - in GitHub Desktop: switch to `main`, fetch, right-click the newest commit in **History > Create Tag**, then **Push origin**.
-
-The **Release** workflow then checks that the tag points to a commit on `main`, runs the tests, builds `lgsm-dashboard-linux-amd64` and `-arm64` with the version from the tag, signs the checksums and attaches everything to the release (or creates the release if it does not exist yet). About two minutes later dashboards show the update notice.
-
-Tags must look like `v1.2.3`. If the tag points to a commit that is not on `main` (for example a release created on the website with target `dev`), the workflow fails and nothing is signed or offered as an update. Delete such a release and its tag on GitHub.
-
-The version number comes only from the tag; there is no version to change in the code.
 
 ## Known limitations
 
