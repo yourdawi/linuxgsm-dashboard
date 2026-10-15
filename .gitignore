@@ -1,14 +1,31 @@
-# Local Configuration & Credentials
-/config/config.json
+# Local dashboard data (users, password hashes, audit log, tags, server paths, crawler cache)
+/config/
+/server_tags.json
 
-# Crawler Cache & Downloaded Icons
-/config/games_cache.json
-/config/icons/
+# Release signing key
+release-signing.key
+*.key
 
-# Compiled Binaries
+# Compiled binaries and release artifacts
 /lgsm-dashboard
-/lgsm-dashboard.exe
+/lgsm-dashboard.new
+/lgsm-dashboard.old
+/lgsm-dashboard.download
+/dist/
 *.exe
+*.test
+*.out
 
-# System & Application Logs
+# Logs
 *.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Temporary test directories (removed by the tests themselves)
+.test-*/
+test.log

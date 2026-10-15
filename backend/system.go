@@ -32,6 +32,11 @@ type ServerStats struct {
 	CPU    float64 `json:"cpu"`
 	RAM    float64 `json:"ram"` // GB
 	PIDs   []int   `json:"pids"`
+
+	Disk       *DiskUsage `json:"disk,omitempty"`
+	Online     bool       `json:"query_online"`
+	NumPlayers int        `json:"num_players"`
+	MaxPlayers int        `json:"max_players"`
 }
 
 type SystemStats struct {
@@ -97,6 +102,11 @@ func (s *SystemMetricsCollector) getServersStats(servers []GameServerInstance) [
 			CPU:    cpu,
 			RAM:    ram,
 			PIDs:   pids,
+
+			Disk:       srv.Disk,
+			Online:     srv.QueryData.Online,
+			NumPlayers: srv.QueryData.NumPlayers,
+			MaxPlayers: srv.QueryData.MaxPlayers,
 		}
 	}
 	return stats
