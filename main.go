@@ -111,7 +111,7 @@ func main() {
 	}
 
 	// Runtime that controls the game servers (LGSM_RUNTIME, default: host)
-	rt, err := backend.SelectRuntime()
+	rt, err := backend.SelectRuntime(*configDirFlag)
 	if err != nil {
 		fmt.Printf("[FATAL] %v\n", err)
 		os.Exit(1)

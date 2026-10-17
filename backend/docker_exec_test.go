@@ -329,13 +329,7 @@ func TestDockerDiscoverChecksTmux(t *testing.T) {
 		{Names: []string{"/vh-up"}, State: "running", Labels: labels("/srv/lgsm/vh-up")},
 		{Names: []string{"/vh-idle"}, State: "running", Labels: labels("/srv/lgsm/vh-idle")},
 	}
-	e.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1.52/containers/json" {
-			_ = json.NewEncoder(w).Encode(list)
-			return
-		}
-		e.handle(w, r)
-	})
+	e.server.Config.Handler = wrapContainerList(e, list)
 	d := newTestDockerRuntime(t, e)
 	found, err := d.Discover(nil)
 	if err != nil {
@@ -421,4 +415,15 @@ func TestContainerRestoreMembers(t *testing.T) {
 	if got != want {
 		t.Fatalf("restore args\n got %s\nwant %s", got, want)
 	}
+}
+
+// wrapContainerList answers GET /containers/json with list and everything else with e.
+func wrapContainerList(e *execEngine, list []DockerContainer) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1.52/containers/json" {
+			_ = json.NewEncoder(w).Encode(list)
+			return
+		}
+		e.handle(w, r)
+	})
 }

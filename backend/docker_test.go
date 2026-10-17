@@ -126,7 +126,7 @@ func TestRuntimeModeDetection(t *testing.T) {
 	}
 	t.Setenv("LGSM_RUNTIME", "docker")
 	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
-	if _, err := SelectRuntime(); err == nil || !strings.Contains(err.Error(), "docker.sock") {
+	if _, err := SelectRuntime(""); err == nil || !strings.Contains(err.Error(), "docker.sock") {
 		t.Fatalf("unreachable engine must fail with a hint, got %v", err)
 	}
 }
@@ -136,7 +136,7 @@ func TestDockerRuntimeSelection(t *testing.T) {
 	t.Setenv("LGSM_RUNTIME", "docker")
 	t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(engine.URL, "http://"))
 	t.Setenv("LGSM_DATA_DIR", "/srv/games")
-	rt, err := SelectRuntime()
+	rt, err := SelectRuntime("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestDockerRuntimeSelection(t *testing.T) {
 	}
 
 	t.Setenv("LGSM_DATA_DIR", "/etc")
-	if _, err := SelectRuntime(); err == nil {
+	if _, err := SelectRuntime(""); err == nil {
 		t.Fatal("a system directory must be rejected as data directory")
 	}
 }

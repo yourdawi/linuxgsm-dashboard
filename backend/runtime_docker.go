@@ -43,6 +43,8 @@ type DockerRuntime struct {
 	engine  DockerVersion
 	dataDir string
 	image   string // image repository of the game servers, tagged with the LinuxGSM shortname
+
+	scheduleDir string // schedules of the servers (see docker_scheduler.go)
 }
 
 // defaultGameServerImage is the repository of the official LinuxGSM game server images.
@@ -55,8 +57,9 @@ const dockerStopTimeout = 180
 var reImageRepo = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(\.[a-z0-9-]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)+$`)
 
 // NewDockerRuntime connects to the Docker engine (DOCKER_HOST or the default socket). dataDir is
-// the server data directory (LGSM_DATA_DIR), empty for /srv/lgsm.
-func NewDockerRuntime(dataDir string) (*DockerRuntime, error) {
+// the server data directory (LGSM_DATA_DIR), empty for /srv/lgsm. The schedules are kept in
+// configDir/schedules.
+func NewDockerRuntime(dataDir, configDir string) (*DockerRuntime, error) {
 	if dataDir == "" {
 		dataDir = defaultDockerDataDir
 	}
@@ -77,13 +80,17 @@ func NewDockerRuntime(dataDir string) (*DockerRuntime, error) {
 	if !reImageRepo.MatchString(image) {
 		return nil, fmt.Errorf("invalid LGSM_GAMESERVER_IMAGE %q: use an image repository without tag, e.g. %s", image, defaultGameServerImage)
 	}
-	return &DockerRuntime{client: client, engine: engine, dataDir: dataDir, image: image}, nil
+	d := &DockerRuntime{client: client, engine: engine, dataDir: dataDir, image: image}
+	if configDir != "" {
+		d.scheduleDir = filepath.Join(configDir, "schedules")
+	}
+	return d, nil
 }
 
 func (d *DockerRuntime) Name() string { return "docker" }
 
 func (d *DockerRuntime) Capabilities() Capabilities {
-	return Capabilities{Runtime: "docker", MultiInstance: true}
+	return Capabilities{Runtime: "docker", MultiInstance: true, Cron: true}
 }
 
 func (d *DockerRuntime) Init() {
@@ -92,6 +99,7 @@ func (d *DockerRuntime) Init() {
 	if info, err := os.Stat(d.dataDir); err != nil || !info.IsDir() {
 		fmt.Printf("[WARNING] Server data directory %s does not exist. Mount it at the same path as on the host.\n", d.dataDir)
 	}
+	d.startScheduler()
 }
 
 // Discover lists the containers labelled as managed by the dashboard.
@@ -410,15 +418,10 @@ func (d *DockerRuntime) Delete(ctx context.Context, srv GameServerInstance, _ bo
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("container removed, but deleting %s failed: %w", dir, err)
 	}
+	if err := d.WriteCrontab(srv, ""); err != nil {
+		fmt.Printf("[WARNING] Failed to remove the schedule of %s: %v\n", srv.ID, err)
+	}
 	return nil
-}
-
-func (d *DockerRuntime) ReadCrontab(GameServerInstance) (string, error) {
-	return "", errDockerNotYet
-}
-
-func (d *DockerRuntime) WriteCrontab(GameServerInstance, string) error {
-	return errDockerNotYet
 }
 
 func (d *DockerRuntime) InstallAutostart(GameServerInstance) error {

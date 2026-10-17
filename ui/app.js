@@ -1995,18 +1995,35 @@ function selectGameForInstall(game, cardElement) {
     }
 }
 
+// Sets data-i18n on node and translates it, so the text survives a language switch.
+function setI18n(node, key) {
+    if (!node) return;
+    node.setAttribute('data-i18n', key);
+    node.textContent = t(key);
+}
+
+// Autostart and schedule tools: in Docker mode the container restart policy replaces systemd,
+// and the dashboard runs the schedules itself (no crontab lines to copy).
+function applyToolsMode() {
+    const systemdCard = el.templateSystemd ? el.templateSystemd.closest('.tool-subcard') : null;
+    if (systemdCard) systemdCard.classList.toggle('hidden', !capable('autostart'));
+    if (!el.templateCron) return;
+    const dashboardScheduler = !capable('linux_users') && capable('cron');
+    el.templateCron.classList.toggle('hidden', dashboardScheduler);
+    const card = el.templateCron.closest('.tool-subcard');
+    if (!card) return;
+    setI18n(card.querySelector('p'), dashboardScheduler ? 'settings-tools-cron-desc-docker' : 'settings-tools-cron-desc');
+    setI18n(card.querySelector('#settings-tools-btn-cron span'), dashboardScheduler ? 'settings-tools-btn-cron-docker' : 'settings-tools-btn-cron');
+}
+
 // In Docker mode the installer creates a container: the name field names the server and its
 // container, a Linux password and a custom directory do not exist there.
 function applyInstallerMode() {
     const docker = !capable('linux_users');
     const label = document.querySelector('label[for="install-username"]');
     const help = label ? label.parentElement.querySelector('small') : null;
-    // data-i18n keeps the right text when the language is switched.
-    [[label, docker ? 'inst-name-label' : 'inst-user-label'], [help, docker ? 'inst-name-help' : 'inst-user-help']].forEach(([node, key]) => {
-        if (!node) return;
-        node.setAttribute('data-i18n', key);
-        node.textContent = t(key);
-    });
+    setI18n(label, docker ? 'inst-name-label' : 'inst-user-label');
+    setI18n(help, docker ? 'inst-name-help' : 'inst-user-help');
     ['install-password', 'install-dir'].forEach(id => {
         const input = document.getElementById(id);
         if (!input) return;
@@ -2599,6 +2616,7 @@ WantedBy=multi-user.target`;
 
     if (el.templateSystemd) el.templateSystemd.textContent = systemdCode;
     if (el.templateCron) el.templateCron.textContent = cronCode;
+    applyToolsMode();
     
     // 3. Configure alerts and load settings
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
@@ -3049,6 +3067,7 @@ const i18n = {
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Install & Enable Service",
         "settings-tools-btn-cron": "Write Cronjobs to Crontab",
+        "settings-tools-btn-cron-docker": "Enable Recommended Schedules",
         "btn-refresh": "Refresh",
         "inst-title": "Game Installer",
         "inst-subtitle": "Install a new LinuxGSM server. A system user will be automatically created.",
@@ -3085,6 +3104,7 @@ const i18n = {
         "settings-tools-systemd-desc": "Create a file under /etc/systemd/system/lgsm-[server].service as root and add the following content:",
         "settings-tools-cron-title": "Cronjobs (Scheduled Maintenance Tasks)",
         "settings-tools-cron-desc": "Add these lines to the server user's crontab (or via crontab -e as root):",
+        "settings-tools-cron-desc-docker": "In Docker mode the dashboard runs the schedules itself (times in the dashboard's time zone, TZ). Recommended: monitor every 5 minutes, update check every 30 minutes, force-update at 04:30 and update-lgsm on Sundays.",
         "settings-info-os": "Operating System",
         "settings-info-mode": "Dashboard Mode",
         "modal-config-no-file": "Choose a file",
@@ -3518,6 +3538,7 @@ const i18n = {
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Dienst automatisch installieren & aktivieren",
         "settings-tools-btn-cron": "Cronjobs in Crontab schreiben",
+        "settings-tools-btn-cron-docker": "Empfohlene Zeitpläne aktivieren",
         "btn-refresh": "Aktualisieren",
         "inst-title": "Spiele-Installer",
         "inst-subtitle": "Installiere einen neuen LinuxGSM Server. Es wird automatisch ein neuer Systembenutzer angelegt.",
@@ -3549,6 +3570,7 @@ const i18n = {
         "settings-tools-systemd-desc": "Erstelle eine Datei unter /etc/systemd/system/lgsm-[server].service als root und füge folgenden Inhalt ein:",
         "settings-tools-cron-title": "Cronjobs (Geplante Wartungsaufgaben)",
         "settings-tools-cron-desc": "Füge diese Zeilen in die Crontab des Serverbenutzers (oder über crontab -e als root) ein:",
+        "settings-tools-cron-desc-docker": "Im Docker-Modus führt das Dashboard die Zeitpläne selbst aus (Uhrzeiten in der Zeitzone des Dashboards, TZ). Empfohlen: monitor alle 5 Minuten, Update-Prüfung alle 30 Minuten, force-update um 04:30 und update-lgsm sonntags.",
         "overview-title": "Übersicht & Monitoring",
         "overview-subtitle": "Ressourcen-Auslastung des Host-Systems und der einzelnen Gameserver-Instanzen.",
         "overview-cpu": "CPU Auslastung",

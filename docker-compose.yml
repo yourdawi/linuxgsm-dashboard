@@ -25,6 +25,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       LGSM_DATA_DIR: /srv/lgsm
+      # Time zone of the schedules (restart time, backups). Without it schedules use UTC.
+      TZ: Europe/Berlin
     security_opt:
       - no-new-privileges:true
     cap_drop:

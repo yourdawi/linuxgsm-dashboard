@@ -195,7 +195,7 @@ On the first start the dashboard creates `config/config.json` with an `admin` us
 
 The dashboard can also run as a container. In this **Docker mode** game servers are meant to run as separate containers of the official LinuxGSM images (`gameservermanagers/gameserver`), which the dashboard manages through the Docker socket. The normal installation above is not affected.
 
-> **Status:** preview. In Docker mode the dashboard installs, clones and deletes game servers as containers. For these servers, status, start/stop/restart and all other LinuxGSM commands, the live console with command input, logs, CPU/RAM per server, the config editor, the file manager and backups including restore already work. Schedules are still being built and report "not available in Docker mode yet".
+> **Status:** preview. In Docker mode the dashboard installs, clones and deletes game servers as containers. For these servers, status, start/stop/restart and all other LinuxGSM commands, the live console with command input, logs, CPU/RAM per server, the config editor, the file manager, backups including restore, and schedules work.
 
 **Installing** a game in Docker mode asks for a server name (3-16 characters) instead of a Linux user. The dashboard then:
 
@@ -206,7 +206,9 @@ The dashboard can also run as a container. In this **Docker mode** game servers 
 
 **Cloning** creates the container `<name>-<suffix>` with a copy of `serverfiles` and the LinuxGSM configs and its own, empty instance config, like a LinuxGSM multi-instance on a host. With host networking the clone uses the same ports as the original until they are changed (for example in `serverfiles/` or the instance config), so it cannot start while the original runs. Stop the original before cloning for a consistent copy of its files.
 
-**Deleting** a server removes its container and its data directory, including backups in `/data/backup`.
+**Deleting** a server removes its container, its data directory (including backups in `/data/backup`) and its schedules.
+
+**Schedules** (monitor, update checks, the daily `force-update`, the weekly `update-lgsm` and automatic backups) are run by the dashboard itself, because the crontab inside a container is reset on every container start. They are set up in the same scheduler as on a host and stored in `/config/schedules/<server>.cron`, outside the reach of the game server containers. Once a minute the dashboard runs the due LinuxGSM commands with `docker exec`; commands due for the same server run one after the other, and they are skipped while the commands of an earlier minute are still running. Times use the time zone of the dashboard container, so set `TZ` (for example `TZ: Europe/Berlin` in `docker-compose.yml`); without it the times are UTC. The autostart service (systemd) is not offered in Docker mode: the containers' restart policy `unless-stopped` takes care of that.
 
 Game server containers are recognised by their labels and use the data layout of the official images (`/data` with `config-lgsm`, `data`, `log`, `serverfiles`):
 
@@ -245,7 +247,7 @@ How the mode is chosen:
 | `docker` | Docker mode (set in the image). The dashboard stops with an error when the Docker engine is not reachable. |
 | `host` | Host mode, also inside a container |
 
-In Docker mode the settings show "PRODUCTION (Docker)". Features that only make sense on a host are switched off: dashboard self-updates (pull a new image instead), firewall management, additional server directories and crontab schedules.
+In Docker mode the settings show "PRODUCTION (Docker)". Features that only make sense on a host are switched off: dashboard self-updates (pull a new image instead), firewall management, additional server directories, custom installation directories and the systemd autostart service.
 
 Images are built from the signed release binaries and published to `ghcr.io/yourdawi/linuxgsm-dashboard` (tags `latest`, `X.Y` and `X.Y.Z`) by the release workflow once the repository variable `PUBLISH_DOCKER_IMAGE` is set to `true`.
 

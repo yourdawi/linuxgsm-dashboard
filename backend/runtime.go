@@ -153,14 +153,15 @@ func RuntimeMode() (string, error) {
 }
 
 // SelectRuntime creates the runtime chosen by RuntimeMode. The Docker runtime fails when the
-// engine is not reachable, so a misconfigured container stops with a clear message.
-func SelectRuntime() (Runtime, error) {
+// engine is not reachable, so a misconfigured container stops with a clear message. configDir is
+// the dashboard configuration directory (Docker mode keeps the schedules there).
+func SelectRuntime(configDir string) (Runtime, error) {
 	mode, err := RuntimeMode()
 	if err != nil {
 		return nil, err
 	}
 	if mode == "docker" {
-		rt, err := NewDockerRuntime(os.Getenv("LGSM_DATA_DIR"))
+		rt, err := NewDockerRuntime(os.Getenv("LGSM_DATA_DIR"), configDir)
 		if err != nil {
 			return nil, err
 		}

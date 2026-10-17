@@ -13,7 +13,11 @@ import (
 // Crontab helpers
 // -------------------------------------------------------------
 
+// scriptPathOf is the path of the LinuxGSM script as it appears in schedules.
 func scriptPathOf(srv GameServerInstance) string {
+	if srv.Layout == LayoutData {
+		return dockerScriptDir + "/" + srv.Script
+	}
 	return filepath.ToSlash(filepath.Join(srv.Dir, srv.Script))
 }
 

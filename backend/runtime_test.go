@@ -139,15 +139,15 @@ func TestSelectRuntime(t *testing.T) {
 	containerMarkers.cgroup = filepath.Join(t.TempDir(), "missing")
 
 	t.Setenv("LGSM_RUNTIME", "")
-	if rt, err := SelectRuntime(); err != nil || rt.Name() != "host" {
+	if rt, err := SelectRuntime(""); err != nil || rt.Name() != "host" {
 		t.Fatalf("default runtime: %v %v", rt, err)
 	}
 	t.Setenv("LGSM_RUNTIME", " Host ")
-	if rt, err := SelectRuntime(); err != nil || rt.Name() != "host" {
+	if rt, err := SelectRuntime(""); err != nil || rt.Name() != "host" {
 		t.Fatalf("explicit host runtime: %v %v", rt, err)
 	}
 	t.Setenv("LGSM_RUNTIME", "podman")
-	if _, err := SelectRuntime(); err == nil {
+	if _, err := SelectRuntime(""); err == nil {
 		t.Fatal("unknown runtime must be rejected")
 	}
 }
