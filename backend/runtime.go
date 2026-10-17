@@ -132,15 +132,38 @@ func isStartError(err error) bool {
 	return errors.As(err, &startErr)
 }
 
-// SelectRuntime picks the runtime from the LGSM_RUNTIME environment variable. Only "host" exists
-// so far; it is also the default.
-func SelectRuntime() (Runtime, error) {
+// RuntimeMode decides between the host and the Docker runtime. The LGSM_RUNTIME environment
+// variable ("host" or "docker") wins; without it a dashboard running inside a container uses
+// Docker and every other installation the host.
+func RuntimeMode() (string, error) {
 	switch mode := strings.ToLower(strings.TrimSpace(os.Getenv("LGSM_RUNTIME"))); mode {
-	case "", "host":
-		return HostRuntime{}, nil
+	case "host", "docker":
+		return mode, nil
+	case "", "auto":
+		if InContainer() {
+			return "docker", nil
+		}
+		return "host", nil
 	default:
-		return nil, fmt.Errorf("unsupported runtime %q (LGSM_RUNTIME)", mode)
+		return "", fmt.Errorf("unsupported runtime %q (LGSM_RUNTIME must be host or docker)", mode)
 	}
+}
+
+// SelectRuntime creates the runtime chosen by RuntimeMode. The Docker runtime fails when the
+// engine is not reachable, so a misconfigured container stops with a clear message.
+func SelectRuntime() (Runtime, error) {
+	mode, err := RuntimeMode()
+	if err != nil {
+		return nil, err
+	}
+	if mode == "docker" {
+		rt, err := NewDockerRuntime(os.Getenv("LGSM_DATA_DIR"))
+		if err != nil {
+			return nil, err
+		}
+		return rt, nil
+	}
+	return HostRuntime{}, nil
 }
 
 // -------------------------------------------------------------

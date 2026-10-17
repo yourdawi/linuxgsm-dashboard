@@ -2255,9 +2255,13 @@ async function loadSettingsInfo() {
         
         const pathsCard = document.getElementById('settings-server-paths-card');
         if (state.currentUser && state.currentUser.role === 'admin') {
-            checkDashboardUpdate(false);
-            if (pathsCard) pathsCard.classList.remove('hidden');
-            loadServerPaths();
+            if (capable('self_update')) checkDashboardUpdate(false);
+            if (capable('server_paths')) {
+                if (pathsCard) pathsCard.classList.remove('hidden');
+                loadServerPaths();
+            } else if (pathsCard) {
+                pathsCard.classList.add('hidden');
+            }
         } else if (pathsCard) {
             pathsCard.classList.add('hidden');
         }
@@ -2272,7 +2276,7 @@ async function loadSettingsInfo() {
         loadTwoFactorStatus();
 
         // Check Firewall Status & Rights (administrators only)
-        if (state.currentUser && state.currentUser.role === 'admin') {
+        if (state.currentUser && state.currentUser.role === 'admin' && capable('firewall')) {
             loadFirewallStatus();
         }
     } catch (e) {
@@ -2327,6 +2331,13 @@ async function saveServerPaths() {
     }
 }
 
+// Optional features of the server runtime (host or Docker), reported by /api/system/info.
+// Unknown features count as available, which matches the host runtime.
+function capable(feature) {
+    const caps = state.lastSettingsData && state.lastSettingsData.capabilities;
+    return !caps || caps[feature] !== false;
+}
+
 // Settings sub tabs and the permission they need. "general" (own password, system info) is always
 // available; everything else mirrors the server-side checks.
 function allowedSettingsSubtabs() {
@@ -2334,9 +2345,9 @@ function allowedSettingsSubtabs() {
     return {
         general: true,
         server: isAdmin,
-        cron: hasPerm('schedule'),
+        cron: hasPerm('schedule') && capable('cron'),
         alerts: hasPerm('alerts'),
-        security: isAdmin,
+        security: isAdmin && capable('firewall'),
     };
 }
 
@@ -2352,7 +2363,7 @@ function applySettingsPermissions() {
 
     const isAdmin = !!(state.currentUser && state.currentUser.role === 'admin');
     const updateCard = document.getElementById('settings-update-card');
-    if (updateCard) updateCard.classList.toggle('hidden', !isAdmin);
+    if (updateCard) updateCard.classList.toggle('hidden', !isAdmin || !capable('self_update'));
 
     if (state.settingsSubtab && !allowed[state.settingsSubtab]) {
         switchSettingsSubtab('general');
@@ -2412,7 +2423,8 @@ async function loadFirewallStatus() {
 }
 
 function renderSettingsMode() {
-    el.settingsMode.textContent = t('settings-mode-prod');
+    const caps = state.lastSettingsData && state.lastSettingsData.capabilities;
+    el.settingsMode.textContent = caps && caps.runtime === 'docker' ? t('settings-mode-docker') : t('settings-mode-prod');
 }
 
 async function changePassword(e) {
@@ -3129,6 +3141,7 @@ const i18n = {
         "games-sync-initializing": "Initializing crawler...",
         "overview-none": "None",
         "settings-mode-prod": "PRODUCTION (Linux Host)",
+        "settings-mode-docker": "PRODUCTION (Docker)",
         "status-connecting": "Connecting...",
         "status-success": "Success",
         "status-error": "Error",
@@ -3603,6 +3616,7 @@ const i18n = {
         "games-sync-initializing": "Initialisiere Crawler...",
         "overview-none": "Keine",
         "settings-mode-prod": "PRODUKTION (Linux Root)",
+        "settings-mode-docker": "PRODUKTION (Docker)",
         "status-connecting": "Verbinde...",
         "status-success": "Erfolgreich",
         "status-error": "Fehler",

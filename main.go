@@ -118,8 +118,12 @@ func main() {
 	}
 	fmt.Printf("[SYS] Runtime: %s\n", rt.Name())
 
-	// Retroactive migration
-	migrateSystemdService()
+	caps := rt.Capabilities()
+
+	// Retroactive migration of the dashboard's own systemd unit
+	if caps.SelfUpdate {
+		migrateSystemdService()
+	}
 
 	// Initialize Auth Manager
 	authMgr, err := backend.NewAuthManager(*configDirFlag)
@@ -152,12 +156,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	updater := &backend.Updater{
-		Repo:           releaseRepo,
-		PublicKey:      releasePublicKey,
-		CurrentVersion: Version,
+	// In-place updates replace the binary; a container is updated by pulling a new image.
+	var updater *backend.Updater
+	if caps.SelfUpdate {
+		updater = &backend.Updater{
+			Repo:           releaseRepo,
+			PublicKey:      releasePublicKey,
+			CurrentVersion: Version,
+		}
+		updater.StartBackgroundCheck(updateCheckInterval)
 	}
-	updater.StartBackgroundCheck(updateCheckInterval)
 
 	instances := backend.NewInstanceManager(*configDirFlag, rt)
 	metrics := backend.NewSystemMetricsCollector()
@@ -838,10 +846,18 @@ func (a *app) handleInfo(w http.ResponseWriter, r *http.Request, user backend.Us
 }
 
 func (a *app) handleFirewallStatus(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
+	if !a.inst.Capabilities().Firewall {
+		writeError(w, http.StatusNotImplemented, "Firewall management is not available in this runtime")
+		return
+	}
 	writeJSON(w, http.StatusOK, backend.GetFirewallStatus())
 }
 
 func (a *app) handleFirewallOpen(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
+	if !a.inst.Capabilities().Firewall {
+		writeError(w, http.StatusNotImplemented, "Firewall management is not available in this runtime")
+		return
+	}
 	var payload struct {
 		Port     int    `json:"port"`
 		Protocol string `json:"protocol"`

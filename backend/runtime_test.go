@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -127,6 +128,12 @@ func TestStreamLines(t *testing.T) {
 }
 
 func TestSelectRuntime(t *testing.T) {
+	// Tests may run inside a container: pretend to be on a plain host.
+	old := containerMarkers
+	t.Cleanup(func() { containerMarkers = old })
+	containerMarkers.files = nil
+	containerMarkers.cgroup = filepath.Join(t.TempDir(), "missing")
+
 	t.Setenv("LGSM_RUNTIME", "")
 	if rt, err := SelectRuntime(); err != nil || rt.Name() != "host" {
 		t.Fatalf("default runtime: %v %v", rt, err)

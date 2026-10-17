@@ -191,6 +191,43 @@ sudo ./lgsm-dashboard -port 8080
 
 On the first start the dashboard creates `config/config.json` with an `admin` user and prints a random password to the console. Write it down and change it after the first login.
 
+### Docker (preview)
+
+The dashboard can also run as a container. In this **Docker mode** game servers are meant to run as separate containers of the official LinuxGSM images (`gameservermanagers/gameserver`), which the dashboard manages through the Docker socket. The normal installation above is not affected.
+
+> **Status:** preview. The image starts, connects to Docker and lists the game server containers it manages. Installing, starting and stopping game servers, the console, schedules and backups in Docker mode are still being built. Until then these actions report "not available in Docker mode yet".
+
+```bash
+git clone https://github.com/yourdawi/linuxgsm-dashboard.git
+cd linuxgsm-dashboard
+docker build -t ghcr.io/yourdawi/linuxgsm-dashboard:latest .
+sudo mkdir -p /srv/lgsm
+docker compose up -d
+docker compose logs dashboard   # shows the generated admin password on the first start
+```
+
+The [`docker-compose.yml`](docker-compose.yml) mounts:
+
+| Mount | Purpose |
+|-------|---------|
+| `lgsm-dashboard-config:/config` | Dashboard configuration (users, audit log, tags) |
+| `/srv/lgsm:/srv/lgsm` | Game server data. It must have the same path on the host and in the container, because the dashboard passes it to Docker when it creates game server containers. Change both sides and `LGSM_DATA_DIR` together. |
+| `/var/run/docker.sock` | Access to the Docker engine |
+
+**Security:** access to the Docker socket is equivalent to root access on the host. Everybody with administrator rights in the dashboard can therefore control the host. Keep the dashboard behind HTTPS, use strong passwords and two-factor authentication. Instead of the socket, `DOCKER_HOST=tcp://...` can point to a [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy).
+
+How the mode is chosen:
+
+| `LGSM_RUNTIME` | Behaviour |
+|----------------|-----------|
+| not set or `auto` | Docker mode when the dashboard runs inside a container (`/.dockerenv`, `/run/.containerenv` or a container cgroup), otherwise the normal host mode |
+| `docker` | Docker mode (set in the image). The dashboard stops with an error when the Docker engine is not reachable. |
+| `host` | Host mode, also inside a container |
+
+In Docker mode the settings show "PRODUCTION (Docker)". Features that only make sense on a host are switched off: dashboard self-updates (pull a new image instead), firewall management, additional server directories and crontab schedules.
+
+Images are built from the signed release binaries and published to `ghcr.io/yourdawi/linuxgsm-dashboard` (tags `latest`, `X.Y` and `X.Y.Z`) by the release workflow once the repository variable `PUBLISH_DOCKER_IMAGE` is set to `true`.
+
 ## Configuration
 
 ### Command line flags
