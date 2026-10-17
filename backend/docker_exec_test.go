@@ -402,7 +402,7 @@ func TestContainerRestoreMembers(t *testing.T) {
 		"././", "././ts3server", "././entrypoint.sh", "././lgsm/", "././lgsm/modules/core.sh",
 		"././lgsm/config-lgsm/ts3server/common.cfg", "././lgsm/data/ts3server.uid",
 		"././log/console/x.log", "././log/server/y.log", "././serverfiles/ts3server.ini", "././serverfiles/doc/a",
-		"./logs/other", "././lgsm/node_modules/x/serverfiles/z",
+		"./logs/other", "././lgsm/node_modules/x/serverfiles/z", "././lgsm/mods/installed-mods.txt",
 	} {
 		m.add(name)
 	}
@@ -411,7 +411,7 @@ func TestContainerRestoreMembers(t *testing.T) {
 		t.Fatalf("unexpected command %q", cmd[:3])
 	}
 	got := strings.Join(cmd[3:], " ")
-	want := "restore /data/.lgsm-dashboard-restore /srv/lgsm/vh/backup/a.tar.zst --zstd ././lgsm/config-lgsm ././lgsm/data ././log ././serverfiles"
+	want := "restore /data/.lgsm-dashboard-restore /srv/lgsm/vh/backup/a.tar.zst --zstd ././lgsm/config-lgsm ././lgsm/data ././log ././serverfiles ././lgsm/mods"
 	if got != want {
 		t.Fatalf("restore args\n got %s\nwant %s", got, want)
 	}

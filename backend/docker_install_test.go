@@ -92,7 +92,7 @@ func TestDockerInstall(t *testing.T) {
 	if cfg.Image != "gameservermanagers/gameserver:vh" || cfg.StopTimeout != 180 ||
 		strings.Join(cfg.Env, ",") != "UPDATE_CHECK=0,UPDATE_ON_START=false" ||
 		cfg.Labels[dockerLabelManaged] != "true" || cfg.Labels[dockerLabelGameServer] != "vhserver" || cfg.Labels[dockerLabelDir] != dir ||
-		len(cfg.HostConfig.Binds) != 1 || cfg.HostConfig.Binds[0] != dir+":/data" ||
+		len(cfg.HostConfig.Binds) != 2 || cfg.HostConfig.Binds[0] != dir+":/data" || cfg.HostConfig.Binds[1] != dir+"/mods:/app/lgsm/mods" ||
 		cfg.HostConfig.NetworkMode != "host" || cfg.HostConfig.RestartPolicy.Name != "unless-stopped" {
 		t.Fatalf("unexpected container config %+v", cfg)
 	}
@@ -100,8 +100,11 @@ func TestDockerInstall(t *testing.T) {
 		t.Fatalf("container not started: %v", e.started)
 	}
 	common, err := os.ReadFile(filepath.Join(dir, "config-lgsm", "vhserver", "common.cfg"))
-	if err != nil || !strings.Contains(string(common), `backupdir="/data/backup"`) {
+	if err != nil || !strings.Contains(string(common), `backupdir="/data/backup"`) || !strings.Contains(string(common), `webdir="/data/public_html"`) {
 		t.Fatalf("common.cfg not seeded: %v %q", err, common)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "mods")); err != nil || !info.IsDir() {
+		t.Fatalf("mods directory must exist before the container mounts it: %v", err)
 	}
 	out := log.String()
 	for _, want := range []string{"Pull complete", "Installing vhserver", "OK\n", "Installation completed successfully"} {
@@ -170,6 +173,8 @@ func TestDockerClone(t *testing.T) {
 		"config-lgsm/vhserver/vhserver.cfg":         `port="2456"`,
 		"config-lgsm/vhserver/secrets-vhserver.cfg": `serverpassword="secret"`,
 		"log/console/vhserver-console.log":          "log",
+		"mods/installed-mods.txt":                   "oxide\n",
+		"mods/tmp/download.zip":                     "partial",
 	} {
 		p := filepath.Join(src, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
@@ -201,10 +206,31 @@ func TestDockerClone(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dst, "config-lgsm/vhserver/secrets-vhserver.cfg")); !os.IsNotExist(err) {
 		t.Fatal("instance secrets must not be copied")
 	}
+	if read("mods/installed-mods.txt") != "oxide\n" {
+		t.Fatal("mods list not copied")
+	}
+	if _, err := os.Stat(filepath.Join(dst, "mods", "tmp")); !os.IsNotExist(err) {
+		t.Fatal("mods/tmp must not be copied")
+	}
 	if _, err := os.Stat(filepath.Join(dst, "log")); !os.IsNotExist(err) {
 		t.Fatal("logs must not be copied")
 	}
 	if _, err := d.Clone(context.Background(), srv, "two"); err == nil {
 		t.Fatal("cloning onto an existing server must fail")
+	}
+}
+
+func TestInstalledModsInContainerLayout(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "mods"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mods", "installed-mods.txt"), []byte("oxide\nrustedit\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	im := NewStaticInstanceManager(t.TempDir(), GameServerInstance{ID: "rust1", Script: "rustserver", Dir: dir, Layout: LayoutData, UID: -1})
+	mods, err := im.GetInstalledMods("rust1")
+	if err != nil || strings.Join(mods, ",") != "oxide,rustedit" {
+		t.Fatalf("unexpected mods %v %v", mods, err)
 	}
 }

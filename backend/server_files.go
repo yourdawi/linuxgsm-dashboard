@@ -499,7 +499,7 @@ func (im *InstanceManager) GetInstalledMods(serverID string) ([]string, error) {
 		return nil, ErrServerNotFound
 	}
 	installedMods := []string{}
-	resolved, err := ResolveInRoot(srv.Dir, filepath.Join("lgsm", "mods", "installed-mods.txt"))
+	resolved, err := ResolveInRoot(srv.Dir, filepath.Join(srv.modsRel(), "installed-mods.txt"))
 	if err != nil {
 		return installedMods, nil
 	}

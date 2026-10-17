@@ -40,6 +40,15 @@ func (srv GameServerInstance) lgsmDataRel() string {
 	return filepath.Join("lgsm", "data")
 }
 
+// modsRel is the LinuxGSM mods directory with the list of installed mods. LinuxGSM always uses
+// lgsm/mods below its root; the dashboard mounts <Dir>/mods there in containers.
+func (srv GameServerInstance) modsRel() string {
+	if srv.Layout == LayoutData {
+		return "mods"
+	}
+	return filepath.Join("lgsm", "mods")
+}
+
 // defaultBackupRel is where backups are stored when LinuxGSM has no backupdir setting the
 // dashboard can see.
 func (srv GameServerInstance) defaultBackupRel() string {

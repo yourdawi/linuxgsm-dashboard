@@ -263,10 +263,19 @@ func (d *DockerRuntime) ValidateInstall(req InstallRequest) error {
 	return d.checkNewServer(ctx, req.Username)
 }
 
+// containerModsDir is where LinuxGSM keeps the list of installed mods inside the official images
+// (${lgsmdir}/mods, not configurable). It is not part of /data, so the dashboard mounts
+// <server dir>/mods there: the list survives re-creating the container and the dashboard can
+// read it.
+const containerModsDir = dockerScriptDir + "/lgsm/mods"
+
 // createServerContainer creates and starts the container of a game server whose data lives in
 // dir. LinuxGSM's own update cron and the update on every container start are switched off: the
 // dashboard runs updates.
 func (d *DockerRuntime) createServerContainer(ctx context.Context, name, gameCmd, image, dir string) error {
+	if err := os.MkdirAll(filepath.Join(dir, "mods"), 0755); err != nil {
+		return err
+	}
 	cfg := DockerCreateConfig{
 		Image: image,
 		Env:   []string{"UPDATE_CHECK=0", "UPDATE_ON_START=false"},
@@ -277,7 +286,7 @@ func (d *DockerRuntime) createServerContainer(ctx context.Context, name, gameCmd
 		},
 		StopTimeout: dockerStopTimeout,
 		HostConfig: DockerHostConfig{
-			Binds:         []string{dir + ":" + containerDataDir},
+			Binds:         []string{dir + ":" + containerDataDir, dir + "/mods:" + containerModsDir},
 			NetworkMode:   "host",
 			RestartPolicy: DockerRestartPolicy{Name: "unless-stopped"},
 		},
@@ -295,6 +304,9 @@ const commonCfgSeed = `# LinuxGSM common config, created by the LinuxGSM Dashboa
 
 # Keep backups in the data volume, so they survive re-creating the container.
 backupdir="/data/backup"
+
+# Keep the FastDL files in the data volume, where the dashboard serves them under /fastdl/.
+webdir="/data/public_html"
 `
 
 // Install pulls the image of the game, prepares the data directory, creates the container and
@@ -361,8 +373,8 @@ func (d *DockerRuntime) Install(ctx context.Context, req InstallRequest, logf fu
 	return nil
 }
 
-// Clone creates the container <id>-<suffix> with a copy of the server files and LinuxGSM configs
-// of srv and its own, empty instance config, like a LinuxGSM multi-instance on a host. Ports
+// Clone creates the container <id>-<suffix> with a copy of the server files, LinuxGSM configs and
+// mods list of srv and its own, empty instance config, like a LinuxGSM multi-instance on a host. Ports
 // therefore match the original until they are changed. Stop srv first for a consistent copy.
 func (d *DockerRuntime) Clone(ctx context.Context, srv GameServerInstance, suffix string) (string, error) {
 	name := srv.ID + "-" + suffix
@@ -381,7 +393,7 @@ func (d *DockerRuntime) Clone(ctx context.Context, srv GameServerInstance, suffi
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create the data directory")
 	}
-	for _, sub := range []string{"serverfiles", "config-lgsm"} {
+	for _, sub := range []string{"serverfiles", "config-lgsm", "mods"} {
 		src := filepath.Join(srv.Dir, sub)
 		if _, err := os.Lstat(src); err != nil {
 			continue
@@ -392,6 +404,7 @@ func (d *DockerRuntime) Clone(ctx context.Context, srv GameServerInstance, suffi
 			return "", fmt.Errorf("failed to copy the server data")
 		}
 	}
+	_ = os.RemoveAll(filepath.Join(dir, "mods", "tmp"))
 	clone := GameServerInstance{ID: name, Script: srv.Script, Dir: dir, Layout: LayoutData, UID: srv.UID, GID: srv.GID}
 	cfgDir := clone.configRel(srv.Script)
 	_ = os.Remove(filepath.Join(dir, cfgDir, "secrets-"+srv.Script+".cfg"))

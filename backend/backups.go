@@ -545,7 +545,7 @@ func limitString(s string, max int) string {
 // data. LinuxGSM archives its root directory (/app in the official images) with symlinks
 // resolved, so the archive also contains the script, modules and node_modules of the image;
 // those are never restored.
-var containerRestoreRoots = []string{"serverfiles", "log", "lgsm/config-lgsm", "lgsm/data"}
+var containerRestoreRoots = []string{"serverfiles", "log", "lgsm/config-lgsm", "lgsm/data", "lgsm/mods"}
 
 // containerRestoreMembers collects the archive names of containerRestoreRoots, including the
 // "./" prefix the archive uses, so tar can be told exactly what to extract.
@@ -601,6 +601,8 @@ copy() {
 copy serverfiles serverfiles
 copy lgsm/config-lgsm config-lgsm
 copy lgsm/data data
+copy lgsm/mods mods
+rm -rf /data/mods/tmp
 if [ -d "$tmp/log" ]; then
   for d in "$tmp"/log/*; do
     n=${d##*/}

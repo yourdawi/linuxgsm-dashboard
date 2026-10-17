@@ -191,20 +191,20 @@ sudo ./lgsm-dashboard -port 8080
 
 On the first start the dashboard creates `config/config.json` with an `admin` user and prints a random password to the console. Write it down and change it after the first login.
 
-### Docker (preview)
+### Docker
 
 The dashboard can also run as a container. In this **Docker mode** game servers are meant to run as separate containers of the official LinuxGSM images (`gameservermanagers/gameserver`), which the dashboard manages through the Docker socket. The normal installation above is not affected.
 
-> **Status:** preview. In Docker mode the dashboard installs, clones and deletes game servers as containers. For these servers, status, start/stop/restart and all other LinuxGSM commands, the live console with command input, logs, CPU/RAM per server, the config editor, the file manager, backups including restore, and schedules work.
+In Docker mode the dashboard installs, clones and deletes game servers as containers. For these servers, status, start/stop/restart and all other LinuxGSM commands, the live console with command input, logs, CPU/RAM per server, the config editor, the file manager, backups including restore, and schedules work.
 
 **Installing** a game in Docker mode asks for a server name (3-16 characters) instead of a Linux user. The dashboard then:
 
 1. pulls `gameservermanagers/gameserver:<shortname>` (for example `:vh` for `vhserver`; another repository can be set with `LGSM_GAMESERVER_IMAGE`),
-2. creates `<LGSM_DATA_DIR>/<name>` and a `common.cfg` with `backupdir="/data/backup"`, so backups stay in the data directory,
-3. creates the container `<name>` with host networking, restart policy `unless-stopped`, a stop timeout of 180 seconds, `UPDATE_CHECK=0` and `UPDATE_ON_START=false` (updates are run from the dashboard),
+2. creates `<LGSM_DATA_DIR>/<name>` and a `common.cfg` with `backupdir="/data/backup"` and `webdir="/data/public_html"`, so backups and FastDL files stay in the data directory (FastDL is then served under `/fastdl/<name>/` as on a host),
+3. creates the container `<name>` with host networking, restart policy `unless-stopped`, a stop timeout of 180 seconds, `UPDATE_CHECK=0` and `UPDATE_ON_START=false` (updates are run from the dashboard), and mounts `<name>/mods` as `/app/lgsm/mods`: LinuxGSM keeps the list of installed mods there, outside of `/data`, and would otherwise lose it when the container is re-created,
 4. starts it and streams the container log until LinuxGSM has installed and started the server.
 
-**Cloning** creates the container `<name>-<suffix>` with a copy of `serverfiles` and the LinuxGSM configs and its own, empty instance config, like a LinuxGSM multi-instance on a host. With host networking the clone uses the same ports as the original until they are changed (for example in `serverfiles/` or the instance config), so it cannot start while the original runs. Stop the original before cloning for a consistent copy of its files.
+**Cloning** creates the container `<name>-<suffix>` with a copy of `serverfiles`, the LinuxGSM configs and the list of installed mods and its own, empty instance config, like a LinuxGSM multi-instance on a host. With host networking the clone uses the same ports as the original until they are changed (for example in `serverfiles/` or the instance config), so it cannot start while the original runs. Stop the original before cloning for a consistent copy of its files.
 
 **Deleting** a server removes its container, its data directory (including backups in `/data/backup`) and its schedules.
 
