@@ -37,11 +37,19 @@ type execEngine struct {
 	respond  func(c execCall) (stdout, stderr string, code int)
 	server   *httptest.Server
 	nextExec int
+
+	missing map[string]bool // containers that do not exist (404 on inspect)
+	images  []string
+	created map[string]DockerCreateConfig
+	removed []string
+	logs    string // container log returned by /logs
+	image   string // Config.Image reported by inspect
 }
 
 func newExecEngine(t *testing.T, respond func(c execCall) (string, string, int)) *execEngine {
 	t.Helper()
-	e := &execEngine{pending: map[string]*execCall{}, codes: map[string]int{}, running: map[string]bool{}, respond: respond}
+	e := &execEngine{pending: map[string]*execCall{}, codes: map[string]int{}, running: map[string]bool{}, respond: respond,
+		missing: map[string]bool{}, created: map[string]DockerCreateConfig{}}
 	e.server = httptest.NewServer(http.HandlerFunc(e.handle))
 	t.Cleanup(e.server.Close)
 	return e
@@ -128,11 +136,48 @@ func (e *execEngine) handle(w http.ResponseWriter, r *http.Request) {
 		e.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"Running": false, "ExitCode": code})
 
+	case path == "/v1.52/images/create":
+		e.mu.Lock()
+		e.images = append(e.images, r.URL.Query().Get("fromImage")+":"+r.URL.Query().Get("tag"))
+		e.mu.Unlock()
+		_, _ = io.WriteString(w, `{"status":"Pulling from gameservermanagers/gameserver","id":"vh"}`+"\n"+
+			`{"status":"Downloading","progress":"[=>  ]","id":"abc"}`+"\n"+
+			`{"status":"Pull complete","id":"abc"}`+"\n"+
+			`{"status":"Status: Downloaded newer image for gameservermanagers/gameserver:vh"}`+"\n")
+
+	case path == "/v1.52/containers/create":
+		var cfg DockerCreateConfig
+		_ = json.NewDecoder(r.Body).Decode(&cfg)
+		name := r.URL.Query().Get("name")
+		e.mu.Lock()
+		e.created[name] = cfg
+		delete(e.missing, name)
+		e.running[name] = false
+		e.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"Id":"c0ffee"}`)
+
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1.52/containers/"):
+		e.mu.Lock()
+		e.removed = append(e.removed, strings.TrimPrefix(path, "/v1.52/containers/")+"?"+r.URL.RawQuery)
+		e.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+
+	case strings.HasPrefix(path, "/v1.52/containers/") && strings.HasSuffix(path, "/logs"):
+		writeFrame(w, 1, e.logs)
+
 	case strings.HasPrefix(path, "/v1.52/containers/") && strings.HasSuffix(path, "/json"):
 		container := strings.TrimSuffix(strings.TrimPrefix(path, "/v1.52/containers/"), "/json")
 		e.mu.Lock()
 		running, known := e.running[container]
+		missing := e.missing[container]
+		image := e.image
 		e.mu.Unlock()
+		if missing {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"message":"No such container"}`)
+			return
+		}
 		if !known {
 			running = true
 		}
@@ -140,7 +185,8 @@ func (e *execEngine) handle(w http.ResponseWriter, r *http.Request) {
 		if running {
 			status = "running"
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"State": map[string]interface{}{"Running": running, "Status": status}})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"State": map[string]interface{}{"Running": running, "Status": status},
+			"Config": map[string]interface{}{"Image": image}})
 
 	case strings.HasPrefix(path, "/v1.52/containers/") && strings.HasSuffix(path, "/start"):
 		container := strings.TrimSuffix(strings.TrimPrefix(path, "/v1.52/containers/"), "/start")

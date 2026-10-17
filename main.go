@@ -1562,6 +1562,8 @@ func (c serverCtx) clone() {
 	if !decodeJSON(c.w, c.r, &req, 16*1024) {
 		return
 	}
+	// Cloning a container copies the server files, which can take longer than the usual deadline.
+	backend.DisableWriteDeadline(c.w)
 	newScript, err := c.app.inst.CreateMultiInstance(c.serverID, req.Suffix)
 	if err != nil {
 		writeError(c.w, http.StatusBadRequest, err.Error())
@@ -1624,7 +1626,7 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 	if len(installDir) > 1 {
 		installDir = strings.TrimRight(installDir, "/")
 	}
-	if err := backend.ValidateInstallDir(installDir); err != nil {
+	if err := a.inst.ValidateInstall(payload.Game, payload.User, installDir); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

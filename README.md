@@ -195,7 +195,18 @@ On the first start the dashboard creates `config/config.json` with an `admin` us
 
 The dashboard can also run as a container. In this **Docker mode** game servers are meant to run as separate containers of the official LinuxGSM images (`gameservermanagers/gameserver`), which the dashboard manages through the Docker socket. The normal installation above is not affected.
 
-> **Status:** preview. For game server containers the dashboard manages, these already work: status, start/stop/restart and all other LinuxGSM commands, live console with command input, logs, CPU/RAM per server, config editor, file manager, and backups including restore. Installing and deleting game servers and schedules in Docker mode are still being built. Until then these actions report "not available in Docker mode yet".
+> **Status:** preview. In Docker mode the dashboard installs, clones and deletes game servers as containers. For these servers, status, start/stop/restart and all other LinuxGSM commands, the live console with command input, logs, CPU/RAM per server, the config editor, the file manager and backups including restore already work. Schedules are still being built and report "not available in Docker mode yet".
+
+**Installing** a game in Docker mode asks for a server name (3-16 characters) instead of a Linux user. The dashboard then:
+
+1. pulls `gameservermanagers/gameserver:<shortname>` (for example `:vh` for `vhserver`; another repository can be set with `LGSM_GAMESERVER_IMAGE`),
+2. creates `<LGSM_DATA_DIR>/<name>` and a `common.cfg` with `backupdir="/data/backup"`, so backups stay in the data directory,
+3. creates the container `<name>` with host networking, restart policy `unless-stopped`, a stop timeout of 180 seconds, `UPDATE_CHECK=0` and `UPDATE_ON_START=false` (updates are run from the dashboard),
+4. starts it and streams the container log until LinuxGSM has installed and started the server.
+
+**Cloning** creates the container `<name>-<suffix>` with a copy of `serverfiles` and the LinuxGSM configs and its own, empty instance config, like a LinuxGSM multi-instance on a host. With host networking the clone uses the same ports as the original until they are changed (for example in `serverfiles/` or the instance config), so it cannot start while the original runs. Stop the original before cloning for a consistent copy of its files.
+
+**Deleting** a server removes its container and its data directory, including backups in `/data/backup`.
 
 Game server containers are recognised by their labels and use the data layout of the official images (`/data` with `config-lgsm`, `data`, `log`, `serverfiles`):
 
@@ -205,7 +216,7 @@ Game server containers are recognised by their labels and use the data layout of
 | `lgsm-dashboard.gameserver` | LinuxGSM script, for example `vhserver` |
 | `lgsm-dashboard.dir` | The host directory mounted as `/data`, below `LGSM_DATA_DIR`, for example `/srv/lgsm/vhserver` |
 
-Commands run inside the container as the `linuxgsm` user. Stopping a server through LinuxGSM keeps its container running (the official images then report the container as "unhealthy"). **Start** on a stopped container starts the container, whose entrypoint starts the server. LinuxGSM keeps backups inside the container unless `backupdir="/data/backup"` is set in `common.cfg`. A restore needs free space for an extra copy of the backup content while it runs.
+Commands run inside the container as the `linuxgsm` user. Stopping a server through LinuxGSM keeps its container running (the official images then report the container as "unhealthy"). **Start** on a stopped container starts the container, whose entrypoint starts the server. For containers not created by the dashboard, LinuxGSM keeps backups inside the container unless `backupdir="/data/backup"` is set in `common.cfg`. A restore needs free space for an extra copy of the backup content while it runs.
 
 ```bash
 git clone https://github.com/yourdawi/linuxgsm-dashboard.git

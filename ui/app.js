@@ -1985,6 +1985,7 @@ function selectGameForInstall(game, cardElement) {
     // Auto-populate default username (e.g. valheim -> valheimserver)
     el.installUsername.value = `${game.id}server`.replace(/[^a-z0-9_]/g, '');
     el.installPassword.value = '';
+    applyInstallerMode();
     
     el.installFormContainer.classList.remove('hidden');
     
@@ -1992,6 +1993,27 @@ function selectGameForInstall(game, cardElement) {
     if (window.innerWidth <= 992) {
         el.installFormContainer.scrollIntoView({ behavior: 'smooth' });
     }
+}
+
+// In Docker mode the installer creates a container: the name field names the server and its
+// container, a Linux password and a custom directory do not exist there.
+function applyInstallerMode() {
+    const docker = !capable('linux_users');
+    const label = document.querySelector('label[for="install-username"]');
+    const help = label ? label.parentElement.querySelector('small') : null;
+    // data-i18n keeps the right text when the language is switched.
+    [[label, docker ? 'inst-name-label' : 'inst-user-label'], [help, docker ? 'inst-name-help' : 'inst-user-help']].forEach(([node, key]) => {
+        if (!node) return;
+        node.setAttribute('data-i18n', key);
+        node.textContent = t(key);
+    });
+    ['install-password', 'install-dir'].forEach(id => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        const group = input.closest('.form-group');
+        if (group) group.classList.toggle('hidden', docker);
+        if (docker) input.value = '';
+    });
 }
 
 function handleGameInstall(e) {
@@ -3033,6 +3055,8 @@ const i18n = {
         "inst-btn-sync": "Update Game List",
         "inst-search-placeholder": "Search games...",
         "inst-user-label": "System Username",
+        "inst-name-label": "Server Name",
+        "inst-name-help": "Name of the server and its container (3-16 chars: lowercase letters, numbers, underscores). The data is stored in the server data directory under this name.",
         "inst-pass-label": "User Password (Optional)",
         "inst-btn-install": "Install Game Server",
         "settings-title": "Settings & Info",
@@ -3500,6 +3524,8 @@ const i18n = {
         "inst-btn-sync": "Spieleliste aktualisieren",
         "inst-search-placeholder": "Spiele durchsuchen...",
         "inst-user-label": "System-Benutzername",
+        "inst-name-label": "Servername",
+        "inst-name-help": "Name des Servers und seines Containers (3-16 Zeichen: Kleinbuchstaben, Zahlen, Unterstriche). Die Daten liegen unter diesem Namen im Server-Datenverzeichnis.",
         "inst-pass-label": "Passwort (Optional)",
         "inst-btn-install": "Gameserver installieren",
         "settings-title": "Einstellungen & Info",

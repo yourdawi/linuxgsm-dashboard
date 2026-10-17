@@ -42,6 +42,9 @@ type Runtime interface {
 	ValidateInstall(req InstallRequest) error
 	// Install sets up a new game server. Progress is reported line by line through logf.
 	Install(ctx context.Context, req InstallRequest, logf func(string)) error
+	// Clone creates a new server from srv; suffix is validated ([a-z0-9-]). It returns the ID
+	// of the new server.
+	Clone(ctx context.Context, srv GameServerInstance, suffix string) (string, error)
 	// Delete removes a stopped server. sharedUser is set when other instances use the same
 	// Linux user, in which case only this instance is removed.
 	Delete(ctx context.Context, srv GameServerInstance, sharedUser bool) error

@@ -63,6 +63,10 @@ func (f *fakeRuntime) Install(ctx context.Context, req InstallRequest, logf func
 	logf("installing " + req.GameCmd + "\n")
 	return &ExitError{Code: 3}
 }
+func (f *fakeRuntime) Clone(ctx context.Context, srv GameServerInstance, suffix string) (string, error) {
+	f.record("clone %s %s", srv.ID, suffix)
+	return srv.ID + "-" + suffix, nil
+}
 func (f *fakeRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedUser bool) error {
 	f.mu.Lock()
 	f.deleted = append(f.deleted, sharedUser)

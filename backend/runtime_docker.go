@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -40,7 +42,17 @@ type DockerRuntime struct {
 	client  *DockerClient
 	engine  DockerVersion
 	dataDir string
+	image   string // image repository of the game servers, tagged with the LinuxGSM shortname
 }
+
+// defaultGameServerImage is the repository of the official LinuxGSM game server images.
+const defaultGameServerImage = "gameservermanagers/gameserver"
+
+// dockerStopTimeout gives LinuxGSM time for a graceful stop on "docker stop" (stop mode 4 waits
+// up to 120 seconds, plus the optional player warning countdown).
+const dockerStopTimeout = 180
+
+var reImageRepo = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(\.[a-z0-9-]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)+$`)
 
 // NewDockerRuntime connects to the Docker engine (DOCKER_HOST or the default socket). dataDir is
 // the server data directory (LGSM_DATA_DIR), empty for /srv/lgsm.
@@ -58,13 +70,20 @@ func NewDockerRuntime(dataDir string) (*DockerRuntime, error) {
 		return nil, fmt.Errorf("%w (mount /var/run/docker.sock into the dashboard container or set DOCKER_HOST)", err)
 	}
 	engine, _ := client.Version(ctx)
-	return &DockerRuntime{client: client, engine: engine, dataDir: dataDir}, nil
+	image := strings.TrimSpace(os.Getenv("LGSM_GAMESERVER_IMAGE"))
+	if image == "" {
+		image = defaultGameServerImage
+	}
+	if !reImageRepo.MatchString(image) {
+		return nil, fmt.Errorf("invalid LGSM_GAMESERVER_IMAGE %q: use an image repository without tag, e.g. %s", image, defaultGameServerImage)
+	}
+	return &DockerRuntime{client: client, engine: engine, dataDir: dataDir, image: image}, nil
 }
 
 func (d *DockerRuntime) Name() string { return "docker" }
 
 func (d *DockerRuntime) Capabilities() Capabilities {
-	return Capabilities{Runtime: "docker"}
+	return Capabilities{Runtime: "docker", MultiInstance: true}
 }
 
 func (d *DockerRuntime) Init() {
@@ -186,16 +205,212 @@ func (d *DockerRuntime) RunAsUser(ctx context.Context, srv GameServerInstance, s
 	return err
 }
 
-func (d *DockerRuntime) ValidateInstall(InstallRequest) error {
-	return fmt.Errorf("installing game servers is %v", errDockerNotYet)
+// gameShortname returns the LinuxGSM shortname of a game script (vhserver -> vh), which is the
+// tag of its image.
+func gameShortname(gameCmd string) (string, bool) {
+	short := strings.TrimSuffix(gameCmd, "server")
+	if short == gameCmd || short == "" || strings.ContainsAny(short, "-.") || !IsValidScriptName(gameCmd) {
+		return "", false
+	}
+	return short, true
 }
 
-func (d *DockerRuntime) Install(context.Context, InstallRequest, func(string)) error {
-	return errDockerNotYet
+// serverDir is the data directory of a new server.
+func (d *DockerRuntime) serverDir(name string) string {
+	return filepath.ToSlash(filepath.Join(d.dataDir, name))
 }
 
-func (d *DockerRuntime) Delete(context.Context, GameServerInstance, bool) error {
-	return errDockerNotYet
+// checkNewServer verifies that neither a container nor a data directory named name exists.
+func (d *DockerRuntime) checkNewServer(ctx context.Context, name string) error {
+	if _, err := os.Lstat(d.serverDir(name)); err == nil {
+		return fmt.Errorf("data directory %s already exists", d.serverDir(name))
+	}
+	_, found, err := d.client.InspectContainer(ctx, name)
+	if err != nil {
+		return err
+	}
+	if found {
+		return fmt.Errorf("a container named %s already exists", name)
+	}
+	return nil
+}
+
+// ValidateInstall checks the server name (taken from the user name field of the installer) and
+// the game. The server always lives in <data dir>/<name>.
+func (d *DockerRuntime) ValidateInstall(req InstallRequest) error {
+	if req.Dir != "" {
+		return fmt.Errorf("a custom installation directory is not available in Docker mode: servers are stored in %s/<name>", d.dataDir)
+	}
+	if !IsValidLinuxUsername(req.Username) {
+		return fmt.Errorf("invalid server name")
+	}
+	if _, ok := gameShortname(req.GameCmd); !ok {
+		return fmt.Errorf("invalid game")
+	}
+	if info, err := os.Stat(d.dataDir); err != nil || !info.IsDir() {
+		return fmt.Errorf("server data directory %s does not exist in the dashboard container", d.dataDir)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return d.checkNewServer(ctx, req.Username)
+}
+
+// createServerContainer creates and starts the container of a game server whose data lives in
+// dir. LinuxGSM's own update cron and the update on every container start are switched off: the
+// dashboard runs updates.
+func (d *DockerRuntime) createServerContainer(ctx context.Context, name, gameCmd, image, dir string) error {
+	cfg := DockerCreateConfig{
+		Image: image,
+		Env:   []string{"UPDATE_CHECK=0", "UPDATE_ON_START=false"},
+		Labels: map[string]string{
+			dockerLabelManaged:    "true",
+			dockerLabelGameServer: gameCmd,
+			dockerLabelDir:        dir,
+		},
+		StopTimeout: dockerStopTimeout,
+		HostConfig: DockerHostConfig{
+			Binds:         []string{dir + ":" + containerDataDir},
+			NetworkMode:   "host",
+			RestartPolicy: DockerRestartPolicy{Name: "unless-stopped"},
+		},
+	}
+	if _, err := d.client.CreateContainer(ctx, name, cfg); err != nil {
+		return err
+	}
+	return d.client.StartContainer(ctx, name)
+}
+
+// commonCfgSeed is written before the first start, so LinuxGSM keeps backups in the data volume
+// instead of the container (LinuxGSM only creates common.cfg when it is missing).
+const commonCfgSeed = `# LinuxGSM common config, created by the LinuxGSM Dashboard.
+# Settings here apply to every instance of this server and override _default.cfg.
+
+# Keep backups in the data volume, so they survive re-creating the container.
+backupdir="/data/backup"
+`
+
+// Install pulls the image of the game, prepares the data directory, creates the container and
+// follows its log until LinuxGSM has installed and started the server.
+func (d *DockerRuntime) Install(ctx context.Context, req InstallRequest, logf func(string)) error {
+	lang := req.Lang
+	name, gameCmd := req.Username, req.GameCmd
+	short, _ := gameShortname(gameCmd)
+	image := d.image + ":" + short
+	dir := d.serverDir(name)
+	logLine := func(text string) { logf(text + "\n") }
+	fail := func(en, de string, err error) error {
+		logLine(Msg(lang, "[ERROR] "+en, "[FEHLER] "+de) + err.Error())
+		return err
+	}
+
+	logLine(Msg(lang,
+		"[INSTALL] Installing "+gameCmd+" as container '"+name+"' ("+image+")...",
+		"[INSTALL] Installiere "+gameCmd+" als Container '"+name+"' ("+image+")..."))
+
+	logLine(Msg(lang, "[INSTALL] Pulling the image...", "[INSTALL] Lade das Image..."))
+	if err := d.client.PullImage(ctx, image, logf); err != nil {
+		return fail("Failed to pull the image: ", "Image konnte nicht geladen werden: ", err)
+	}
+
+	logLine(Msg(lang, "[INSTALL] Server data: "+dir, "[INSTALL] Serverdaten: "+dir))
+	cfgDir := filepath.Join(dir, "config-lgsm", gameCmd)
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		return fail("Failed to create the data directory: ", "Datenverzeichnis konnte nicht angelegt werden: ", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "common.cfg"), []byte(commonCfgSeed), 0644); err != nil {
+		return fail("Failed to write common.cfg: ", "common.cfg konnte nicht geschrieben werden: ", err)
+	}
+
+	logLine(Msg(lang, "[INSTALL] Creating and starting the container...", "[INSTALL] Erstelle und starte den Container..."))
+	if err := d.createServerContainer(ctx, name, gameCmd, image, dir); err != nil {
+		return fail("Failed to create the container: ", "Container konnte nicht erstellt werden: ", err)
+	}
+
+	logLine(Msg(lang, "[INSTALL] Installing the server via LinuxGSM (container log)...", "[INSTALL] Installiere den Server via LinuxGSM (Container-Log)..."))
+	ready := false
+	err := d.client.FollowLogs(ctx, name, func(line string) bool {
+		logf(stripAnsi(line))
+		// The entrypoint prints this after install, start and details.
+		if strings.Contains(line, "Tail log files") {
+			ready = true
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		return fail("Failed to read the container log: ", "Container-Log konnte nicht gelesen werden: ", err)
+	}
+	if !ready {
+		state, _ := d.client.ContainerState(context.Background(), name)
+		return fail("The container stopped during the installation: ", "Der Container wurde während der Installation beendet: ", fmt.Errorf("%s", state.Status))
+	}
+
+	srv := GameServerInstance{ID: name, Script: gameCmd, Dir: dir, Layout: LayoutData}
+	if !isTmuxSessionActive(d, srv) {
+		return fail("The server did not start, see the log above. ", "Der Server ist nicht gestartet, siehe Log oben. ", fmt.Errorf("tmux session missing"))
+	}
+	logLine(Msg(lang, "[INSTALL] Installation completed successfully!", "[INSTALL] Installation erfolgreich abgeschlossen!"))
+	return nil
+}
+
+// Clone creates the container <id>-<suffix> with a copy of the server files and LinuxGSM configs
+// of srv and its own, empty instance config, like a LinuxGSM multi-instance on a host. Ports
+// therefore match the original until they are changed. Stop srv first for a consistent copy.
+func (d *DockerRuntime) Clone(ctx context.Context, srv GameServerInstance, suffix string) (string, error) {
+	name := srv.ID + "-" + suffix
+	if !IsValidServerID(name) || len(name) > 63 {
+		return "", fmt.Errorf("invalid instance name")
+	}
+	if err := d.checkNewServer(ctx, name); err != nil {
+		return "", err
+	}
+	info, found, err := d.client.InspectContainer(ctx, srv.ID)
+	if err != nil || !found {
+		return "", fmt.Errorf("source container not found")
+	}
+
+	dir := d.serverDir(name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create the data directory")
+	}
+	for _, sub := range []string{"serverfiles", "config-lgsm"} {
+		src := filepath.Join(srv.Dir, sub)
+		if _, err := os.Lstat(src); err != nil {
+			continue
+		}
+		if out, err := exec.CommandContext(ctx, "cp", "-a", src, dir+"/").CombinedOutput(); err != nil {
+			fmt.Printf("[ERROR] Failed to copy %s to %s: %s (%v)\n", src, dir, strings.TrimSpace(string(out)), err)
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("failed to copy the server data")
+		}
+	}
+	clone := GameServerInstance{ID: name, Script: srv.Script, Dir: dir, Layout: LayoutData, UID: srv.UID, GID: srv.GID}
+	cfgDir := clone.configRel(srv.Script)
+	_ = os.Remove(filepath.Join(dir, cfgDir, "secrets-"+srv.Script+".cfg"))
+	initialConfig := fmt.Sprintf("## LinuxGSM Instance Config: %s (clone of %s)\n## Generated by LinuxGSM Dashboard\n\n", name, srv.ID)
+	if err := writeServerFile(clone, filepath.Join(cfgDir, srv.Script+".cfg"), []byte(initialConfig)); err != nil {
+		fmt.Printf("[WARNING] Failed to reset the instance config of %s: %v\n", name, err)
+	}
+
+	if err := d.createServerContainer(ctx, name, srv.Script, info.Config.Image, dir); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// Delete removes the container and the data directory of a server.
+func (d *DockerRuntime) Delete(ctx context.Context, srv GameServerInstance, _ bool) error {
+	dir := filepath.ToSlash(filepath.Clean(srv.Dir))
+	if !IsSafeServerDir(dir) || !IsWithin(d.dataDir, dir) || dir == d.dataDir {
+		return fmt.Errorf("refusing to delete %s: not a server directory below %s", srv.Dir, d.dataDir)
+	}
+	if err := d.client.RemoveContainer(ctx, srv.ID, true); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("container removed, but deleting %s failed: %w", dir, err)
+	}
+	return nil
 }
 
 func (d *DockerRuntime) ReadCrontab(GameServerInstance) (string, error) {
