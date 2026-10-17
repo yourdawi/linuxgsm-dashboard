@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -293,7 +294,13 @@ func GetProcessStatsForUser(username string) (cpu float64, ram float64, pids []i
 		return 0, 0, nil
 	}
 
-	scanner := bufio.NewScanner(&out)
+	return parsePsStats(&out)
+}
+
+// parsePsStats sums up the output of "ps -o pid,%cpu,rss --no-headers": CPU in percent, RAM in
+// GB and the PIDs.
+func parsePsStats(r io.Reader) (cpu float64, ram float64, pids []int) {
+	scanner := bufio.NewScanner(r)
 	var totalCPU float64
 	var totalRAMKB float64
 	var pidList []int

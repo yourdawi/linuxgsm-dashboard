@@ -30,7 +30,7 @@ var reBackupDirSetting = regexp.MustCompile(`^\s*backupdir\s*=\s*["']?([^"']+)["
 
 // customBackupDir reads backupdir from the LinuxGSM config (<script>.cfg -> common.cfg -> _default.cfg).
 func customBackupDir(srv GameServerInstance) string {
-	configDir := filepath.Join(srv.Dir, "lgsm", "config-lgsm", srv.Script)
+	configDir := filepath.Join(srv.Dir, srv.configRel(srv.Script))
 	for _, name := range []string{srv.Script + ".cfg", "common.cfg", "_default.cfg"} {
 		data, err := os.ReadFile(filepath.Join(configDir, name))
 		if err != nil {
@@ -48,6 +48,15 @@ func customBackupDir(srv GameServerInstance) string {
 					"${username}", srv.User, "$username", srv.User,
 					"${selfname}", srv.Script, "$selfname", srv.Script,
 				)
+				if srv.Layout == LayoutData {
+					// Inside the container: the script lives in /app, the data in /data.
+					replacer = strings.NewReplacer(
+						"${lgsmdir}", "/app/lgsm", "$lgsmdir", "/app/lgsm",
+						"${rootdir}", "/app", "$rootdir", "/app",
+						"${selfname}", srv.Script, "$selfname", srv.Script,
+					)
+					return srv.dashboardPath(replacer.Replace(customDir))
+				}
 				return filepath.Clean(replacer.Replace(customDir))
 			}
 		}
@@ -83,6 +92,7 @@ func isAllowedBackupDir(srv GameServerInstance, dir string) bool {
 
 func (im *InstanceManager) getBackupDirsForServer(srv GameServerInstance) []string {
 	dirs := []string{
+		filepath.Join(srv.Dir, srv.defaultBackupRel()),
 		filepath.Join(srv.Dir, "lgsm", "backup"),
 		filepath.Join(srv.Dir, "lgsm", "backups"),
 		filepath.Join(srv.Dir, "backup"),
@@ -256,7 +266,7 @@ func (im *InstanceManager) UploadBackup(serverID string, filename string, fileRe
 		}
 	}
 	if targetDir == "" {
-		targetDir = filepath.Join(srv.Dir, "lgsm", "backup")
+		targetDir = filepath.Join(srv.Dir, srv.defaultBackupRel())
 		if err := mkdirAllForServer(srv, targetDir); err != nil {
 			return fmt.Errorf("failed to create backup directory")
 		}
@@ -316,6 +326,12 @@ func ValidateTarGz(r io.Reader, destDir string, limits ArchiveLimits) error {
 // absolute paths, traversal, device nodes, hard links/symlinks escaping the destination,
 // excessive entry counts and archives whose uncompressed size exceeds the limits.
 func ValidateArchive(r io.Reader, format ArchiveFormat, destDir string, limits ArchiveLimits) error {
+	return validateArchive(r, format, destDir, limits, nil)
+}
+
+// validateArchive is ValidateArchive with a callback that receives the name of every accepted
+// entry.
+func validateArchive(r io.Reader, format ArchiveFormat, destDir string, limits ArchiveLimits, onEntry func(name string)) error {
 	var src io.Reader
 	switch format {
 	case ArchiveTarGz:
@@ -380,6 +396,9 @@ func ValidateArchive(r io.Reader, format ArchiveFormat, destDir string, limits A
 		}
 		if hdr.Size < 0 {
 			return fmt.Errorf("%w: invalid size", ErrUnsafeArchive)
+		}
+		if onEntry != nil {
+			onEntry(hdr.Name)
 		}
 		total += hdr.Size
 		if limits.MaxTotalSize > 0 && total > limits.MaxTotalSize {
@@ -447,7 +466,15 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 		sse.exit(1)
 		return
 	}
-	verr := ValidateArchive(f, format, srv.Dir, DefaultArchiveLimits)
+	var members containerRestoreMembers
+	var onEntry func(string)
+	if srv.Layout == LayoutData {
+		onEntry = members.add
+	}
+	verr := validateArchive(f, format, srv.Dir, DefaultArchiveLimits, onEntry)
+	if verr == nil && srv.Layout == LayoutData && len(members.list) == 0 {
+		verr = fmt.Errorf("the archive contains no server data (serverfiles, log, lgsm/config-lgsm, lgsm/data)")
+	}
 	f.Close()
 	if verr != nil {
 		updateStatus(oldStatus)
@@ -476,9 +503,14 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 
 	sse.log(Msg(lang, fmt.Sprintf("Restoring backup archive %s...", fileName), fmt.Sprintf("Stelle Backup-Archiv %s wieder her...", fileName)))
 
-	// Extract with the privileges of the server user (no shell involved).
-	args := append([]string{"tar", "--no-same-owner"}, format.tarFlags()...)
-	args = append(args, "-xf", filePath, "-C", srv.Dir)
+	// Extract with the privileges of the server user (no shell involved on a host).
+	var args []string
+	if srv.Layout == LayoutData {
+		args = members.restoreCommand(format, filePath)
+	} else {
+		args = append([]string{"tar", "--no-same-owner"}, format.tarFlags()...)
+		args = append(args, "-xf", filePath, "-C", srv.Dir)
+	}
 	var errBuf bytes.Buffer
 	if err := im.rt.RunAsUser(context.Background(), srv, ExecIO{Stderr: &errBuf}, false, args...); err != nil {
 		updateStatus("stopped")
@@ -507,6 +539,92 @@ func limitString(s string, max int) string {
 		return s[:max] + "..."
 	}
 	return s
+}
+
+// containerRestoreRoots are the parts of a backup made inside a container that hold server
+// data. LinuxGSM archives its root directory (/app in the official images) with symlinks
+// resolved, so the archive also contains the script, modules and node_modules of the image;
+// those are never restored.
+var containerRestoreRoots = []string{"serverfiles", "log", "lgsm/config-lgsm", "lgsm/data"}
+
+// containerRestoreMembers collects the archive names of containerRestoreRoots, including the
+// "./" prefix the archive uses, so tar can be told exactly what to extract.
+type containerRestoreMembers struct {
+	seen map[string]bool
+	list []string
+}
+
+func (m *containerRestoreMembers) add(name string) {
+	rel, prefix := name, ""
+	for strings.HasPrefix(rel, "./") {
+		rel, prefix = rel[2:], prefix+"./"
+	}
+	for _, root := range containerRestoreRoots {
+		if rel != root && !strings.HasPrefix(rel, root+"/") {
+			continue
+		}
+		member := prefix + root
+		if m.seen == nil {
+			m.seen = make(map[string]bool)
+		}
+		if !m.seen[member] {
+			m.seen[member] = true
+			m.list = append(m.list, member)
+		}
+		return
+	}
+}
+
+// containerRestoreScript restores a container backup. GNU tar does not extract through the
+// absolute symlinks of the container (/app/serverfiles -> /data/serverfiles, log/server ->
+// game log directory), so the data directories are first extracted into a staging directory
+// below /data and then copied to their place in the /data layout. log/server is skipped: it is
+// a copy of the game's log directory inside serverfiles.
+//
+// Arguments: staging directory, archive, tar decompression flag ("" for none), members.
+const containerRestoreScript = `set -eu
+tmp=$1 archive=$2 flag=$3
+shift 3
+trap 'rm -rf "$tmp"' EXIT
+rm -rf "$tmp"
+mkdir -p "$tmp"
+if [ -n "$flag" ]; then
+  tar --no-same-owner "$flag" -xf "$archive" -C "$tmp" -- "$@"
+else
+  tar --no-same-owner -xf "$archive" -C "$tmp" -- "$@"
+fi
+copy() {
+  [ -d "$tmp/$1" ] || return 0
+  mkdir -p "/data/$2"
+  cp -a "$tmp/$1/." "/data/$2/"
+}
+copy serverfiles serverfiles
+copy lgsm/config-lgsm config-lgsm
+copy lgsm/data data
+if [ -d "$tmp/log" ]; then
+  for d in "$tmp"/log/*; do
+    n=${d##*/}
+    [ "$n" = server ] && continue
+    if [ -d "$d" ]; then
+      copy "log/$n" "log/$n"
+    elif [ -e "$d" ]; then
+      mkdir -p /data/log
+      cp -a "$d" /data/log/
+    fi
+  done
+fi
+`
+
+// restoreCommand returns the command that restores archive (a path the dashboard sees) into
+// the /data volume of a container.
+func (m *containerRestoreMembers) restoreCommand(format ArchiveFormat, archive string) []string {
+	flag := ""
+	if f := format.tarFlags(); len(f) > 0 {
+		flag = f[0]
+	}
+	staging := containerDataDir + "/.lgsm-dashboard-restore"
+	args := []string{"sh", "-c", containerRestoreScript, "restore", staging, archive, flag}
+	return append(args, m.list...)
 }
 
 // -------------------------------------------------------------
@@ -540,7 +658,7 @@ func ValidateCloudBackupSettings(s CloudBackupSettings) error {
 }
 
 func cloudConfigRel(srv GameServerInstance) string {
-	return filepath.Join("lgsm", "config-lgsm", srv.Script, "cloud_backup.json")
+	return filepath.Join(srv.configRel(srv.Script), "cloud_backup.json")
 }
 
 func (im *InstanceManager) GetCloudBackupSettings(serverID string) (CloudBackupSettings, error) {

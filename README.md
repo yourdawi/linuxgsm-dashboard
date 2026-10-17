@@ -195,7 +195,17 @@ On the first start the dashboard creates `config/config.json` with an `admin` us
 
 The dashboard can also run as a container. In this **Docker mode** game servers are meant to run as separate containers of the official LinuxGSM images (`gameservermanagers/gameserver`), which the dashboard manages through the Docker socket. The normal installation above is not affected.
 
-> **Status:** preview. The image starts, connects to Docker and lists the game server containers it manages. Installing, starting and stopping game servers, the console, schedules and backups in Docker mode are still being built. Until then these actions report "not available in Docker mode yet".
+> **Status:** preview. For game server containers the dashboard manages, these already work: status, start/stop/restart and all other LinuxGSM commands, live console with command input, logs, CPU/RAM per server, config editor, file manager, and backups including restore. Installing and deleting game servers and schedules in Docker mode are still being built. Until then these actions report "not available in Docker mode yet".
+
+Game server containers are recognised by their labels and use the data layout of the official images (`/data` with `config-lgsm`, `data`, `log`, `serverfiles`):
+
+| Label | Value |
+|-------|-------|
+| `lgsm-dashboard.managed` | `true` |
+| `lgsm-dashboard.gameserver` | LinuxGSM script, for example `vhserver` |
+| `lgsm-dashboard.dir` | The host directory mounted as `/data`, below `LGSM_DATA_DIR`, for example `/srv/lgsm/vhserver` |
+
+Commands run inside the container as the `linuxgsm` user. Stopping a server through LinuxGSM keeps its container running (the official images then report the container as "unhealthy"). **Start** on a stopped container starts the container, whose entrypoint starts the server. LinuxGSM keeps backups inside the container unless `backupdir="/data/backup"` is set in `common.cfg`. A restore needs free space for an extra copy of the backup content while it runs.
 
 ```bash
 git clone https://github.com/yourdawi/linuxgsm-dashboard.git

@@ -277,7 +277,7 @@ func scanServerDir(dir string, owner passwdEntry, requireOwner bool) []*GameServ
 			Script: scriptName,
 			Dir:    dir,
 			Status: "stopped",
-			Port:   parseServerPort(dir, scriptName),
+			Port:   parseServerPort(dir, filepath.Join(dir, "lgsm", "config-lgsm"), scriptName),
 			Game:   getGameFromScriptName(scriptName),
 			UID:    owner.UID,
 			GID:    owner.GID,

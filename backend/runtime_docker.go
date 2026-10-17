@@ -1,11 +1,13 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -24,9 +26,16 @@ const defaultDockerDataDir = "/srv/lgsm"
 // errDockerNotYet is returned by operations the Docker runtime does not support yet.
 var errDockerNotYet = errors.New("not available in Docker mode yet")
 
+// Inside the official images LinuxGSM runs as this user from /app.
+const (
+	dockerServerUser = "linuxgsm"
+	dockerScriptDir  = "/app"
+)
+
 // DockerRuntime manages game servers that run as containers of the official LinuxGSM images
-// (gameservermanagers/gameserver). This is the foundation: it connects to the engine and finds
-// the managed containers; commands, installation and scheduling follow.
+// (gameservermanagers/gameserver). Commands run through the Engine API exec endpoint as the
+// linuxgsm user; the server data volume (/data) is visible to the dashboard below dataDir.
+// Installation, deletion and scheduling follow.
 type DockerRuntime struct {
 	client  *DockerClient
 	engine  DockerVersion
@@ -74,7 +83,15 @@ func (d *DockerRuntime) Discover(customPaths []string) ([]*GameServerInstance, e
 	if err != nil {
 		return nil, err
 	}
-	return dockerInstances(containers, d.dataDir), nil
+	found := dockerInstances(containers, d.dataDir)
+	for _, inst := range found {
+		// A running container does not mean a running game server: LinuxGSM can be stopped
+		// inside it. The tmux session tells.
+		if inst.Status == "running" && !isTmuxSessionActive(d, *inst) {
+			inst.Status = "stopped"
+		}
+	}
+	return found, nil
 }
 
 // dockerInstances maps managed containers to instances. Containers with missing or unsafe labels
@@ -92,31 +109,81 @@ func dockerInstances(containers []DockerContainer, dataDir string) []*GameServer
 		if c.State == "running" {
 			status = "running"
 		}
+		// Files written by the dashboard are handed to the owner of the data directory, which is
+		// the linuxgsm user of the image (UID/GID 1000 unless configured otherwise).
+		uid, gid, err := fileOwnerIDs(dir)
+		if err != nil || uid <= 0 {
+			uid, gid = -1, -1
+		}
 		found = append(found, &GameServerInstance{
 			ID:     id,
 			Name:   mapScriptToGameName(script),
-			User:   "linuxgsm",
+			User:   dockerServerUser,
 			Script: script,
 			Dir:    dir,
 			Status: status,
+			Port:   parseServerPort(dir, filepath.Join(dir, "config-lgsm"), script),
 			Game:   getGameFromScriptName(script),
-			UID:    -1,
-			GID:    -1,
+			UID:    uid,
+			GID:    gid,
+			Layout: LayoutData,
 		})
 	}
 	return found
 }
 
-func (d *DockerRuntime) ProcessStats(GameServerInstance) (float64, float64, []int) {
-	return 0, 0, nil
+// ProcessStats sums up the processes of the linuxgsm user inside the container, measured the
+// same way as on a host (ps).
+func (d *DockerRuntime) ProcessStats(srv GameServerInstance) (float64, float64, []int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	_, err := d.client.Exec(ctx, srv.ID, DockerExecConfig{
+		Cmd:  []string{"ps", "-u", dockerServerUser, "-o", "pid,%cpu,rss", "--no-headers"},
+		User: "root",
+	}, ExecIO{Stdout: &out})
+	if err != nil {
+		return 0, 0, nil
+	}
+	return parsePsStats(&out)
 }
 
+// RunLGSM runs ./<script> in /app as the linuxgsm user. A start or restart of a server whose
+// container is stopped starts the container instead; its entrypoint then starts the server.
 func (d *DockerRuntime) RunLGSM(ctx context.Context, srv GameServerInstance, stdio ExecIO, args ...string) error {
-	return &StartError{Err: errDockerNotYet}
+	if len(args) > 0 && (args[0] == "start" || args[0] == "restart") {
+		state, err := d.client.ContainerState(ctx, srv.ID)
+		if err == nil && !state.Running {
+			if stdio.Stdout != nil {
+				fmt.Fprintf(stdio.Stdout, "Container %s is %s, starting it. The container starts %s itself.\n", srv.ID, state.Status, srv.Script)
+			}
+			return d.client.StartContainer(ctx, srv.ID)
+		}
+	}
+	cmd := append([]string{"./" + srv.Script}, args...)
+	_, err := d.client.Exec(ctx, srv.ID, DockerExecConfig{Cmd: cmd, User: dockerServerUser, WorkingDir: dockerScriptDir}, stdio)
+	return err
 }
 
+// RunAsUser runs argv as the linuxgsm user inside the container. Paths below the server
+// directory are translated to /data, so callers can pass the paths they see.
 func (d *DockerRuntime) RunAsUser(ctx context.Context, srv GameServerInstance, stdio ExecIO, login bool, args ...string) error {
-	return &StartError{Err: errDockerNotYet}
+	if len(args) == 0 {
+		return &StartError{Err: fmt.Errorf("no command")}
+	}
+	cmd := make([]string, len(args))
+	for i, a := range args {
+		cmd[i] = srv.containerPath(a)
+	}
+	if login {
+		quoted := make([]string, len(cmd))
+		for i, a := range cmd {
+			quoted[i] = ShellQuote(a)
+		}
+		cmd = []string{"bash", "-lc", strings.Join(quoted, " ")}
+	}
+	_, err := d.client.Exec(ctx, srv.ID, DockerExecConfig{Cmd: cmd, User: dockerServerUser, WorkingDir: containerDataDir}, stdio)
+	return err
 }
 
 func (d *DockerRuntime) ValidateInstall(InstallRequest) error {

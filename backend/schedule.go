@@ -257,7 +257,7 @@ func (im *InstanceManager) GetBackupSettings(serverID string) (BackupSettings, e
 		return BackupSettings{}, fmt.Errorf("server not found")
 	}
 
-	configRel := filepath.Join("lgsm", "config-lgsm", srv.Script)
+	configRel := srv.configRel(srv.Script)
 	settings := BackupSettings{}
 
 	parseFile := func(rel string) {
@@ -355,7 +355,7 @@ func (im *InstanceManager) SaveBackupSettings(serverID string, settings BackupSe
 		return err
 	}
 
-	rel := filepath.Join("lgsm", "config-lgsm", srv.Script, srv.Script+".cfg")
+	rel := filepath.Join(srv.configRel(srv.Script), srv.Script+".cfg")
 	content, err := readServerCfg(srv, rel)
 	if err != nil {
 		return fmt.Errorf("failed to read config")

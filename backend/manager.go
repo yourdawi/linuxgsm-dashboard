@@ -35,6 +35,7 @@ type GameServerInstance struct {
 	UID         int         `json:"-"`
 	GID         int         `json:"-"`
 	BindIP      string      `json:"-"` // "Server IP" reported by LinuxGSM details, used for queries
+	Layout      string      `json:"-"` // LayoutHost or LayoutData (see layout.go)
 }
 
 // QueryInfo is the live state reported by the game server itself (see query.go).
@@ -555,7 +556,7 @@ func isTmuxSessionActive(rt Runtime, srv GameServerInstance) bool {
 }
 
 func findLinuxGSMTmuxTarget(rt Runtime, srv GameServerInstance) (socketName string, sessionName string, ok bool) {
-	for _, socket := range linuxGSMTmuxSocketNames(srv.Dir, srv.Script) {
+	for _, socket := range linuxGSMTmuxSocketNames(srv) {
 		sessions, err := listTmuxSessions(rt, srv, socket)
 		if err != nil {
 			continue
@@ -569,9 +570,10 @@ func findLinuxGSMTmuxTarget(rt Runtime, srv GameServerInstance) (socketName stri
 
 var reTmuxUID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-func linuxGSMTmuxSocketNames(dir string, scriptName string) []string {
+func linuxGSMTmuxSocketNames(srv GameServerInstance) []string {
+	scriptName := srv.Script
 	var sockets []string
-	uidPath := filepath.Join(dir, "lgsm", "data", scriptName+".uid")
+	uidPath := filepath.Join(srv.Dir, srv.lgsmDataRel(), scriptName+".uid")
 	if f, err := os.Open(uidPath); err == nil {
 		uidBytes, _ := io.ReadAll(io.LimitReader(f, 256))
 		f.Close()

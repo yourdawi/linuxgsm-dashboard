@@ -19,8 +19,9 @@ import (
 // Docker SDK is required.
 type DockerClient struct {
 	http    *http.Client
-	baseURL string // scheme and host, e.g. http://docker
-	prefix  string // API version prefix, e.g. /v1.47
+	dial    func(ctx context.Context) (net.Conn, error) // raw connection for exec streams
+	baseURL string                                      // scheme and host, e.g. http://docker
+	prefix  string                                      // API version prefix, e.g. /v1.47
 }
 
 // DockerVersion is the subset of GET /version the dashboard uses.
@@ -68,11 +69,11 @@ func NewDockerClient(ctx context.Context, host string) (*DockerClient, error) {
 
 	transport := &http.Transport{MaxIdleConns: 4, IdleConnTimeout: 90 * time.Second}
 	c := &DockerClient{http: &http.Client{Transport: transport}}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	switch u.Scheme {
 	case "unix":
 		socket := u.Path
-		dialer := &net.Dialer{Timeout: 5 * time.Second}
-		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		c.dial = func(ctx context.Context) (net.Conn, error) {
 			return dialer.DialContext(ctx, "unix", socket)
 		}
 		c.baseURL = "http://docker"
@@ -80,9 +81,16 @@ func NewDockerClient(ctx context.Context, host string) (*DockerClient, error) {
 		if u.Host == "" {
 			return nil, fmt.Errorf("invalid DOCKER_HOST %q: missing host", host)
 		}
+		addr := u.Host
+		c.dial = func(ctx context.Context) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp", addr)
+		}
 		c.baseURL = "http://" + u.Host
 	default:
 		return nil, fmt.Errorf("unsupported DOCKER_HOST %q: use unix:// or tcp://", host)
+	}
+	transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return c.dial(ctx)
 	}
 
 	v, err := c.Version(ctx)
@@ -122,7 +130,8 @@ func (c *DockerClient) do(ctx context.Context, method, path string, query url.Va
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
+	// 304 Not Modified means "already in that state" (e.g. starting a running container).
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotModified {
 		var apiErr struct {
 			Message string `json:"message"`
 		}

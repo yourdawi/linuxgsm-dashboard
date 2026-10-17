@@ -102,8 +102,8 @@ func (im *InstanceManager) CreateMultiInstance(serverID string, suffix string) (
 	// 1. Create config in lgsm/config-lgsm/<rootScript>/<newInstanceScript>.cfg (LinuxGSM standard)
 	// 2. Also ensure lgsm/config-lgsm/<newInstanceScript>/<newInstanceScript>.cfg is available
 	for _, rel := range []string{
-		filepath.Join("lgsm", "config-lgsm", rootScript, newInstanceScript+".cfg"),
-		filepath.Join("lgsm", "config-lgsm", newInstanceScript, newInstanceScript+".cfg"),
+		filepath.Join(srv.configRel(rootScript), newInstanceScript+".cfg"),
+		filepath.Join(srv.configRel(newInstanceScript), newInstanceScript+".cfg"),
 	} {
 		resolved, err := ResolveInRoot(srv.Dir, rel)
 		if err != nil {
