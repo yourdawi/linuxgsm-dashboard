@@ -110,6 +110,14 @@ func main() {
 		return
 	}
 
+	// Runtime that controls the game servers (LGSM_RUNTIME, default: host)
+	rt, err := backend.SelectRuntime()
+	if err != nil {
+		fmt.Printf("[FATAL] %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("[SYS] Runtime: %s\n", rt.Name())
+
 	// Retroactive migration
 	migrateSystemdService()
 
@@ -151,10 +159,14 @@ func main() {
 	}
 	updater.StartBackgroundCheck(updateCheckInterval)
 
+	instances := backend.NewInstanceManager(*configDirFlag, rt)
+	metrics := backend.NewSystemMetricsCollector()
+	metrics.ProcessStats = instances.ProcessStats
+
 	application := &app{
 		auth:           authMgr,
-		inst:           backend.NewInstanceManager(*configDirFlag),
-		metrics:        backend.NewSystemMetricsCollector(),
+		inst:           instances,
+		metrics:        metrics,
 		crawler:        gameCrawler,
 		limiter:        backend.NewLoginLimiter(),
 		updater:        updater,
@@ -820,7 +832,8 @@ func (a *app) handleInfo(w http.ResponseWriter, r *http.Request, user backend.Us
 			"permissions":  user.Permissions,
 			"totp_enabled": user.TOTPEnabled,
 		},
-		"csrf_token": session.CSRFToken,
+		"csrf_token":   session.CSRFToken,
+		"capabilities": a.inst.Capabilities(),
 	})
 }
 
@@ -1347,7 +1360,8 @@ func (c serverCtx) downloadBackup() {
 	}
 	backend.DisableWriteDeadline(c.w)
 	c.w.Header().Set("Content-Disposition", attachmentDisposition(fileName))
-	c.w.Header().Set("Content-Type", "application/gzip")
+	format, _ := backend.BackupArchiveFormat(fileName)
+	c.w.Header().Set("Content-Type", format.ContentType())
 	c.w.Header().Set("Content-Security-Policy", sandboxCSP)
 	http.ServeContent(c.w, c.r, fileName, info.ModTime(), f)
 }

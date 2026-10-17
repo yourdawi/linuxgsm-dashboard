@@ -49,6 +49,9 @@ type SystemMetricsCollector struct {
 	lastCPUTime  uint64
 	lastCPUIdle  uint64
 	cpuModelName string
+
+	// ProcessStats measures a server that has no usage values yet (set by the caller).
+	ProcessStats func(GameServerInstance) (cpu float64, ram float64, pids []int)
 }
 
 func NewSystemMetricsCollector() *SystemMetricsCollector {
@@ -91,7 +94,9 @@ func (s *SystemMetricsCollector) getServersStats(servers []GameServerInstance) [
 	for i, srv := range servers {
 		cpu, ram, pids := srv.CPU, srv.RAM, srv.PIDs
 		if pids == nil && cpu == 0 && ram == 0 {
-			cpu, ram, pids = srv.GetProcessResourceUsage()
+			if s.ProcessStats != nil {
+				cpu, ram, pids = s.ProcessStats(srv)
+			}
 		}
 
 		stats[i] = ServerStats{

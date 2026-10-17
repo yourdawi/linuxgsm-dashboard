@@ -12,12 +12,14 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // -------------------------------------------------------------
@@ -54,7 +56,7 @@ func customBackupDir(srv GameServerInstance) string {
 }
 
 // isAllowedBackupDir decides whether the dashboard (running as root) may list, read and write
-// .tar.gz files in dir. The backupdir setting is editable by gameserver users, so it must not be
+// backup archives in dir. The backupdir setting is editable by gameserver users, so it must not be
 // able to point at arbitrary system locations: the directory has to be inside the server
 // directory or be owned by the server's Linux user.
 func isAllowedBackupDir(srv GameServerInstance, dir string) bool {
@@ -104,7 +106,52 @@ func (im *InstanceManager) getBackupDirsForServer(srv GameServerInstance) []stri
 	return uniqueDirs
 }
 
-var reBackupName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}\.tar\.gz$`)
+// ArchiveFormat is the compression of a backup archive. LinuxGSM picks zstd when it is
+// installed, otherwise pigz/gzip, otherwise a plain tar (fn_select_compression).
+type ArchiveFormat int
+
+const (
+	ArchiveTar ArchiveFormat = iota
+	ArchiveTarGz
+	ArchiveTarZst
+)
+
+// BackupArchiveFormat derives the archive format from a backup file name.
+func BackupArchiveFormat(name string) (ArchiveFormat, bool) {
+	switch {
+	case strings.HasSuffix(name, ".tar.gz"):
+		return ArchiveTarGz, true
+	case strings.HasSuffix(name, ".tar.zst"):
+		return ArchiveTarZst, true
+	case strings.HasSuffix(name, ".tar"):
+		return ArchiveTar, true
+	}
+	return 0, false
+}
+
+// ContentType returns the media type used when the archive is downloaded.
+func (f ArchiveFormat) ContentType() string {
+	switch f {
+	case ArchiveTarGz:
+		return "application/gzip"
+	case ArchiveTarZst:
+		return "application/zstd"
+	}
+	return "application/x-tar"
+}
+
+// tarFlags returns the tar options that select the decompressor for extraction.
+func (f ArchiveFormat) tarFlags() []string {
+	switch f {
+	case ArchiveTarGz:
+		return []string{"-z"}
+	case ArchiveTarZst:
+		return []string{"--zstd"}
+	}
+	return nil
+}
+
+var reBackupName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}\.tar(\.gz|\.zst)?$`)
 
 // IsValidBackupFilename validates backup file names from requests.
 func IsValidBackupFilename(name string) bool {
@@ -193,8 +240,8 @@ func (im *InstanceManager) UploadBackup(serverID string, filename string, fileRe
 	if !ok {
 		return fmt.Errorf("server not found")
 	}
-	if !strings.HasSuffix(filename, ".tar.gz") {
-		return fmt.Errorf("invalid backup file extension, only .tar.gz is allowed")
+	if _, ok := BackupArchiveFormat(filename); !ok {
+		return fmt.Errorf("invalid backup file extension, only .tar.gz, .tar.zst and .tar are allowed")
 	}
 	if !IsValidBackupFilename(filename) {
 		return fmt.Errorf("invalid backup filename")
@@ -260,16 +307,38 @@ func archivePathEscapes(name string) bool {
 	return false
 }
 
-// ValidateTarGz inspects a .tar.gz archive before it is extracted into destDir. It rejects
+// ValidateTarGz inspects a .tar.gz archive before it is extracted into destDir.
+func ValidateTarGz(r io.Reader, destDir string, limits ArchiveLimits) error {
+	return ValidateArchive(r, ArchiveTarGz, destDir, limits)
+}
+
+// ValidateArchive inspects a backup archive before it is extracted into destDir. It rejects
 // absolute paths, traversal, device nodes, hard links/symlinks escaping the destination,
 // excessive entry counts and archives whose uncompressed size exceeds the limits.
-func ValidateTarGz(r io.Reader, destDir string, limits ArchiveLimits) error {
-	gz, err := gzip.NewReader(r)
-	if err != nil {
-		return fmt.Errorf("%w: not a gzip archive", ErrUnsafeArchive)
+func ValidateArchive(r io.Reader, format ArchiveFormat, destDir string, limits ArchiveLimits) error {
+	var src io.Reader
+	switch format {
+	case ArchiveTarGz:
+		gz, err := gzip.NewReader(r)
+		if err != nil {
+			return fmt.Errorf("%w: not a gzip archive", ErrUnsafeArchive)
+		}
+		defer gz.Close()
+		src = gz
+	case ArchiveTarZst:
+		// One decoder goroutine and a bounded window keep a crafted frame from exhausting memory.
+		zr, err := zstd.NewReader(r, zstd.WithDecoderConcurrency(1), zstd.WithDecoderLowmem(true), zstd.WithDecoderMaxWindow(1<<30))
+		if err != nil {
+			return fmt.Errorf("%w: not a zstd archive", ErrUnsafeArchive)
+		}
+		defer zr.Close()
+		src = zr
+	case ArchiveTar:
+		src = r
+	default:
+		return fmt.Errorf("%w: unknown archive format", ErrUnsafeArchive)
 	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(src)
 
 	var entries int
 	var total int64
@@ -339,6 +408,11 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 	oldStatus := srvPtr.Status
 	im.mu.Unlock()
 
+	format, ok := BackupArchiveFormat(fileName)
+	if !ok {
+		http.Error(w, "Unsupported backup format", http.StatusBadRequest)
+		return
+	}
 	filePath, err := im.getBackupFilePath(srv, fileName)
 	if err != nil {
 		http.Error(w, "Backup file not found", http.StatusNotFound)
@@ -373,7 +447,7 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 		sse.exit(1)
 		return
 	}
-	verr := ValidateTarGz(f, srv.Dir, DefaultArchiveLimits)
+	verr := ValidateArchive(f, format, srv.Dir, DefaultArchiveLimits)
 	f.Close()
 	if verr != nil {
 		updateStatus(oldStatus)
@@ -381,21 +455,32 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 		sse.exit(1)
 		return
 	}
+	// tar --zstd runs the zstd binary where the server lives; check for it before the server
+	// is stopped.
+	if format == ArchiveTarZst {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err := im.rt.RunAsUser(ctx, srv, ExecIO{}, false, "zstd", "--version")
+		cancel()
+		if err != nil {
+			updateStatus(oldStatus)
+			sse.log(Msg(lang, "zstd is not installed, .tar.zst backups cannot be restored.", "zstd ist nicht installiert, .tar.zst-Backups können nicht wiederhergestellt werden."))
+			sse.exit(1)
+			return
+		}
+	}
 
 	if oldStatus == "running" {
 		sse.log(Msg(lang, "Stopping game server before restore...", "Stoppe Gameserver vor der Wiederherstellung..."))
-		_ = lgsmCommand(context.Background(), srv, "stop").Run()
+		_ = im.runLGSM(context.Background(), srv, "stop")
 	}
 
 	sse.log(Msg(lang, fmt.Sprintf("Restoring backup archive %s...", fileName), fmt.Sprintf("Stelle Backup-Archiv %s wieder her...", fileName)))
 
 	// Extract with the privileges of the server user (no shell involved).
-	cmd := exec.Command("runuser", "-u", srv.User, "--", "tar", "--no-same-owner", "-xzf", filePath, "-C", srv.Dir)
+	args := append([]string{"tar", "--no-same-owner"}, format.tarFlags()...)
+	args = append(args, "-xf", filePath, "-C", srv.Dir)
 	var errBuf bytes.Buffer
-	cmd.Stdout = io.Discard
-	cmd.Stderr = &errBuf
-
-	if err := cmd.Run(); err != nil {
+	if err := im.rt.RunAsUser(context.Background(), srv, ExecIO{Stderr: &errBuf}, false, args...); err != nil {
 		updateStatus("stopped")
 		sse.log(Msg(lang, "Error during restore: ", "Fehler bei der Wiederherstellung: ") + err.Error())
 		sse.log(stripAnsi(limitString(errBuf.String(), 4000)))
@@ -407,7 +492,7 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 
 	if oldStatus == "running" {
 		sse.log(Msg(lang, "Restarting game server...", "Starte Gameserver neu..."))
-		_ = lgsmCommand(context.Background(), srv, "start").Run()
+		_ = im.runLGSM(context.Background(), srv, "start")
 		updateStatus("running")
 	} else {
 		updateStatus("stopped")
@@ -531,35 +616,17 @@ func (im *InstanceManager) SyncCloudBackup(w http.ResponseWriter, r *http.Reques
 
 	// Login shell so the user's own rclone configuration (~/.config/rclone) is used.
 	targetDest := fmt.Sprintf("%s:%s", settings.Remote, settings.Path)
-	rcloneCmd := "rclone copy -v -- " + ShellQuote(backupDir) + " " + ShellQuote(targetDest)
-	cmd := exec.CommandContext(r.Context(), "runuser", "-l", srv.User, "-c", rcloneCmd)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		sse.log("Error creating stdout pipe")
-		sse.exit(1)
-		return
-	}
-	cmd.Stderr = cmd.Stdout
-
-	if err := cmd.Start(); err != nil {
+	err = streamLines(func(out io.Writer) error {
+		return im.rt.RunAsUser(r.Context(), srv, ExecIO{Stdout: out, Stderr: out}, true, "rclone", "copy", "-v", "--", backupDir, targetDest)
+	}, func(line string) {
+		sse.log(strings.TrimRight(line, "\r\n"))
+	}, nil)
+	if isStartError(err) {
 		sse.log(Msg(lang, "Error starting rclone (is rclone installed?): ", "Fehler beim Starten von rclone (ist rclone installiert?): ") + err.Error())
 		sse.exit(1)
 		return
 	}
-
-	reader := bufio.NewReader(stdout)
-	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			sse.log(strings.TrimRight(line, "\r\n"))
-		}
-		if err != nil {
-			break
-		}
-	}
-
-	if err := cmd.Wait(); err != nil {
+	if err != nil {
 		sse.log(Msg(lang, "Sync finished with error: ", "Synchronisierung mit Fehler beendet: ") + err.Error())
 		sse.exit(1)
 		return

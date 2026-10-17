@@ -95,6 +95,7 @@ The dashboard also serves FastDL content directly under `/fastdl/<server>/`, so 
 ### Backups
 
 - List, create, download, upload, delete and restore backups. The backup directory configured in LinuxGSM (`backupdir`) is taken into account.
+- All archive formats LinuxGSM creates are supported: `.tar.zst` (used when `zstd` is installed), `.tar.gz` and plain `.tar`. Restoring a `.tar.zst` backup needs `zstd` and GNU tar 1.31 or newer on the host.
 - Restores stop a running server first, extract the archive and start the server again. The output is streamed live.
 - Uploaded archives are handed over to the server's Linux user, so backups can be moved between hosts.
 - Retention settings (`maxbackups`, `maxbackupdays`, `stoponbackup`) and an optional cron schedule for automatic backups.

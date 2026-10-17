@@ -1035,7 +1035,7 @@
                                 <span data-i18n="menu-backups">Backups</span>
                             </h3>
                             <div style="display: flex; gap: 0.5rem;">
-                                <input type="file" id="backups-input-upload" accept=".tar.gz" style="display: none;">
+                                <input type="file" id="backups-input-upload" accept=".tar.gz,.tar.zst,.tar" style="display: none;">
                                 <button id="backups-btn-upload" class="btn btn-secondary btn-sm" disabled style="display: inline-flex; align-items: center; gap: 0.25rem;">
                                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"></path></svg>
                                     <span data-i18n="backups-btn-upload">Backup hochladen</span>
@@ -1148,7 +1148,7 @@
                                 <span data-i18n="cloudbackup-btn-sync">Jetzt synchronisieren</span>
                             </button>
                         </div>
-                        <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 1rem;" data-i18n="cloudbackup-desc">Synchronisiere erstellte .tar.gz Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).</p>
+                        <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 1rem;" data-i18n="cloudbackup-desc">Synchronisiere erstellte Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).</p>
                         <form id="cloudbackup-settings-form" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; align-items: flex-end;">
                             <div>
                                 <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 600; cursor: pointer;">

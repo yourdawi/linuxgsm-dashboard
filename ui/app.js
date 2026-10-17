@@ -3198,7 +3198,7 @@ const i18n = {
         "backups-select-default": "-- Select a server --",
         "backups-btn-create": "Create Backup",
         "backups-btn-upload": "Upload Backup",
-        "backups-upload-invalid-ext": "Only .tar.gz files are allowed.",
+        "backups-upload-invalid-ext": "Only .tar.gz, .tar.zst and .tar files are allowed.",
         "backups-upload-success": "Backup uploaded successfully.",
         "backups-upload-error": "Failed to upload backup due to a network error.",
         "backups-no-server-selected": "No server selected",
@@ -3320,7 +3320,7 @@ const i18n = {
         "settings-btn-clone": "Clone Instance",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Sync Now",
-        "cloudbackup-desc": "Synchronize created .tar.gz backups automatically or manually to cloud storage (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-desc": "Synchronize created backups automatically or manually to cloud storage (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
         "cloudbackup-enable-label": "Enable Cloud Sync",
         "cloudbackup-remote-label": "rclone Remote Name",
         "cloudbackup-remote-placeholder": "e.g. gdrive or s3",
@@ -3672,7 +3672,7 @@ const i18n = {
         "backups-select-default": "-- Server auswählen --",
         "backups-btn-create": "Backup erstellen",
         "backups-btn-upload": "Backup hochladen",
-        "backups-upload-invalid-ext": "Nur .tar.gz-Dateien sind erlaubt.",
+        "backups-upload-invalid-ext": "Nur .tar.gz-, .tar.zst- und .tar-Dateien sind erlaubt.",
         "backups-upload-success": "Backup erfolgreich hochgeladen.",
         "backups-upload-error": "Fehler beim Hochladen des Backups aufgrund eines Netzwerkfehlers.",
         "backups-no-server-selected": "Kein Server ausgewählt",
@@ -3794,7 +3794,7 @@ const i18n = {
         "settings-btn-clone": "Instanz klonen",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Jetzt synchronisieren",
-        "cloudbackup-desc": "Synchronisiere erstellte .tar.gz Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-desc": "Synchronisiere erstellte Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
         "cloudbackup-enable-label": "Cloud Sync aktivieren",
         "cloudbackup-remote-label": "rclone Remote Name",
         "cloudbackup-remote-placeholder": "z. B. gdrive oder s3",
@@ -4788,7 +4788,7 @@ async function handleBackupsUpload(e) {
     const serverId = state.selectedBackupServer;
     if (!serverId) return;
 
-    if (!file.name.endsWith('.tar.gz')) {
+    if (!['.tar.gz', '.tar.zst', '.tar'].some(ext => file.name.endsWith(ext))) {
         alert(t('backups-upload-invalid-ext'));
         return;
     }

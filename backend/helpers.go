@@ -684,12 +684,3 @@ func parseServerPortsFromConfig(homeDir string, scriptName string, game string) 
 
 	return probes
 }
-
-func cleanupLeftoverSudoers() {
-	files, err := filepath.Glob("/etc/sudoers.d/lgsm-*")
-	if err == nil {
-		for _, f := range files {
-			_ = os.Remove(f)
-		}
-	}
-}
