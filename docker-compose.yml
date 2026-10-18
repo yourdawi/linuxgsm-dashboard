@@ -1,0 +1,44 @@
+# LinuxGSM Web Dashboard in Docker mode.
+#
+#   docker compose up -d
+#   docker compose logs dashboard     # shows the generated admin password on the first start
+#
+# Game servers are created by the dashboard as separate containers of the official LinuxGSM
+# images. Their data lives below /srv/lgsm on the host.
+services:
+  dashboard:
+    image: ghcr.io/yourdawi/linuxgsm-dashboard:latest
+    # To build the image from this repository instead:
+    # build: .
+    container_name: lgsm-dashboard
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Dashboard configuration: users, password hashes, audit log, tags.
+      - lgsm-dashboard-config:/config
+      # Game server data. Must be mounted at the SAME path as on the host, because the dashboard
+      # passes this path to Docker when it creates game server containers.
+      - /srv/lgsm:/srv/lgsm
+      # Access to the Docker engine. Anyone who controls the dashboard as administrator can
+      # control Docker on this host, which is equivalent to root access.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      LGSM_DATA_DIR: /srv/lgsm
+      # Optional default time zone of the schedules. It can also be set in the dashboard under
+      # Settings > General; without either, schedules use UTC.
+      # TZ: Europe/Berlin
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Needed to hand uploaded and edited files over to the game server user (UID 1000).
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    # Extra flags, for example behind a reverse proxy with HTTPS:
+    # command: ["-secure-cookies", "-trust-proxy"]
+
+volumes:
+  lgsm-dashboard-config:

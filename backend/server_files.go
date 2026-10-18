@@ -134,7 +134,7 @@ func readResolvedFileLimited(resolved string, limit int64) ([]byte, error) {
 
 func configDirsRel(srv GameServerInstance) (string, string) {
 	rootScript := strings.Split(srv.Script, "-")[0]
-	return filepath.Join("lgsm", "config-lgsm", srv.Script), filepath.Join("lgsm", "config-lgsm", rootScript)
+	return srv.configRel(srv.Script), srv.configRel(rootScript)
 }
 
 // configRoots returns the directories the config editor may access.
@@ -499,7 +499,7 @@ func (im *InstanceManager) GetInstalledMods(serverID string) ([]string, error) {
 		return nil, ErrServerNotFound
 	}
 	installedMods := []string{}
-	resolved, err := ResolveInRoot(srv.Dir, filepath.Join("lgsm", "mods", "installed-mods.txt"))
+	resolved, err := ResolveInRoot(srv.Dir, filepath.Join(srv.modsRel(), "installed-mods.txt"))
 	if err != nil {
 		return installedMods, nil
 	}

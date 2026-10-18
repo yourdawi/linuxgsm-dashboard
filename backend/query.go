@@ -57,8 +57,15 @@ type queryTarget struct {
 	Protocol string
 }
 
-// queryTargets returns the candidates for a server, most likely first.
-func queryTargets(srv GameServerInstance) []queryTarget {
+// queryHostProvider is implemented by runtimes that know further addresses where game servers
+// answer queries (Docker mode: the Docker host as seen from the dashboard container).
+type queryHostProvider interface {
+	QueryHosts() []string
+}
+
+// queryTargets returns the candidates for a server, most likely first. extraHosts are tried after
+// localhost and the server IP.
+func queryTargets(srv GameServerInstance, extraHosts ...string) []queryTarget {
 	game := srv.Game
 	if queryUnsupportedGames[game] {
 		return nil
@@ -67,6 +74,11 @@ func queryTargets(srv GameServerInstance) []queryTarget {
 	hosts := []string{"127.0.0.1"}
 	if srv.BindIP != "" && srv.BindIP != "0.0.0.0" && srv.BindIP != "127.0.0.1" && net.ParseIP(srv.BindIP) != nil {
 		hosts = append(hosts, srv.BindIP)
+	}
+	for _, h := range extraHosts {
+		if net.ParseIP(h) != nil {
+			hosts = appendUniqueString(hosts, h)
+		}
 	}
 
 	gamePort := srv.Port
@@ -194,7 +206,11 @@ func (im *InstanceManager) queryServer(srv GameServerInstance) queryState {
 	prev := im.queryCache[srv.ID]
 	im.queryMu.Unlock()
 
-	targets := queryTargets(srv)
+	var extra []string
+	if p, ok := im.rt.(queryHostProvider); ok {
+		extra = p.QueryHosts()
+	}
+	targets := queryTargets(srv, extra...)
 	if prev.target != nil {
 		targets = append([]queryTarget{*prev.target}, targets...)
 	}

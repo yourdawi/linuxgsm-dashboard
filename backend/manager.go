@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,10 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +35,7 @@ type GameServerInstance struct {
 	UID         int         `json:"-"`
 	GID         int         `json:"-"`
 	BindIP      string      `json:"-"` // "Server IP" reported by LinuxGSM details, used for queries
+	Layout      string      `json:"-"` // LayoutHost or LayoutData (see layout.go)
 }
 
 // QueryInfo is the live state reported by the game server itself (see query.go).
@@ -92,6 +90,7 @@ type InstanceManager struct {
 	mu        sync.Mutex
 	instances map[string]*GameServerInstance
 	configDir string
+	rt        Runtime
 	static    bool // tests: disable discovery from /etc/passwd and the filesystem
 
 	pathsMu     sync.RWMutex
@@ -116,20 +115,18 @@ func Msg(lang, en, de string) string {
 	return en
 }
 
-// passwdPath can be overridden in tests.
-var passwdPath = "/etc/passwd"
-
 // NewInstanceManager creates the manager and runs an initial discovery. configDir stores
-// server tags and the list of additional (custom) server directories.
-func NewInstanceManager(configDir string) *InstanceManager {
+// server tags and the list of additional (custom) server directories; rt controls the servers.
+func NewInstanceManager(configDir string, rt Runtime) *InstanceManager {
 	im := &InstanceManager{
 		instances:    make(map[string]*GameServerInstance),
 		configDir:    configDir,
+		rt:           rt,
 		detailsTried: make(map[string]time.Time),
 	}
 	im.customPaths = im.loadCustomPaths()
 
-	cleanupLeftoverSudoers()
+	rt.Init()
 	im.ScanInstances()
 	im.startQueryLoop()
 	im.startDiskLoop()
@@ -143,6 +140,7 @@ func NewStaticInstanceManager(configDir string, instances ...GameServerInstance)
 	im := &InstanceManager{
 		instances:    make(map[string]*GameServerInstance),
 		configDir:    configDir,
+		rt:           HostRuntime{},
 		static:       true,
 		detailsTried: make(map[string]time.Time),
 	}
@@ -163,7 +161,7 @@ func (im *InstanceManager) GetInstances() []GameServerInstance {
 	for _, inst := range im.instances {
 		item := *inst
 		if !im.static {
-			item.CPU, item.RAM, item.PIDs = item.GetProcessResourceUsage()
+			item.CPU, item.RAM, item.PIDs = im.rt.ProcessStats(item)
 		}
 		if item.Status == "running" {
 			item.QueryData = im.cachedQuery(item.ID)
@@ -207,37 +205,6 @@ func (im *InstanceManager) ScanInstances() {
 	im.ScanInstancesNoLock()
 }
 
-type passwdEntry struct {
-	Name string
-	UID  int
-	GID  int
-	Home string
-}
-
-func readPasswd() ([]passwdEntry, error) {
-	file, err := os.Open(passwdPath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var entries []passwdEntry
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		parts := strings.Split(scanner.Text(), ":")
-		if len(parts) < 6 {
-			continue
-		}
-		uid, err1 := strconv.Atoi(parts[2])
-		gid, err2 := strconv.Atoi(parts[3])
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		entries = append(entries, passwdEntry{Name: parts[0], UID: uid, GID: gid, Home: parts[5]})
-	}
-	return entries, scanner.Err()
-}
-
 // IsSafeServerDir validates a directory that will be used as LinuxGSM root. The strict charset
 // guarantees the path can be embedded in crontab lines, systemd units and shell commands.
 func IsSafeServerDir(dir string) bool {
@@ -265,93 +232,19 @@ func cleanSlashPath(p string) string {
 	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(p)))
 }
 
-// isDiscoverableHome decides whether a passwd home directory is scanned for LinuxGSM scripts:
-// every home below /home (previous behaviour) and the homes of regular users (UID >= 1000)
-// located anywhere else, e.g. on a separate SSD.
-func isDiscoverableHome(e passwdEntry) bool {
-	if e.UID == 0 || !IsValidLinuxUsername(e.Name) || !IsSafeServerDir(e.Home) {
-		return false
-	}
-	if strings.HasPrefix(e.Home, "/home/") {
-		return true
-	}
-	return e.UID >= 1000 && e.UID < 65534
-}
-
 func (im *InstanceManager) ScanInstancesNoLock() {
 	if im.static {
 		return
 	}
 
-	users, err := readPasswd()
+	found, err := im.rt.Discover(im.GetCustomServerPaths())
 	if err != nil {
-		fmt.Println("Error reading /etc/passwd:", err)
+		fmt.Println("Error discovering servers:", err)
 		return
 	}
-
-	detected := make(map[string]*GameServerInstance)
-	seenScripts := make(map[string]bool)
-
-	add := func(inst *GameServerInstance) {
-		key := filepath.Join(inst.Dir, inst.Script)
-		if seenScripts[key] {
-			return
-		}
-		seenScripts[key] = true
-		id := inst.Script
-		if _, taken := detected[id]; taken {
-			id = inst.Script + "@" + inst.User
-			for n := 2; detected[id] != nil; n++ {
-				id = fmt.Sprintf("%s@%s-%d", inst.Script, inst.User, n)
-			}
-		}
-		inst.ID = id
-		detected[id] = inst
-	}
-
-	// 1. Home directories of system users
-	byUID := make(map[int]passwdEntry)
-	for _, u := range users {
-		if _, exists := byUID[u.UID]; !exists {
-			byUID[u.UID] = u
-		}
-		if !isDiscoverableHome(u) {
-			continue
-		}
-		for _, inst := range scanServerDir(u.Home, u, false) {
-			add(inst)
-		}
-	}
-
-	// 2. Additional server directories configured by an administrator. Each configured directory
-	// and its direct sub directories are scanned. The owner of the directory determines the Linux
-	// user the server runs as; root owned directories are never used.
-	for _, base := range im.GetCustomServerPaths() {
-		candidates := []string{base}
-		if entries, err := os.ReadDir(base); err == nil {
-			for _, e := range entries {
-				if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-					candidates = append(candidates, filepath.Join(base, e.Name()))
-				}
-			}
-		}
-		for _, dir := range candidates {
-			dir = filepath.ToSlash(filepath.Clean(dir))
-			if !IsSafeServerDir(dir) {
-				continue
-			}
-			uid, err := lfileOwnerUID(dir)
-			if err != nil || uid <= 0 {
-				continue
-			}
-			owner, ok := byUID[uid]
-			if !ok || !IsValidLinuxUsername(owner.Name) {
-				continue
-			}
-			for _, inst := range scanServerDir(dir, owner, true) {
-				add(inst)
-			}
-		}
+	detected := make(map[string]*GameServerInstance, len(found))
+	for _, inst := range found {
+		detected[inst.ID] = inst
 	}
 
 	// Keep track of active statuses like 'installing' or 'updating' and retain tags
@@ -406,121 +299,6 @@ func (im *InstanceManager) shouldTryDetails(serverID string) bool {
 	return true
 }
 
-// scanServerDir detects LinuxGSM scripts in dir. When requireOwner is set, scripts must be owned
-// by the given user (used for administrator configured directories).
-func scanServerDir(dir string, owner passwdEntry, requireOwner bool) []*GameServerInstance {
-	var found []*GameServerInstance
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		scriptName := entry.Name()
-		if scriptName == "linuxgsm.sh" || !IsValidScriptName(scriptName) {
-			continue
-		}
-		scriptPath := filepath.Join(dir, scriptName)
-
-		// If script is a symlink to another LinuxGSM script, convert it to a real copy.
-		// LinuxGSM resolves symlinks via `readlink -f $0` or `realpath`, which causes
-		// symlinked instances to execute the root server instead of the clone.
-		if entry.Type()&os.ModeSymlink != 0 {
-			convertScriptSymlink(dir, scriptPath, owner)
-		}
-
-		info, err := os.Lstat(scriptPath)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-
-		// Must be executable
-		if info.Mode()&0111 == 0 {
-			continue
-		}
-
-		if requireOwner {
-			if uid, err := lfileOwnerUID(scriptPath); err != nil || uid != owner.UID {
-				continue
-			}
-		}
-
-		// Must be a LinuxGSM script (shebang + comment check)
-		if !isLinuxGSMScript(scriptPath) {
-			continue
-		}
-
-		port := parseServerPort(dir, scriptName)
-
-		status := "stopped"
-		if isTmuxSessionActive(owner.Name, dir, scriptName) {
-			status = "running"
-		}
-
-		found = append(found, &GameServerInstance{
-			ID:     scriptName,
-			Name:   mapScriptToGameName(scriptName),
-			User:   owner.Name,
-			Script: scriptName,
-			Dir:    dir,
-			Status: status,
-			Port:   port,
-			Game:   getGameFromScriptName(scriptName),
-			UID:    owner.UID,
-			GID:    owner.GID,
-		})
-	}
-	return found
-}
-
-// convertScriptSymlink replaces a symlinked instance script by a copy of its target. The target
-// must be a LinuxGSM script inside the same directory and owned by the same user; the copy is
-// made with the user's privileges, so a malicious link can never make root copy foreign files.
-func convertScriptSymlink(dir, scriptPath string, owner passwdEntry) {
-	target, err := filepath.EvalSymlinks(scriptPath)
-	if err != nil {
-		return
-	}
-	dirResolved, err := filepath.EvalSymlinks(dir)
-	if err != nil || !IsWithin(dirResolved, target) || !isLinuxGSMScript(target) {
-		return
-	}
-	if uid, err := fileOwnerUID(target); err != nil || (uid >= 0 && uid != owner.UID) {
-		return
-	}
-	if err := os.Remove(scriptPath); err != nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_ = exec.CommandContext(ctx, "runuser", "-u", owner.Name, "--", "cp", "-p", "--", target, scriptPath).Run()
-	_ = exec.CommandContext(ctx, "runuser", "-u", owner.Name, "--", "chmod", "0755", "--", scriptPath).Run()
-}
-
-// lgsmShellCommand builds the shell snippet executed through `runuser -l <user> -c`.
-// Every interpolated value is single-quoted; values are additionally validated at discovery.
-func lgsmShellCommand(srv GameServerInstance, args ...string) string {
-	var b strings.Builder
-	b.WriteString("cd ")
-	b.WriteString(ShellQuote(srv.Dir))
-	b.WriteString(" && ./")
-	b.WriteString(ShellQuote(srv.Script))
-	for _, a := range args {
-		b.WriteString(" ")
-		b.WriteString(ShellQuote(a))
-	}
-	return b.String()
-}
-
-// lgsmCommand runs the LinuxGSM script of srv as its Linux user in a login shell.
-func lgsmCommand(ctx context.Context, srv GameServerInstance, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, "runuser", "-l", srv.User, "-c", lgsmShellCommand(srv, args...))
-}
-
 // sanitizeDisplayText removes control characters (incl. line breaks) and limits the length of
 // strings that originate from game server output (e.g. the server name).
 func sanitizeDisplayText(s string, max int) string {
@@ -562,7 +340,7 @@ func (im *InstanceManager) executeRefreshDetails(serverID string, srv GameServer
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		outputBytes, err := lgsmCommand(ctx, srv, "details").Output()
+		outputBytes, err := im.outputLGSM(ctx, srv, "details")
 		if err != nil {
 			fmt.Printf("[WARNING] failed to query details for server %s: %v\n", serverID, err)
 			return
@@ -601,8 +379,14 @@ func (im *InstanceManager) executeRefreshDetails(serverID string, srv GameServer
 	}()
 }
 
-func (srv *GameServerInstance) GetProcessResourceUsage() (cpu float64, ram float64, pids []int) {
-	return GetProcessStatsForUser(srv.User)
+// ProcessStats returns the CPU usage (percent), RAM usage (GB) and PIDs of a server.
+func (im *InstanceManager) ProcessStats(srv GameServerInstance) (cpu float64, ram float64, pids []int) {
+	return im.rt.ProcessStats(srv)
+}
+
+// Capabilities lists the optional features of the active runtime.
+func (im *InstanceManager) Capabilities() Capabilities {
+	return im.rt.Capabilities()
 }
 
 // -------------------------------------------------------------
@@ -617,17 +401,15 @@ func (im *InstanceManager) GetConsole(serverID string, mode string, lang string)
 
 	switch mode {
 	case "tmux":
-		socketName, sessionName, ok := findLinuxGSMTmuxTarget(srv.User, srv.Dir, srv.Script)
+		socketName, sessionName, ok := findLinuxGSMTmuxTarget(im.rt, srv)
 		if !ok {
 			return []string{Msg(lang, "Server is offline. tmux session is not active.", "Server ist offline. tmux Sitzung nicht aktiv.")}, nil
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "runuser", "-u", srv.User, "--", "tmux", "-L", socketName, "capture-pane", "-t", sessionName, "-p")
 		var out bytes.Buffer
-		cmd.Stdout = &out
-		if err := cmd.Run(); err != nil {
+		if err := im.rt.RunAsUser(ctx, srv, ExecIO{Stdout: &out}, false, "tmux", "-L", socketName, "capture-pane", "-t", sessionName, "-p"); err != nil {
 			return []string{Msg(lang, "Failed to capture the tmux screen.", "Fehler beim Erfassen des tmux Bildschirms.")}, nil
 		}
 
@@ -738,7 +520,7 @@ func (im *InstanceManager) SendConsoleCommand(serverID string, command string) e
 		return err
 	}
 
-	socketName, sessionName, ok := findLinuxGSMTmuxTarget(srv.User, srv.Dir, srv.Script)
+	socketName, sessionName, ok := findLinuxGSMTmuxTarget(im.rt, srv)
 	if !ok {
 		return fmt.Errorf("server is not running")
 	}
@@ -746,10 +528,10 @@ func (im *InstanceManager) SendConsoleCommand(serverID string, command string) e
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// -l sends the text literally, so tmux never interprets it as key names (e.g. "C-c").
-	if err := exec.CommandContext(ctx, "runuser", "-u", srv.User, "--", "tmux", "-L", socketName, "send-keys", "-t", sessionName, "-l", "--", command).Run(); err != nil {
+	if err := im.rt.RunAsUser(ctx, srv, ExecIO{}, false, "tmux", "-L", socketName, "send-keys", "-t", sessionName, "-l", "--", command); err != nil {
 		return fmt.Errorf("failed to send command")
 	}
-	if err := exec.CommandContext(ctx, "runuser", "-u", srv.User, "--", "tmux", "-L", socketName, "send-keys", "-t", sessionName, "Enter").Run(); err != nil {
+	if err := im.rt.RunAsUser(ctx, srv, ExecIO{}, false, "tmux", "-L", socketName, "send-keys", "-t", sessionName, "Enter"); err != nil {
 		return fmt.Errorf("failed to send command")
 	}
 	return nil
@@ -768,19 +550,19 @@ func ValidateConsoleCommand(command string) error {
 	return nil
 }
 
-func isTmuxSessionActive(username, dir, scriptName string) bool {
-	_, _, ok := findLinuxGSMTmuxTarget(username, dir, scriptName)
+func isTmuxSessionActive(rt Runtime, srv GameServerInstance) bool {
+	_, _, ok := findLinuxGSMTmuxTarget(rt, srv)
 	return ok
 }
 
-func findLinuxGSMTmuxTarget(username, dir, scriptName string) (socketName string, sessionName string, ok bool) {
-	for _, socket := range linuxGSMTmuxSocketNames(dir, scriptName) {
-		sessions, err := listTmuxSessions(username, socket)
+func findLinuxGSMTmuxTarget(rt Runtime, srv GameServerInstance) (socketName string, sessionName string, ok bool) {
+	for _, socket := range linuxGSMTmuxSocketNames(srv) {
+		sessions, err := listTmuxSessions(rt, srv, socket)
 		if err != nil {
 			continue
 		}
-		if tmuxSessionExists(sessions, scriptName) {
-			return socket, scriptName, true
+		if tmuxSessionExists(sessions, srv.Script) {
+			return socket, srv.Script, true
 		}
 	}
 	return "", "", false
@@ -788,9 +570,10 @@ func findLinuxGSMTmuxTarget(username, dir, scriptName string) (socketName string
 
 var reTmuxUID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-func linuxGSMTmuxSocketNames(dir string, scriptName string) []string {
+func linuxGSMTmuxSocketNames(srv GameServerInstance) []string {
+	scriptName := srv.Script
 	var sockets []string
-	uidPath := filepath.Join(dir, "lgsm", "data", scriptName+".uid")
+	uidPath := filepath.Join(srv.Dir, srv.lgsmDataRel(), scriptName+".uid")
 	if f, err := os.Open(uidPath); err == nil {
 		uidBytes, _ := io.ReadAll(io.LimitReader(f, 256))
 		f.Close()
@@ -804,13 +587,11 @@ func linuxGSMTmuxSocketNames(dir string, scriptName string) []string {
 	return appendUniqueString(sockets, scriptName)
 }
 
-func listTmuxSessions(username string, socketName string) (string, error) {
+func listTmuxSessions(rt Runtime, srv GameServerInstance, socketName string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "runuser", "-u", username, "--", "tmux", "-L", socketName, "list-sessions", "-F", "#{session_name}")
 	var out bytes.Buffer
-	cmd.Stdout = &out
-	err := cmd.Run()
+	err := rt.RunAsUser(ctx, srv, ExecIO{Stdout: &out}, false, "tmux", "-L", socketName, "list-sessions", "-F", "#{session_name}")
 	return out.String(), err
 }
 
@@ -893,48 +674,20 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 		return
 	}
 
-	// runuser -l <user> -c "cd '<dir>' && ./'<script>' '<action>'"
-	cmd := lgsmCommand(context.Background(), srv, action)
-	cmd.Stdin = strings.NewReader("y\ny\ny\n")
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		updateStatus(oldStatus)
-		sse.log(Msg(lang, "Error creating stdout pipe.", "Fehler beim Erstellen der stdout Pipe."))
-		sse.exit(1)
-		return
-	}
-	cmd.Stderr = cmd.Stdout // Redirect stderr to stdout to stream both
-
-	if err := cmd.Start(); err != nil {
+	err := streamLines(func(out io.Writer) error {
+		return im.rt.RunLGSM(context.Background(), srv, ExecIO{Stdin: strings.NewReader("y\ny\ny\n"), Stdout: out, Stderr: out}, action)
+	}, func(line string) {
+		sse.log(stripAnsi(line))
+	}, func(err error) {
+		sse.log("\n" + Msg(lang, "Error reading output: ", "Fehler beim Lesen des Outputs: ") + err.Error())
+	})
+	if isStartError(err) {
 		updateStatus(oldStatus)
 		sse.log(Msg(lang, "Error starting command: ", "Fehler beim Starten des Befehls: ") + err.Error())
 		sse.exit(1)
 		return
 	}
-
-	reader := bufio.NewReader(stdout)
-	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			sse.log(stripAnsi(line))
-		}
-		if err != nil {
-			if err != io.EOF {
-				sse.log("\n" + Msg(lang, "Error reading output: ", "Fehler beim Lesen des Outputs: ") + err.Error())
-			}
-			break
-		}
-	}
-
-	exitCode := 0
-	if err := cmd.Wait(); err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		} else {
-			exitCode = 1
-		}
-	}
+	exitCode := ExitCode(err)
 
 	// Reset status from "updating" so ScanInstances detects the actual status
 	im.mu.Lock()
@@ -963,7 +716,7 @@ func (im *InstanceManager) RunActionDirect(serverID, action string) error {
 	if _, ok := ActionPermission(action); !ok {
 		return fmt.Errorf("invalid action")
 	}
-	return lgsmCommand(context.Background(), srv, action).Run()
+	return im.runLGSM(context.Background(), srv, action)
 }
 
 func (im *InstanceManager) RunBulkAction(action string, serverIDs []string) map[string]string {
@@ -1010,7 +763,7 @@ func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, 
 
 	// 1. Stop the server first
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	_ = lgsmCommand(stopCtx, srv, "stop").Run()
+	_ = im.runLGSM(stopCtx, srv, "stop")
 	cancel()
 
 	// 2. Count instances sharing the same user
@@ -1023,44 +776,10 @@ func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, 
 	}
 	im.mu.Unlock()
 
-	// 3. Remove systemd service if it exists (current and legacy naming)
-	for _, unit := range []string{"linuxgsm-" + srv.Script, srv.ID} {
-		if !IsValidScriptName(unit) {
-			continue
-		}
-		servicePath := filepath.Join("/etc/systemd/system", unit+".service")
-		if _, err := os.Stat(servicePath); err == nil {
-			_ = exec.Command("systemctl", "stop", unit+".service").Run()
-			_ = exec.Command("systemctl", "disable", unit+".service").Run()
-			_ = os.Remove(servicePath)
-			_ = exec.Command("systemctl", "daemon-reload").Run()
-		}
-	}
-
-	// 4./5. Remove crontab entries & files
-	if userInstancesCount > 1 {
-		// Shared user! Only remove this instance's cron lines, script and config.
-		_ = removeCronLinesForScript(srv, nil)
-
-		if p, err := ResolveInRoot(srv.Dir, srv.Script); err == nil {
-			_ = os.Remove(p)
-		}
-		if p, err := ResolveInRoot(srv.Dir, filepath.Join("lgsm", "config-lgsm", srv.Script)); err == nil && filepath.Base(p) == srv.Script {
-			_ = os.RemoveAll(p)
-		}
-	} else {
-		_ = exec.Command("crontab", "-u", srv.User, "-r").Run()
-
-		// Exclusive user! Wipe everything by deleting user and home folder
-		_ = exec.Command("pkill", "-u", srv.User).Run()
-		time.Sleep(500 * time.Millisecond)
-		_ = exec.Command("pkill", "-9", "-u", srv.User).Run()
-
-		if err := exec.Command("userdel", "-r", srv.User).Run(); err != nil {
-			fmt.Printf("[ERROR] Failed to delete user %s: %v\n", srv.User, err)
-			http.Error(w, "Failed to delete user", http.StatusInternalServerError)
-			return
-		}
+	// 3. Remove autostart, schedules and files
+	if err := im.rt.Delete(context.Background(), srv, userInstancesCount > 1); err != nil {
+		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
+		return
 	}
 
 	// 6. Force scan update

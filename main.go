@@ -110,8 +110,20 @@ func main() {
 		return
 	}
 
-	// Retroactive migration
-	migrateSystemdService()
+	// Runtime that controls the game servers (LGSM_RUNTIME, default: host)
+	rt, err := backend.SelectRuntime(*configDirFlag)
+	if err != nil {
+		fmt.Printf("[FATAL] %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("[SYS] Runtime: %s\n", rt.Name())
+
+	caps := rt.Capabilities()
+
+	// Retroactive migration of the dashboard's own systemd unit
+	if caps.SelfUpdate {
+		migrateSystemdService()
+	}
 
 	// Initialize Auth Manager
 	authMgr, err := backend.NewAuthManager(*configDirFlag)
@@ -144,17 +156,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	updater := &backend.Updater{
-		Repo:           releaseRepo,
-		PublicKey:      releasePublicKey,
-		CurrentVersion: Version,
+	// In-place updates replace the binary; a container is updated by pulling a new image.
+	var updater *backend.Updater
+	if caps.SelfUpdate {
+		updater = &backend.Updater{
+			Repo:           releaseRepo,
+			PublicKey:      releasePublicKey,
+			CurrentVersion: Version,
+		}
+		updater.StartBackgroundCheck(updateCheckInterval)
 	}
-	updater.StartBackgroundCheck(updateCheckInterval)
+
+	instances := backend.NewInstanceManager(*configDirFlag, rt)
+	metrics := backend.NewSystemMetricsCollector()
+	metrics.ProcessStats = instances.ProcessStats
 
 	application := &app{
 		auth:           authMgr,
-		inst:           backend.NewInstanceManager(*configDirFlag),
-		metrics:        backend.NewSystemMetricsCollector(),
+		inst:           instances,
+		metrics:        metrics,
 		crawler:        gameCrawler,
 		limiter:        backend.NewLoginLimiter(),
 		updater:        updater,
@@ -505,6 +525,7 @@ func (a *app) routes() http.Handler {
 
 	mux.HandleFunc("/api/admin/users", a.requireAdmin(a.handleUsers))
 	mux.HandleFunc("/api/admin/server-paths", a.requireAdmin(a.handleServerPaths))
+	mux.HandleFunc("/api/admin/timezone", a.requireAdmin(a.handleTimeZone))
 	mux.HandleFunc("/api/admin/update/check", methodOnly(http.MethodGet, a.requireAdmin(a.handleUpdateCheck)))
 	mux.HandleFunc("/api/admin/update/trigger", methodOnly(http.MethodPost, a.requireAdmin(a.handleUpdateTrigger)))
 
@@ -820,15 +841,24 @@ func (a *app) handleInfo(w http.ResponseWriter, r *http.Request, user backend.Us
 			"permissions":  user.Permissions,
 			"totp_enabled": user.TOTPEnabled,
 		},
-		"csrf_token": session.CSRFToken,
+		"csrf_token":   session.CSRFToken,
+		"capabilities": a.inst.Capabilities(),
 	})
 }
 
 func (a *app) handleFirewallStatus(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
+	if !a.inst.Capabilities().Firewall {
+		writeError(w, http.StatusNotImplemented, "Firewall management is not available in this runtime")
+		return
+	}
 	writeJSON(w, http.StatusOK, backend.GetFirewallStatus())
 }
 
 func (a *app) handleFirewallOpen(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
+	if !a.inst.Capabilities().Firewall {
+		writeError(w, http.StatusNotImplemented, "Firewall management is not available in this runtime")
+		return
+	}
 	var payload struct {
 		Port     int    `json:"port"`
 		Protocol string `json:"protocol"`
@@ -1347,7 +1377,8 @@ func (c serverCtx) downloadBackup() {
 	}
 	backend.DisableWriteDeadline(c.w)
 	c.w.Header().Set("Content-Disposition", attachmentDisposition(fileName))
-	c.w.Header().Set("Content-Type", "application/gzip")
+	format, _ := backend.BackupArchiveFormat(fileName)
+	c.w.Header().Set("Content-Type", format.ContentType())
 	c.w.Header().Set("Content-Security-Policy", sandboxCSP)
 	http.ServeContent(c.w, c.r, fileName, info.ModTime(), f)
 }
@@ -1532,6 +1563,8 @@ func (c serverCtx) clone() {
 	if !decodeJSON(c.w, c.r, &req, 16*1024) {
 		return
 	}
+	// Cloning a container copies the server files, which can take longer than the usual deadline.
+	backend.DisableWriteDeadline(c.w)
 	newScript, err := c.app.inst.CreateMultiInstance(c.serverID, req.Suffix)
 	if err != nil {
 		writeError(c.w, http.StatusBadRequest, err.Error())
@@ -1594,7 +1627,7 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 	if len(installDir) > 1 {
 		installDir = strings.TrimRight(installDir, "/")
 	}
-	if err := backend.ValidateInstallDir(installDir); err != nil {
+	if err := a.inst.ValidateInstall(payload.Game, payload.User, installDir); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1744,6 +1777,35 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request, admin backend.
 }
 
 // GET/PUT /api/admin/server-paths: additional directories scanned for LinuxGSM servers.
+// handleTimeZone reads or changes the time zone of the dashboard's own scheduler (Docker mode).
+func (a *app) handleTimeZone(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	if _, ok := a.inst.ScheduleTimeZone(); !ok {
+		writeError(w, http.StatusNotImplemented, "The schedule time zone is set by the operating system in this runtime")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		info, _ := a.inst.ScheduleTimeZone()
+		writeJSON(w, http.StatusOK, info)
+	case http.MethodPut, http.MethodPost:
+		var payload struct {
+			TimeZone string `json:"timezone"`
+		}
+		if !decodeJSON(w, r, &payload, 4*1024) {
+			return
+		}
+		if err := a.inst.SetScheduleTimeZone(payload.TimeZone); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		info, _ := a.inst.ScheduleTimeZone()
+		a.auth.LogAudit(admin.Username, a.clientIP(r), "SCHEDULE_TIMEZONE", "Schedule time zone set to "+info.Effective, "")
+		writeJSON(w, http.StatusOK, info)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (a *app) handleServerPaths(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
 	switch r.Method {
 	case http.MethodGet:

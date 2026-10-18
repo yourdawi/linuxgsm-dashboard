@@ -1,52 +1,23 @@
 package backend
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // -------------------------------------------------------------
 // Crontab helpers
 // -------------------------------------------------------------
 
-func getCrontab(user string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "crontab", "-u", user, "-l")
-	var outBytes bytes.Buffer
-	cmd.Stdout = &outBytes
-	err := cmd.Run()
-	if err != nil {
-		if _, ok := err.(*exec.ExitError); ok {
-			return "", nil
-		}
-		return "", err
-	}
-	return outBytes.String(), nil
-}
-
-func saveCrontab(user string, content string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
-		_ = exec.CommandContext(ctx, "crontab", "-u", user, "-r").Run()
-		return nil
-	}
-	cmd := exec.CommandContext(ctx, "crontab", "-u", user, "-")
-	cmd.Stdin = strings.NewReader(trimmed + "\n")
-	return cmd.Run()
-}
-
+// scriptPathOf is the path of the LinuxGSM script as it appears in schedules.
 func scriptPathOf(srv GameServerInstance) string {
+	if srv.Layout == LayoutData {
+		return dockerScriptDir + "/" + srv.Script
+	}
 	return filepath.ToSlash(filepath.Join(srv.Dir, srv.Script))
 }
 
@@ -129,8 +100,8 @@ var maintenanceCommands = map[string]bool{"monitor": true, "update": true, "forc
 
 // rewriteCrontab removes this server's lines whose command is in drop (all commands if drop is nil)
 // plus our own comment line, then appends extra lines.
-func rewriteCrontab(srv GameServerInstance, drop map[string]bool, extra []string) error {
-	crontabStr, err := getCrontab(srv.User)
+func rewriteCrontab(rt Runtime, srv GameServerInstance, drop map[string]bool, extra []string) error {
+	crontabStr, err := rt.ReadCrontab(srv)
 	if err != nil {
 		return err
 	}
@@ -153,13 +124,13 @@ func rewriteCrontab(srv GameServerInstance, drop map[string]bool, extra []string
 		newLines = append(newLines, line)
 	}
 	newLines = append(newLines, extra...)
-	return saveCrontab(srv.User, strings.Join(newLines, "\n"))
+	return rt.WriteCrontab(srv, strings.Join(newLines, "\n"))
 }
 
 // removeCronLinesForScript removes cron entries of one instance (used when deleting a server that
 // shares its Linux user with other instances).
-func removeCronLinesForScript(srv GameServerInstance, drop map[string]bool) error {
-	return rewriteCrontab(srv, drop, nil)
+func removeCronLinesForScript(rt Runtime, srv GameServerInstance, drop map[string]bool) error {
+	return rewriteCrontab(rt, srv, drop, nil)
 }
 
 // -------------------------------------------------------------
@@ -173,7 +144,7 @@ func (im *InstanceManager) GetCronSchedule(serverID string) (CronSchedule, error
 	}
 
 	sched := CronSchedule{}
-	crontabStr, _ := getCrontab(srv.User)
+	crontabStr, _ := im.rt.ReadCrontab(srv)
 	scriptPath := scriptPathOf(srv)
 
 	reEvery := regexp.MustCompile(`^\*/(\d+) \* \* \* \*$`)
@@ -242,7 +213,7 @@ func (im *InstanceManager) SaveCronSchedule(serverID string, sched CronSchedule)
 		extra = append(extra, maintenanceComment(srv))
 		extra = append(extra, crons...)
 	}
-	return rewriteCrontab(srv, maintenanceCommands, extra)
+	return rewriteCrontab(im.rt, srv, maintenanceCommands, extra)
 }
 
 func (im *InstanceManager) InstallCronjobs(serverID string) error {
@@ -258,7 +229,7 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 		fmt.Sprintf("30 4 * * * %s force-update > /dev/null 2>&1", scriptPath),
 		fmt.Sprintf("0 0 * * 0 %s update-lgsm > /dev/null 2>&1", scriptPath),
 	}
-	return rewriteCrontab(srv, maintenanceCommands, crons)
+	return rewriteCrontab(im.rt, srv, maintenanceCommands, crons)
 }
 
 // -------------------------------------------------------------
@@ -290,7 +261,7 @@ func (im *InstanceManager) GetBackupSettings(serverID string) (BackupSettings, e
 		return BackupSettings{}, fmt.Errorf("server not found")
 	}
 
-	configRel := filepath.Join("lgsm", "config-lgsm", srv.Script)
+	configRel := srv.configRel(srv.Script)
 	settings := BackupSettings{}
 
 	parseFile := func(rel string) {
@@ -317,7 +288,7 @@ func (im *InstanceManager) GetBackupSettings(serverID string) (BackupSettings, e
 	parseFile(filepath.Join(configRel, srv.Script+".cfg"))
 
 	// Read and parse crontab for automatic backups
-	if crontabStr, err := getCrontab(srv.User); err == nil {
+	if crontabStr, err := im.rt.ReadCrontab(srv); err == nil {
 		scriptPath := scriptPathOf(srv)
 		for _, line := range strings.Split(crontabStr, "\n") {
 			if expr, cmd, ok := cronLineCommand(line, scriptPath); ok && cmd == "backup" {
@@ -388,7 +359,7 @@ func (im *InstanceManager) SaveBackupSettings(serverID string, settings BackupSe
 		return err
 	}
 
-	rel := filepath.Join("lgsm", "config-lgsm", srv.Script, srv.Script+".cfg")
+	rel := filepath.Join(srv.configRel(srv.Script), srv.Script+".cfg")
 	content, err := readServerCfg(srv, rel)
 	if err != nil {
 		return fmt.Errorf("failed to read config")
@@ -410,7 +381,7 @@ func (im *InstanceManager) SaveBackupSettings(serverID string, settings BackupSe
 	if settings.AutoBackupEnabled && settings.AutoBackupCron != "" {
 		extra = append(extra, fmt.Sprintf("%s %s backup > /dev/null 2>&1", strings.Join(strings.Fields(settings.AutoBackupCron), " "), scriptPathOf(srv)))
 	}
-	return rewriteCrontab(srv, map[string]bool{"backup": true}, extra)
+	return rewriteCrontab(im.rt, srv, map[string]bool{"backup": true}, extra)
 }
 
 // -------------------------------------------------------------
@@ -422,43 +393,5 @@ func (im *InstanceManager) InstallSystemdService(serverID string) error {
 	if !ok {
 		return fmt.Errorf("server not found")
 	}
-	if !IsSafeServerDir(srv.Dir) || !IsValidScriptName(srv.Script) || !IsValidLinuxUsername(srv.User) {
-		return fmt.Errorf("server cannot be installed as systemd service")
-	}
-	// The description comes from game server output: strip anything systemd could interpret.
-	desc := strings.Map(func(r rune) rune {
-		if r == '%' || r == '\\' {
-			return -1
-		}
-		return r
-	}, sanitizeDisplayText(srv.Name, 100))
-
-	scriptPath := scriptPathOf(srv)
-	systemdCode := fmt.Sprintf(`[Unit]
-Description=LinuxGSM %s Server
-After=network.target
-
-[Service]
-Type=simple
-User=%s
-WorkingDirectory=%s
-ExecStart=%s start
-ExecStop=%s stop
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-`, desc, srv.User, srv.Dir, scriptPath, scriptPath)
-
-	unit := fmt.Sprintf("linuxgsm-%s.service", srv.Script)
-	servicePath := filepath.Join("/etc/systemd/system", unit)
-	if err := WriteFileAtomic(servicePath, []byte(systemdCode), 0644); err != nil {
-		return err
-	}
-
-	_ = exec.Command("systemctl", "daemon-reload").Run()
-	_ = exec.Command("systemctl", "enable", unit).Run()
-
-	return nil
+	return im.rt.InstallAutostart(srv)
 }

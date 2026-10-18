@@ -1985,6 +1985,7 @@ function selectGameForInstall(game, cardElement) {
     // Auto-populate default username (e.g. valheim -> valheimserver)
     el.installUsername.value = `${game.id}server`.replace(/[^a-z0-9_]/g, '');
     el.installPassword.value = '';
+    applyInstallerMode();
     
     el.installFormContainer.classList.remove('hidden');
     
@@ -1992,6 +1993,44 @@ function selectGameForInstall(game, cardElement) {
     if (window.innerWidth <= 992) {
         el.installFormContainer.scrollIntoView({ behavior: 'smooth' });
     }
+}
+
+// Sets data-i18n on node and translates it, so the text survives a language switch.
+function setI18n(node, key) {
+    if (!node) return;
+    node.setAttribute('data-i18n', key);
+    node.textContent = t(key);
+}
+
+// Autostart and schedule tools: in Docker mode the container restart policy replaces systemd,
+// and the dashboard runs the schedules itself (no crontab lines to copy).
+function applyToolsMode() {
+    const systemdCard = el.templateSystemd ? el.templateSystemd.closest('.tool-subcard') : null;
+    if (systemdCard) systemdCard.classList.toggle('hidden', !capable('autostart'));
+    if (!el.templateCron) return;
+    const dashboardScheduler = !capable('linux_users') && capable('cron');
+    el.templateCron.classList.toggle('hidden', dashboardScheduler);
+    const card = el.templateCron.closest('.tool-subcard');
+    if (!card) return;
+    setI18n(card.querySelector('p'), dashboardScheduler ? 'settings-tools-cron-desc-docker' : 'settings-tools-cron-desc');
+    setI18n(card.querySelector('#settings-tools-btn-cron span'), dashboardScheduler ? 'settings-tools-btn-cron-docker' : 'settings-tools-btn-cron');
+}
+
+// In Docker mode the installer creates a container: the name field names the server and its
+// container, a Linux password and a custom directory do not exist there.
+function applyInstallerMode() {
+    const docker = !capable('linux_users');
+    const label = document.querySelector('label[for="install-username"]');
+    const help = label ? label.parentElement.querySelector('small') : null;
+    setI18n(label, docker ? 'inst-name-label' : 'inst-user-label');
+    setI18n(help, docker ? 'inst-name-help' : 'inst-user-help');
+    ['install-password', 'install-dir'].forEach(id => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        const group = input.closest('.form-group');
+        if (group) group.classList.toggle('hidden', docker);
+        if (docker) input.value = '';
+    });
 }
 
 function handleGameInstall(e) {
@@ -2255,9 +2294,13 @@ async function loadSettingsInfo() {
         
         const pathsCard = document.getElementById('settings-server-paths-card');
         if (state.currentUser && state.currentUser.role === 'admin') {
-            checkDashboardUpdate(false);
-            if (pathsCard) pathsCard.classList.remove('hidden');
-            loadServerPaths();
+            if (capable('self_update')) checkDashboardUpdate(false);
+            if (capable('server_paths')) {
+                if (pathsCard) pathsCard.classList.remove('hidden');
+                loadServerPaths();
+            } else if (pathsCard) {
+                pathsCard.classList.add('hidden');
+            }
         } else if (pathsCard) {
             pathsCard.classList.add('hidden');
         }
@@ -2271,8 +2314,10 @@ async function loadSettingsInfo() {
         applySettingsPermissions();
         loadTwoFactorStatus();
 
+        loadScheduleTimeZone();
+
         // Check Firewall Status & Rights (administrators only)
-        if (state.currentUser && state.currentUser.role === 'admin') {
+        if (state.currentUser && state.currentUser.role === 'admin' && capable('firewall')) {
             loadFirewallStatus();
         }
     } catch (e) {
@@ -2294,6 +2339,79 @@ async function loadServerPaths() {
         textarea.value = (data.paths || []).join('\n');
     } catch (e) {
         console.error('Failed to load server paths:', e);
+    }
+}
+
+// Time zone of the dashboard's own scheduler (Docker mode). On a host the system crontab and
+// its time zone apply, so the card is only shown when the runtime supports the setting.
+const fallbackTimeZones = ['UTC', 'Europe/Berlin', 'Europe/Vienna', 'Europe/Zurich', 'Europe/London', 'Europe/Paris',
+    'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Tokyo', 'Australia/Sydney'];
+
+function renderScheduleTimeZone(info) {
+    const select = document.getElementById('settings-tz-select');
+    const now = document.getElementById('settings-tz-now-text');
+    if (!select || !info) return;
+    let zones = fallbackTimeZones;
+    try {
+        if (Intl.supportedValuesOf) zones = Intl.supportedValuesOf('timeZone');
+    } catch (e) { /* older browsers */ }
+    if (!zones.includes('UTC')) zones = ['UTC', ...zones];
+    if (info.timezone && !zones.includes(info.timezone)) zones = [info.timezone, ...zones];
+    select.innerHTML = '';
+    const def = document.createElement('option');
+    def.value = '';
+    def.textContent = t('settings-tz-default').replace('{zone}', info.default || 'UTC');
+    select.appendChild(def);
+    zones.forEach(z => {
+        const o = document.createElement('option');
+        o.value = z;
+        o.textContent = z;
+        select.appendChild(o);
+    });
+    select.value = info.timezone || '';
+    if (now) now.textContent = `${(info.now || '').slice(0, 16).replace('T', ' ')} (${info.effective})`;
+}
+
+async function loadScheduleTimeZone() {
+    const card = document.getElementById('settings-timezone-card');
+    if (!card) return;
+    const isAdmin = !!(state.currentUser && state.currentUser.role === 'admin');
+    const caps = state.lastSettingsData && state.lastSettingsData.capabilities;
+    // Only when the backend reports it: capable() treats unknown features as available.
+    card.classList.toggle('hidden', !isAdmin || !(caps && caps.schedule_timezone === true));
+    if (card.classList.contains('hidden')) return;
+    try {
+        const res = await apiFetch('/api/admin/timezone');
+        if (res.status === 200) renderScheduleTimeZone(await res.json());
+    } catch (e) {
+        console.error('Time zone error:', e);
+    }
+}
+
+async function saveScheduleTimeZone() {
+    const select = document.getElementById('settings-tz-select');
+    const message = document.getElementById('settings-tz-message');
+    if (!select || !message) return;
+    message.className = 'info-message';
+    message.textContent = t('saving');
+    try {
+        const res = await apiFetch('/api/admin/timezone', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timezone: select.value })
+        });
+        const data = await res.json();
+        if (res.status === 200) {
+            renderScheduleTimeZone(data);
+            message.className = 'info-message text-success';
+            message.textContent = t('settings-tz-saved').replace('{zone}', data.effective);
+        } else {
+            message.className = 'info-message text-danger';
+            message.textContent = data.error || t('status-error');
+        }
+    } catch (e) {
+        message.className = 'info-message text-danger';
+        message.textContent = t('connection-error');
     }
 }
 
@@ -2327,6 +2445,13 @@ async function saveServerPaths() {
     }
 }
 
+// Optional features of the server runtime (host or Docker), reported by /api/system/info.
+// Unknown features count as available, which matches the host runtime.
+function capable(feature) {
+    const caps = state.lastSettingsData && state.lastSettingsData.capabilities;
+    return !caps || caps[feature] !== false;
+}
+
 // Settings sub tabs and the permission they need. "general" (own password, system info) is always
 // available; everything else mirrors the server-side checks.
 function allowedSettingsSubtabs() {
@@ -2334,9 +2459,9 @@ function allowedSettingsSubtabs() {
     return {
         general: true,
         server: isAdmin,
-        cron: hasPerm('schedule'),
+        cron: hasPerm('schedule') && capable('cron'),
         alerts: hasPerm('alerts'),
-        security: isAdmin,
+        security: isAdmin && capable('firewall'),
     };
 }
 
@@ -2352,7 +2477,7 @@ function applySettingsPermissions() {
 
     const isAdmin = !!(state.currentUser && state.currentUser.role === 'admin');
     const updateCard = document.getElementById('settings-update-card');
-    if (updateCard) updateCard.classList.toggle('hidden', !isAdmin);
+    if (updateCard) updateCard.classList.toggle('hidden', !isAdmin || !capable('self_update'));
 
     if (state.settingsSubtab && !allowed[state.settingsSubtab]) {
         switchSettingsSubtab('general');
@@ -2412,7 +2537,8 @@ async function loadFirewallStatus() {
 }
 
 function renderSettingsMode() {
-    el.settingsMode.textContent = t('settings-mode-prod');
+    const caps = state.lastSettingsData && state.lastSettingsData.capabilities;
+    el.settingsMode.textContent = caps && caps.runtime === 'docker' ? t('settings-mode-docker') : t('settings-mode-prod');
 }
 
 async function changePassword(e) {
@@ -2565,6 +2691,7 @@ WantedBy=multi-user.target`;
 
     if (el.templateSystemd) el.templateSystemd.textContent = systemdCode;
     if (el.templateCron) el.templateCron.textContent = cronCode;
+    applyToolsMode();
     
     // 3. Configure alerts and load settings
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
@@ -3015,12 +3142,15 @@ const i18n = {
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Install & Enable Service",
         "settings-tools-btn-cron": "Write Cronjobs to Crontab",
+        "settings-tools-btn-cron-docker": "Enable Recommended Schedules",
         "btn-refresh": "Refresh",
         "inst-title": "Game Installer",
         "inst-subtitle": "Install a new LinuxGSM server. A system user will be automatically created.",
         "inst-btn-sync": "Update Game List",
         "inst-search-placeholder": "Search games...",
         "inst-user-label": "System Username",
+        "inst-name-label": "Server Name",
+        "inst-name-help": "Name of the server and its container (3-16 chars: lowercase letters, numbers, underscores). The data is stored in the server data directory under this name.",
         "inst-pass-label": "User Password (Optional)",
         "inst-btn-install": "Install Game Server",
         "settings-title": "Settings & Info",
@@ -3049,6 +3179,7 @@ const i18n = {
         "settings-tools-systemd-desc": "Create a file under /etc/systemd/system/lgsm-[server].service as root and add the following content:",
         "settings-tools-cron-title": "Cronjobs (Scheduled Maintenance Tasks)",
         "settings-tools-cron-desc": "Add these lines to the server user's crontab (or via crontab -e as root):",
+        "settings-tools-cron-desc-docker": "In Docker mode the dashboard runs the schedules itself (times in the time zone set under Settings > General). Recommended: monitor every 5 minutes, update check every 30 minutes, force-update at 04:30 and update-lgsm on Sundays.",
         "settings-info-os": "Operating System",
         "settings-info-mode": "Dashboard Mode",
         "modal-config-no-file": "Choose a file",
@@ -3129,6 +3260,7 @@ const i18n = {
         "games-sync-initializing": "Initializing crawler...",
         "overview-none": "None",
         "settings-mode-prod": "PRODUCTION (Linux Host)",
+        "settings-mode-docker": "PRODUCTION (Docker)",
         "status-connecting": "Connecting...",
         "status-success": "Success",
         "status-error": "Error",
@@ -3182,6 +3314,13 @@ const i18n = {
         "settings-paths-desc": "LinuxGSM servers outside of /home (e.g. on a separate SSD). Each directory and its direct sub directories are scanned. The owner of a directory is the Linux user the server runs as; directories owned by root are ignored.",
         "settings-paths-label": "One absolute path per line",
         "settings-paths-save": "Save directories",
+        "settings-tz-title": "Schedule Time Zone",
+        "settings-tz-desc": "In Docker mode the dashboard runs the schedules. Times such as the daily restart or backups use this time zone.",
+        "settings-tz-label": "Time zone",
+        "settings-tz-now": "Current time:",
+        "settings-tz-save": "Save time zone",
+        "settings-tz-default": "Default ({zone})",
+        "settings-tz-saved": "Schedules now use {zone}.",
         "settings-paths-saved": "Directories saved. Servers are being rescanned.",
         "settings-update-status-label": "Status:",
         "update-status-latest": "Up to date",
@@ -3198,7 +3337,7 @@ const i18n = {
         "backups-select-default": "-- Select a server --",
         "backups-btn-create": "Create Backup",
         "backups-btn-upload": "Upload Backup",
-        "backups-upload-invalid-ext": "Only .tar.gz files are allowed.",
+        "backups-upload-invalid-ext": "Only .tar.gz, .tar.zst and .tar files are allowed.",
         "backups-upload-success": "Backup uploaded successfully.",
         "backups-upload-error": "Failed to upload backup due to a network error.",
         "backups-no-server-selected": "No server selected",
@@ -3320,7 +3459,7 @@ const i18n = {
         "settings-btn-clone": "Clone Instance",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Sync Now",
-        "cloudbackup-desc": "Synchronize created .tar.gz backups automatically or manually to cloud storage (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-desc": "Synchronize created backups automatically or manually to cloud storage (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
         "cloudbackup-enable-label": "Enable Cloud Sync",
         "cloudbackup-remote-label": "rclone Remote Name",
         "cloudbackup-remote-placeholder": "e.g. gdrive or s3",
@@ -3481,12 +3620,15 @@ const i18n = {
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Dienst automatisch installieren & aktivieren",
         "settings-tools-btn-cron": "Cronjobs in Crontab schreiben",
+        "settings-tools-btn-cron-docker": "Empfohlene Zeitpläne aktivieren",
         "btn-refresh": "Aktualisieren",
         "inst-title": "Spiele-Installer",
         "inst-subtitle": "Installiere einen neuen LinuxGSM Server. Es wird automatisch ein neuer Systembenutzer angelegt.",
         "inst-btn-sync": "Spieleliste aktualisieren",
         "inst-search-placeholder": "Spiele durchsuchen...",
         "inst-user-label": "System-Benutzername",
+        "inst-name-label": "Servername",
+        "inst-name-help": "Name des Servers und seines Containers (3-16 Zeichen: Kleinbuchstaben, Zahlen, Unterstriche). Die Daten liegen unter diesem Namen im Server-Datenverzeichnis.",
         "inst-pass-label": "Passwort (Optional)",
         "inst-btn-install": "Gameserver installieren",
         "settings-title": "Einstellungen & Info",
@@ -3510,6 +3652,7 @@ const i18n = {
         "settings-tools-systemd-desc": "Erstelle eine Datei unter /etc/systemd/system/lgsm-[server].service als root und füge folgenden Inhalt ein:",
         "settings-tools-cron-title": "Cronjobs (Geplante Wartungsaufgaben)",
         "settings-tools-cron-desc": "Füge diese Zeilen in die Crontab des Serverbenutzers (oder über crontab -e als root) ein:",
+        "settings-tools-cron-desc-docker": "Im Docker-Modus führt das Dashboard die Zeitpläne selbst aus (Uhrzeiten in der Zeitzone unter Einstellungen > Allgemein). Empfohlen: monitor alle 5 Minuten, Update-Prüfung alle 30 Minuten, force-update um 04:30 und update-lgsm sonntags.",
         "overview-title": "Übersicht & Monitoring",
         "overview-subtitle": "Ressourcen-Auslastung des Host-Systems und der einzelnen Gameserver-Instanzen.",
         "overview-cpu": "CPU Auslastung",
@@ -3603,6 +3746,7 @@ const i18n = {
         "games-sync-initializing": "Initialisiere Crawler...",
         "overview-none": "Keine",
         "settings-mode-prod": "PRODUKTION (Linux Root)",
+        "settings-mode-docker": "PRODUKTION (Docker)",
         "status-connecting": "Verbinde...",
         "status-success": "Erfolgreich",
         "status-error": "Fehler",
@@ -3656,6 +3800,13 @@ const i18n = {
         "settings-paths-desc": "LinuxGSM-Server außerhalb von /home (z.B. auf einer separaten SSD). Jedes Verzeichnis und seine direkten Unterordner werden durchsucht. Der Besitzer eines Verzeichnisses ist der Linux-Benutzer, unter dem der Server läuft; Verzeichnisse von root werden ignoriert.",
         "settings-paths-label": "Ein absoluter Pfad pro Zeile",
         "settings-paths-save": "Verzeichnisse speichern",
+        "settings-tz-title": "Zeitzone der Zeitpläne",
+        "settings-tz-desc": "Im Docker-Modus führt das Dashboard die Zeitpläne aus. Uhrzeiten wie der tägliche Neustart oder Backups gelten in dieser Zeitzone.",
+        "settings-tz-label": "Zeitzone",
+        "settings-tz-now": "Aktuelle Zeit:",
+        "settings-tz-save": "Zeitzone speichern",
+        "settings-tz-default": "Standard ({zone})",
+        "settings-tz-saved": "Zeitpläne nutzen jetzt {zone}.",
         "settings-paths-saved": "Verzeichnisse gespeichert. Server werden neu eingelesen.",
         "settings-update-status-label": "Status:",
         "update-status-latest": "Aktuell",
@@ -3672,7 +3823,7 @@ const i18n = {
         "backups-select-default": "-- Server auswählen --",
         "backups-btn-create": "Backup erstellen",
         "backups-btn-upload": "Backup hochladen",
-        "backups-upload-invalid-ext": "Nur .tar.gz-Dateien sind erlaubt.",
+        "backups-upload-invalid-ext": "Nur .tar.gz-, .tar.zst- und .tar-Dateien sind erlaubt.",
         "backups-upload-success": "Backup erfolgreich hochgeladen.",
         "backups-upload-error": "Fehler beim Hochladen des Backups aufgrund eines Netzwerkfehlers.",
         "backups-no-server-selected": "Kein Server ausgewählt",
@@ -3794,7 +3945,7 @@ const i18n = {
         "settings-btn-clone": "Instanz klonen",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Jetzt synchronisieren",
-        "cloudbackup-desc": "Synchronisiere erstellte .tar.gz Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-desc": "Synchronisiere erstellte Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
         "cloudbackup-enable-label": "Cloud Sync aktivieren",
         "cloudbackup-remote-label": "rclone Remote Name",
         "cloudbackup-remote-placeholder": "z. B. gdrive oder s3",
@@ -4788,7 +4939,7 @@ async function handleBackupsUpload(e) {
     const serverId = state.selectedBackupServer;
     if (!serverId) return;
 
-    if (!file.name.endsWith('.tar.gz')) {
+    if (!['.tar.gz', '.tar.zst', '.tar'].some(ext => file.name.endsWith(ext))) {
         alert(t('backups-upload-invalid-ext'));
         return;
     }
