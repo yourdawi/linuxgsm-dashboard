@@ -2314,6 +2314,8 @@ async function loadSettingsInfo() {
         applySettingsPermissions();
         loadTwoFactorStatus();
 
+        loadScheduleTimeZone();
+
         // Check Firewall Status & Rights (administrators only)
         if (state.currentUser && state.currentUser.role === 'admin' && capable('firewall')) {
             loadFirewallStatus();
@@ -2337,6 +2339,79 @@ async function loadServerPaths() {
         textarea.value = (data.paths || []).join('\n');
     } catch (e) {
         console.error('Failed to load server paths:', e);
+    }
+}
+
+// Time zone of the dashboard's own scheduler (Docker mode). On a host the system crontab and
+// its time zone apply, so the card is only shown when the runtime supports the setting.
+const fallbackTimeZones = ['UTC', 'Europe/Berlin', 'Europe/Vienna', 'Europe/Zurich', 'Europe/London', 'Europe/Paris',
+    'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Tokyo', 'Australia/Sydney'];
+
+function renderScheduleTimeZone(info) {
+    const select = document.getElementById('settings-tz-select');
+    const now = document.getElementById('settings-tz-now-text');
+    if (!select || !info) return;
+    let zones = fallbackTimeZones;
+    try {
+        if (Intl.supportedValuesOf) zones = Intl.supportedValuesOf('timeZone');
+    } catch (e) { /* older browsers */ }
+    if (!zones.includes('UTC')) zones = ['UTC', ...zones];
+    if (info.timezone && !zones.includes(info.timezone)) zones = [info.timezone, ...zones];
+    select.innerHTML = '';
+    const def = document.createElement('option');
+    def.value = '';
+    def.textContent = t('settings-tz-default').replace('{zone}', info.default || 'UTC');
+    select.appendChild(def);
+    zones.forEach(z => {
+        const o = document.createElement('option');
+        o.value = z;
+        o.textContent = z;
+        select.appendChild(o);
+    });
+    select.value = info.timezone || '';
+    if (now) now.textContent = `${(info.now || '').slice(0, 16).replace('T', ' ')} (${info.effective})`;
+}
+
+async function loadScheduleTimeZone() {
+    const card = document.getElementById('settings-timezone-card');
+    if (!card) return;
+    const isAdmin = !!(state.currentUser && state.currentUser.role === 'admin');
+    const caps = state.lastSettingsData && state.lastSettingsData.capabilities;
+    // Only when the backend reports it: capable() treats unknown features as available.
+    card.classList.toggle('hidden', !isAdmin || !(caps && caps.schedule_timezone === true));
+    if (card.classList.contains('hidden')) return;
+    try {
+        const res = await apiFetch('/api/admin/timezone');
+        if (res.status === 200) renderScheduleTimeZone(await res.json());
+    } catch (e) {
+        console.error('Time zone error:', e);
+    }
+}
+
+async function saveScheduleTimeZone() {
+    const select = document.getElementById('settings-tz-select');
+    const message = document.getElementById('settings-tz-message');
+    if (!select || !message) return;
+    message.className = 'info-message';
+    message.textContent = t('saving');
+    try {
+        const res = await apiFetch('/api/admin/timezone', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timezone: select.value })
+        });
+        const data = await res.json();
+        if (res.status === 200) {
+            renderScheduleTimeZone(data);
+            message.className = 'info-message text-success';
+            message.textContent = t('settings-tz-saved').replace('{zone}', data.effective);
+        } else {
+            message.className = 'info-message text-danger';
+            message.textContent = data.error || t('status-error');
+        }
+    } catch (e) {
+        message.className = 'info-message text-danger';
+        message.textContent = t('connection-error');
     }
 }
 
@@ -3104,7 +3179,7 @@ const i18n = {
         "settings-tools-systemd-desc": "Create a file under /etc/systemd/system/lgsm-[server].service as root and add the following content:",
         "settings-tools-cron-title": "Cronjobs (Scheduled Maintenance Tasks)",
         "settings-tools-cron-desc": "Add these lines to the server user's crontab (or via crontab -e as root):",
-        "settings-tools-cron-desc-docker": "In Docker mode the dashboard runs the schedules itself (times in the dashboard's time zone, TZ). Recommended: monitor every 5 minutes, update check every 30 minutes, force-update at 04:30 and update-lgsm on Sundays.",
+        "settings-tools-cron-desc-docker": "In Docker mode the dashboard runs the schedules itself (times in the time zone set under Settings > General). Recommended: monitor every 5 minutes, update check every 30 minutes, force-update at 04:30 and update-lgsm on Sundays.",
         "settings-info-os": "Operating System",
         "settings-info-mode": "Dashboard Mode",
         "modal-config-no-file": "Choose a file",
@@ -3239,6 +3314,13 @@ const i18n = {
         "settings-paths-desc": "LinuxGSM servers outside of /home (e.g. on a separate SSD). Each directory and its direct sub directories are scanned. The owner of a directory is the Linux user the server runs as; directories owned by root are ignored.",
         "settings-paths-label": "One absolute path per line",
         "settings-paths-save": "Save directories",
+        "settings-tz-title": "Schedule Time Zone",
+        "settings-tz-desc": "In Docker mode the dashboard runs the schedules. Times such as the daily restart or backups use this time zone.",
+        "settings-tz-label": "Time zone",
+        "settings-tz-now": "Current time:",
+        "settings-tz-save": "Save time zone",
+        "settings-tz-default": "Default ({zone})",
+        "settings-tz-saved": "Schedules now use {zone}.",
         "settings-paths-saved": "Directories saved. Servers are being rescanned.",
         "settings-update-status-label": "Status:",
         "update-status-latest": "Up to date",
@@ -3570,7 +3652,7 @@ const i18n = {
         "settings-tools-systemd-desc": "Erstelle eine Datei unter /etc/systemd/system/lgsm-[server].service als root und füge folgenden Inhalt ein:",
         "settings-tools-cron-title": "Cronjobs (Geplante Wartungsaufgaben)",
         "settings-tools-cron-desc": "Füge diese Zeilen in die Crontab des Serverbenutzers (oder über crontab -e als root) ein:",
-        "settings-tools-cron-desc-docker": "Im Docker-Modus führt das Dashboard die Zeitpläne selbst aus (Uhrzeiten in der Zeitzone des Dashboards, TZ). Empfohlen: monitor alle 5 Minuten, Update-Prüfung alle 30 Minuten, force-update um 04:30 und update-lgsm sonntags.",
+        "settings-tools-cron-desc-docker": "Im Docker-Modus führt das Dashboard die Zeitpläne selbst aus (Uhrzeiten in der Zeitzone unter Einstellungen > Allgemein). Empfohlen: monitor alle 5 Minuten, Update-Prüfung alle 30 Minuten, force-update um 04:30 und update-lgsm sonntags.",
         "overview-title": "Übersicht & Monitoring",
         "overview-subtitle": "Ressourcen-Auslastung des Host-Systems und der einzelnen Gameserver-Instanzen.",
         "overview-cpu": "CPU Auslastung",
@@ -3718,6 +3800,13 @@ const i18n = {
         "settings-paths-desc": "LinuxGSM-Server außerhalb von /home (z.B. auf einer separaten SSD). Jedes Verzeichnis und seine direkten Unterordner werden durchsucht. Der Besitzer eines Verzeichnisses ist der Linux-Benutzer, unter dem der Server läuft; Verzeichnisse von root werden ignoriert.",
         "settings-paths-label": "Ein absoluter Pfad pro Zeile",
         "settings-paths-save": "Verzeichnisse speichern",
+        "settings-tz-title": "Zeitzone der Zeitpläne",
+        "settings-tz-desc": "Im Docker-Modus führt das Dashboard die Zeitpläne aus. Uhrzeiten wie der tägliche Neustart oder Backups gelten in dieser Zeitzone.",
+        "settings-tz-label": "Zeitzone",
+        "settings-tz-now": "Aktuelle Zeit:",
+        "settings-tz-save": "Zeitzone speichern",
+        "settings-tz-default": "Standard ({zone})",
+        "settings-tz-saved": "Zeitpläne nutzen jetzt {zone}.",
         "settings-paths-saved": "Verzeichnisse gespeichert. Server werden neu eingelesen.",
         "settings-update-status-label": "Status:",
         "update-status-latest": "Aktuell",

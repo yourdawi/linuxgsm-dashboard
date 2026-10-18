@@ -525,6 +525,7 @@ func (a *app) routes() http.Handler {
 
 	mux.HandleFunc("/api/admin/users", a.requireAdmin(a.handleUsers))
 	mux.HandleFunc("/api/admin/server-paths", a.requireAdmin(a.handleServerPaths))
+	mux.HandleFunc("/api/admin/timezone", a.requireAdmin(a.handleTimeZone))
 	mux.HandleFunc("/api/admin/update/check", methodOnly(http.MethodGet, a.requireAdmin(a.handleUpdateCheck)))
 	mux.HandleFunc("/api/admin/update/trigger", methodOnly(http.MethodPost, a.requireAdmin(a.handleUpdateTrigger)))
 
@@ -1776,6 +1777,35 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request, admin backend.
 }
 
 // GET/PUT /api/admin/server-paths: additional directories scanned for LinuxGSM servers.
+// handleTimeZone reads or changes the time zone of the dashboard's own scheduler (Docker mode).
+func (a *app) handleTimeZone(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	if _, ok := a.inst.ScheduleTimeZone(); !ok {
+		writeError(w, http.StatusNotImplemented, "The schedule time zone is set by the operating system in this runtime")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		info, _ := a.inst.ScheduleTimeZone()
+		writeJSON(w, http.StatusOK, info)
+	case http.MethodPut, http.MethodPost:
+		var payload struct {
+			TimeZone string `json:"timezone"`
+		}
+		if !decodeJSON(w, r, &payload, 4*1024) {
+			return
+		}
+		if err := a.inst.SetScheduleTimeZone(payload.TimeZone); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		info, _ := a.inst.ScheduleTimeZone()
+		a.auth.LogAudit(admin.Username, a.clientIP(r), "SCHEDULE_TIMEZONE", "Schedule time zone set to "+info.Effective, "")
+		writeJSON(w, http.StatusOK, info)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (a *app) handleServerPaths(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
 	switch r.Method {
 	case http.MethodGet:

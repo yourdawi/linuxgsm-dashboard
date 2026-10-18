@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -198,4 +199,36 @@ func InContainer() bool {
 		}
 	}
 	return false
+}
+
+// routeFile can be overridden in tests.
+var routeFile = "/proc/net/route"
+
+// defaultGateway returns the IPv4 default gateway of this network namespace ("" if unknown). In a
+// container on a bridge network that is the Docker host.
+func defaultGateway() string {
+	data, err := os.ReadFile(routeFile)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n")[1:] {
+		f := strings.Fields(line)
+		if len(f) < 3 || f[1] != "00000000" || len(f[2]) != 8 {
+			continue
+		}
+		var b [4]byte
+		for i := 0; i < 4; i++ {
+			n, err := strconv.ParseUint(f[2][i*2:i*2+2], 16, 8)
+			if err != nil {
+				return ""
+			}
+			b[3-i] = byte(n) // little endian
+		}
+		ip := net.IP(b[:])
+		if ip.IsUnspecified() {
+			return ""
+		}
+		return ip.String()
+	}
+	return ""
 }

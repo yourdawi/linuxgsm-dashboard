@@ -142,7 +142,7 @@ func (d *DockerRuntime) startScheduler() {
 // LinuxGSM commands at once would collide on its lock files). When the commands of an earlier
 // minute are still running for that server, the new ones are skipped.
 func (d *DockerRuntime) runDue(t time.Time) {
-	jobs := dueJobs(d.scheduleDir, t)
+	jobs := dueJobs(d.scheduleDir, t.In(d.scheduleLocation()))
 	if len(jobs) == 0 {
 		return
 	}
@@ -171,6 +171,30 @@ func (d *DockerRuntime) runDue(t time.Time) {
 	for _, id := range order {
 		go d.runJobs(*servers[id], perServer[id])
 	}
+}
+
+// scheduleLocation is the time zone schedules are evaluated in.
+func (d *DockerRuntime) scheduleLocation() *time.Location {
+	if d.timeZone == nil {
+		return time.Local
+	}
+	return d.timeZone.location()
+}
+
+// TimeZoneInfo reports the schedule time zone.
+func (d *DockerRuntime) TimeZoneInfo() TimeZoneInfo {
+	if d.timeZone == nil {
+		return newTimeZoneSetting("").info()
+	}
+	return d.timeZone.info()
+}
+
+// SetTimeZone changes the schedule time zone; "" restores the default (TZ or UTC).
+func (d *DockerRuntime) SetTimeZone(name string) error {
+	if d.timeZone == nil {
+		return fmt.Errorf("the time zone cannot be stored: no configuration directory")
+	}
+	return d.timeZone.set(name)
 }
 
 var scheduleBusy sync.Map // server ID -> struct{}

@@ -1,6 +1,6 @@
 # LinuxGSM Web Dashboard
 
-A web interface for managing game servers that run under [LinuxGSM](https://linuxgsm.com/). The dashboard is a single Go binary with the web interface embedded, runs as a systemd service and controls the LinuxGSM scripts of each game server through the server's own Linux user.
+A web interface for managing game servers that run under [LinuxGSM](https://linuxgsm.com/). The dashboard is a single Go binary with the web interface embedded. It runs either natively as a systemd service and controls the LinuxGSM scripts of each game server through the server's own Linux user, or as a Docker container that runs every game server in its own container of the official LinuxGSM images.
 
 <img width="80%" alt="dashboard" src="https://github.com/user-attachments/assets/9d55ae4f-f335-4c0c-89f3-0bcfd48c95c1" />
 
@@ -39,13 +39,14 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Host mode and Docker mode](#host-mode-and-docker-mode)
+- [Docker mode in detail](#docker-mode-in-detail)
 - [Configuration](#configuration)
 - [Game servers outside of /home](#game-servers-outside-of-home)
 - [Users and permissions](#users-and-permissions)
 - [Two-factor authentication](#two-factor-authentication)
 - [Security](#security)
 - [Updating](#updating)
-- [Releases](#releases)
 - [Known limitations](#known-limitations)
 - [Development](#development)
 - [Disclaimer](#disclaimer)
@@ -122,13 +123,22 @@ Configuration of the LinuxGSM alert channels Discord, Telegram, e-mail (SMTP), M
 
 ## Requirements
 
+**Native installation (installer):**
+
 - A 64-bit Linux host with systemd (x86_64; the dashboard also runs on ARM64, but most LinuxGSM game servers need x86_64). The installer supports Debian/Ubuntu, RHEL/CentOS/AlmaLinux/Rocky, Arch and openSUSE; LinuxGSM game dependencies are installed automatically on Debian/Ubuntu and RHEL-based systems, on the others LinuxGSM lists missing packages during the game server installation. Signature checks in the installer need OpenSSL 3 (older systems fall back to the checksum).
 - Root privileges. The dashboard creates Linux users and runs commands as the game server users via `runuser`.
 - Only for builds from source: Git and Go 1.20 or newer. Go 1.18 and 1.19 can build the project as well, but without the per-request timeouts described under [Security](#security).
 
+**Docker:**
+
+- A 64-bit Linux host with Docker Engine (and the Compose plugin for `docker compose`). The official game server images are built for x86_64.
+- Root or membership in the `docker` group to start the container. The dashboard needs the Docker socket.
+
 ## Installation
 
-### Automated installation (recommended)
+There are two ways to run the dashboard: natively on a Linux host with the installer, or as a Docker container that runs every game server in its own container. Both use the same interface; [Host mode and Docker mode](#host-mode-and-docker-mode) lists the differences.
+
+### Native installation with the installer
 
 Run the installer as root (for example after `sudo -i`):
 
@@ -193,14 +203,103 @@ On the first start the dashboard creates `config/config.json` with an `admin` us
 
 ### Docker
 
-The dashboard can also run as a container. In this **Docker mode** game servers are meant to run as separate containers of the official LinuxGSM images (`gameservermanagers/gameserver`), which the dashboard manages through the Docker socket. The normal installation above is not affected.
+The dashboard is also available as a container image. In this **Docker mode** every game server runs as its own container of the official LinuxGSM images (`gameservermanagers/gameserver`), which the dashboard creates and manages through the Docker socket. See [Host mode and Docker mode](#host-mode-and-docker-mode) for the differences.
 
-In Docker mode the dashboard installs, clones and deletes game servers as containers. For these servers, status, start/stop/restart and all other LinuxGSM commands, the live console with command input, logs, CPU/RAM per server, the config editor, the file manager, backups including restore, and schedules work.
+Create the directory for the game server data first; it has to exist on the host:
 
-**Installing** a game in Docker mode asks for a server name (3-16 characters) instead of a Linux user. The dashboard then:
+```bash
+sudo mkdir -p /srv/lgsm
+```
+
+#### With docker compose (recommended)
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/yourdawi/linuxgsm-dashboard/main/docker-compose.yml
+docker compose up -d
+docker compose logs dashboard   # shows the generated admin password on the first start
+```
+
+#### With docker run
+
+```bash
+docker run -d --name lgsm-dashboard --restart unless-stopped \
+  -p 8080:8080 \
+  -v lgsm-dashboard-config:/config \
+  -v /srv/lgsm:/srv/lgsm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  ghcr.io/yourdawi/linuxgsm-dashboard:latest
+docker logs lgsm-dashboard      # shows the generated admin password on the first start
+```
+
+Then open `http://<server>:8080`, log in as `admin` and set the time zone for schedules under **Settings > General** (the default is UTC, or `TZ` if it is set for the container). Additional [command line flags](#command-line-flags) can be appended after the image name, for example `ghcr.io/yourdawi/linuxgsm-dashboard:latest -secure-cookies -trust-proxy` (in `docker-compose.yml` as `command:`).
+
+| Mount | Purpose |
+|-------|---------|
+| `lgsm-dashboard-config:/config` | Dashboard configuration: users, audit log, tags, schedules and the schedule time zone |
+| `/srv/lgsm:/srv/lgsm` | Game server data, one directory per server. It must have the **same path** on the host and in the container, because the dashboard passes it to Docker when it creates game server containers. To use another directory, change both sides and the environment variable `LGSM_DATA_DIR` together. |
+| `/var/run/docker.sock` | Access to the Docker engine |
+
+**Security:** access to the Docker socket is equivalent to root access on the host. Everybody with administrator rights in the dashboard can therefore control the host. Keep the dashboard behind HTTPS, use strong passwords and two-factor authentication. Instead of the socket, `DOCKER_HOST=tcp://...` can point to a [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy).
+
+#### Building the image yourself
+
+```bash
+git clone https://github.com/yourdawi/linuxgsm-dashboard.git
+cd linuxgsm-dashboard
+docker build -t ghcr.io/yourdawi/linuxgsm-dashboard:latest .
+docker compose up -d
+```
+
+#### Updating the container
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Without compose: `docker pull ghcr.io/yourdawi/linuxgsm-dashboard:latest`, then `docker stop lgsm-dashboard`, `docker rm lgsm-dashboard` and the `docker run` command above again. The configuration stays in the `lgsm-dashboard-config` volume, and the game server containers keep running while the dashboard is replaced. The in-app update button is not available in Docker mode.
+
+## Host mode and Docker mode
+
+The dashboard picks the mode by itself: inside a container it uses Docker mode, otherwise host mode (details under [Docker mode in detail](#docker-mode-in-detail)).
+
+| | Host mode (installer) | Docker mode |
+|---|---|---|
+| Dashboard installation | `install-dashboard.sh`, systemd service | `docker compose` or `docker run` |
+| Game servers run as | one Linux user per server, LinuxGSM in its home directory | one container per server from `gameservermanagers/gameserver:<game>` |
+| Server discovery | home directories, users with UID 1000 or higher, additional server directories | containers with the `lgsm-dashboard.*` labels |
+| Install game servers | ✅ Linux user, optional installation directory | ✅ server name; the image is pulled and the data stored in `<LGSM_DATA_DIR>/<name>` |
+| Game dependencies | installed by LinuxGSM during the installation (temporary `sudo`) | included in the image |
+| Clone instance | ✅ new instance script, shares `serverfiles` | ✅ new container with a copy of `serverfiles` and the configs |
+| Delete server | ✅ including the Linux user if it is not shared | ✅ container and data directory |
+| Start, stop, restart, update, validate and all other LinuxGSM commands, bulk actions | ✅ | ✅ through `docker exec` |
+| Game-specific actions (wipes, mods, MTA resources, TS3 password, map compressor) | ✅ | ✅ |
+| FastDL under `/fastdl/<server>/` | ✅ | ✅ |
+| List of installed mods | ✅ | ✅ |
+| Live console and logs | ✅ | ✅ |
+| Live query (players, map) and port check | ✅ | ✅ through the Docker host |
+| Config editor, file manager | ✅ | ✅ |
+| Backups: create, restore, upload, download, retention | ✅ | ✅ |
+| Cloud sync with rclone | ✅ rclone on the host | ❌ rclone is not part of the official images |
+| Notifications, stop mode | ✅ | ✅ |
+| Scheduler: monitor, update checks, daily `force-update`, weekly `update-lgsm`, automatic backups | ✅ crontab of the server user | ✅ run by the dashboard |
+| Time zone of the schedules | time zone of the host | **Settings > General** (default: `TZ` or UTC) |
+| Restart after a crash | cron job `monitor` | health check of the official images, plus the optional `monitor` schedule |
+| Autostart at boot | systemd service per server | restart policy `unless-stopped` |
+| CPU, RAM and disk usage per server | ✅ per Linux user | ✅ per container |
+| Host monitoring (CPU, RAM, disk) | ✅ | ✅ (disk: the file system of the dashboard container) |
+| Firewall status and opening ports | ✅ UFW/firewalld | ❌ manage the firewall on the host |
+| Additional server directories, custom installation directory | ✅ | ❌ all servers live in `LGSM_DATA_DIR` |
+| Users, permissions, two-factor authentication, audit log | ✅ | ✅ |
+| Dashboard updates | ✅ signed in-app updates | pull a new image |
+
+## Docker mode in detail
+
+**Installing** a game asks for a server name (3-16 characters) instead of a Linux user. The dashboard then:
 
 1. pulls `gameservermanagers/gameserver:<shortname>` (for example `:vh` for `vhserver`; another repository can be set with `LGSM_GAMESERVER_IMAGE`),
-2. creates `<LGSM_DATA_DIR>/<name>` and a `common.cfg` with `backupdir="/data/backup"` and `webdir="/data/public_html"`, so backups and FastDL files stay in the data directory (FastDL is then served under `/fastdl/<name>/` as on a host),
+2. creates `<LGSM_DATA_DIR>/<name>` and a `common.cfg` with `backupdir="/data/backup"` and `webdir="/data/public_html"`, so backups and FastDL files stay in the data directory,
 3. creates the container `<name>` with host networking, restart policy `unless-stopped`, a stop timeout of 180 seconds, `UPDATE_CHECK=0` and `UPDATE_ON_START=false` (updates are run from the dashboard), and mounts `<name>/mods` as `/app/lgsm/mods`: LinuxGSM keeps the list of installed mods there, outside of `/data`, and would otherwise lose it when the container is re-created,
 4. starts it and streams the container log until LinuxGSM has installed and started the server.
 
@@ -208,9 +307,11 @@ In Docker mode the dashboard installs, clones and deletes game servers as contai
 
 **Deleting** a server removes its container, its data directory (including backups in `/data/backup`) and its schedules.
 
-**Schedules** (monitor, update checks, the daily `force-update`, the weekly `update-lgsm` and automatic backups) are run by the dashboard itself, because the crontab inside a container is reset on every container start. They are set up in the same scheduler as on a host and stored in `/config/schedules/<server>.cron`, outside the reach of the game server containers. Once a minute the dashboard runs the due LinuxGSM commands with `docker exec`; commands due for the same server run one after the other, and they are skipped while the commands of an earlier minute are still running. Times use the time zone of the dashboard container, so set `TZ` (for example `TZ: Europe/Berlin` in `docker-compose.yml`); without it the times are UTC. The autostart service (systemd) is not offered in Docker mode: the containers' restart policy `unless-stopped` takes care of that.
+**Schedules** are run by the dashboard itself, because the crontab inside a container is reset on every container start. They are set up in the same scheduler as on a host and stored in `/config/schedules/<server>.cron`, outside the reach of the game server containers. Once a minute the dashboard runs the due LinuxGSM commands with `docker exec`; commands due for the same server run one after the other, and they are skipped while the commands of an earlier minute are still running. The time zone is set under **Settings > General** and kept in `/config`; without a setting the dashboard uses `TZ` of its container, or UTC.
 
-Game server containers are recognised by their labels and use the data layout of the official images (`/data` with `config-lgsm`, `data`, `log`, `serverfiles`):
+**Networking:** game server containers use host networking, so their ports are the ports configured in LinuxGSM, as on a host. The dashboard itself runs on a normal bridge network with the port mapping `8080:8080`; it queries the game servers (players, map) through its gateway, which is the Docker host. If a host firewall blocks that traffic and the game ports are not open, the dashboard can use host networking as well: replace `ports:` with `network_mode: host` (or `-p 8080:8080` with `--network host`); it then listens on port 8080 of the host (`-port` changes it).
+
+**Game server containers** are recognised by their labels and use the data layout of the official images (`/data` with `config-lgsm`, `data`, `log`, `serverfiles`):
 
 | Label | Value |
 |-------|-------|
@@ -218,36 +319,17 @@ Game server containers are recognised by their labels and use the data layout of
 | `lgsm-dashboard.gameserver` | LinuxGSM script, for example `vhserver` |
 | `lgsm-dashboard.dir` | The host directory mounted as `/data`, below `LGSM_DATA_DIR`, for example `/srv/lgsm/vhserver` |
 
-Commands run inside the container as the `linuxgsm` user. Stopping a server through LinuxGSM keeps its container running (the official images then report the container as "unhealthy"). **Start** on a stopped container starts the container, whose entrypoint starts the server. For containers not created by the dashboard, LinuxGSM keeps backups inside the container unless `backupdir="/data/backup"` is set in `common.cfg`. A restore needs free space for an extra copy of the backup content while it runs.
+Commands run inside the container as the `linuxgsm` user. Stopping a server through LinuxGSM keeps its container running (the official images then report the container as "unhealthy"). **Start** on a stopped container starts the container, whose entrypoint starts the server. For containers not created by the dashboard, LinuxGSM keeps backups inside the container unless `backupdir="/data/backup"` is set in `common.cfg`. A restore needs free space for an extra copy of the backup content while it runs. The dashboard does not re-create game server containers when a newer image is published; game files are updated with LinuxGSM's `update` as usual.
 
-```bash
-git clone https://github.com/yourdawi/linuxgsm-dashboard.git
-cd linuxgsm-dashboard
-docker build -t ghcr.io/yourdawi/linuxgsm-dashboard:latest .
-sudo mkdir -p /srv/lgsm
-docker compose up -d
-docker compose logs dashboard   # shows the generated admin password on the first start
-```
-
-The [`docker-compose.yml`](docker-compose.yml) mounts:
-
-| Mount | Purpose |
-|-------|---------|
-| `lgsm-dashboard-config:/config` | Dashboard configuration (users, audit log, tags) |
-| `/srv/lgsm:/srv/lgsm` | Game server data. It must have the same path on the host and in the container, because the dashboard passes it to Docker when it creates game server containers. Change both sides and `LGSM_DATA_DIR` together. |
-| `/var/run/docker.sock` | Access to the Docker engine |
-
-**Security:** access to the Docker socket is equivalent to root access on the host. Everybody with administrator rights in the dashboard can therefore control the host. Keep the dashboard behind HTTPS, use strong passwords and two-factor authentication. Instead of the socket, `DOCKER_HOST=tcp://...` can point to a [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy).
-
-How the mode is chosen:
+**How the mode is chosen:**
 
 | `LGSM_RUNTIME` | Behaviour |
 |----------------|-----------|
-| not set or `auto` | Docker mode when the dashboard runs inside a container (`/.dockerenv`, `/run/.containerenv` or a container cgroup), otherwise the normal host mode |
+| not set or `auto` | Docker mode when the dashboard runs inside a container (`/.dockerenv`, `/run/.containerenv` or a container cgroup), otherwise host mode |
 | `docker` | Docker mode (set in the image). The dashboard stops with an error when the Docker engine is not reachable. |
 | `host` | Host mode, also inside a container |
 
-In Docker mode the settings show "PRODUCTION (Docker)". Features that only make sense on a host are switched off: dashboard self-updates (pull a new image instead), firewall management, additional server directories, custom installation directories and the systemd autostart service.
+In Docker mode the settings show "PRODUCTION (Docker)" and the functions marked ❌ above are hidden.
 
 Images are built from the signed release binaries and published to `ghcr.io/yourdawi/linuxgsm-dashboard` (tags `latest`, `X.Y` and `X.Y.Z`) by the release workflow once the repository variable `PUBLISH_DOCKER_IMAGE` is set to `true`.
 
@@ -276,6 +358,7 @@ The directory is created with mode `0700`; files containing settings are written
 | `server_tags.json` | Server tags |
 | `server_paths.json` | Additional server directories |
 | `games_cache.json`, `icons/` | Cached game list and icons from linuxgsm.com |
+| `schedules/<server>.cron`, `schedule_settings.json` | Docker mode only: schedules of the game servers and their time zone |
 
 ### HTTPS
 
@@ -367,6 +450,8 @@ To report a security problem, please open an issue on GitHub without publishing 
 
 ## Updating
 
+In Docker mode the dashboard is updated by pulling a new image, see [Updating the container](#updating-the-container). For the native installation:
+
 The dashboard checks GitHub every 6 hours for a new release. When one is available, administrators see an **Update** badge next to **Settings** in the sidebar, and **Settings > General > Dashboard updates** offers to install it. The update button:
 
 - only installs the latest stable release of `yourdawi/linuxgsm-dashboard`,
@@ -390,7 +475,7 @@ When upgrading from version 1.0.7 or older:
 ## Known limitations
 
 - Player names are only available where the game reports them (A2S player list, Minecraft player sample). Kick and ban send `kick <name>` / `ban <name>` to the console, which not every game understands.
-- The live query uses the local address or the `Server IP` reported by LinuxGSM; servers that block queries from the host itself show no player data.
+- The live query uses the local address or the `Server IP` reported by LinuxGSM (in Docker mode also the Docker host); servers that block queries from the host itself show no player data.
 - The file manager edits files as plain text, without syntax highlighting, and opens files up to 5 MB in the editor.
 - During the installation of a new game server, the new Linux user temporarily gets passwordless `sudo`, because LinuxGSM installs missing system packages itself. The permission is removed when the installation ends and on the next start of the dashboard.
 - CPU and RAM are measured per Linux user, so instances that share a user show the same values. The same applies to disk usage when instances share a directory (marked in the tooltip).

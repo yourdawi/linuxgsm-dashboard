@@ -68,6 +68,7 @@ type Capabilities struct {
 	Autostart        bool   `json:"autostart"`          // autostart service at boot (systemd)
 	Firewall         bool   `json:"firewall"`           // firewall status and opening ports
 	SelfUpdate       bool   `json:"self_update"`        // dashboard binary updates itself
+	ScheduleTimeZone bool   `json:"schedule_timezone"`  // schedule time zone is set in the dashboard
 }
 
 // ExecIO connects a command to the caller. Nil fields mean no input and discarded output.

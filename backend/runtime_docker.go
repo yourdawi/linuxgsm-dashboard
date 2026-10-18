@@ -44,7 +44,8 @@ type DockerRuntime struct {
 	dataDir string
 	image   string // image repository of the game servers, tagged with the LinuxGSM shortname
 
-	scheduleDir string // schedules of the servers (see docker_scheduler.go)
+	scheduleDir string           // schedules of the servers (see docker_scheduler.go)
+	timeZone    *timeZoneSetting // time zone of the schedules (see timezone.go)
 }
 
 // defaultGameServerImage is the repository of the official LinuxGSM game server images.
@@ -84,13 +85,14 @@ func NewDockerRuntime(dataDir, configDir string) (*DockerRuntime, error) {
 	if configDir != "" {
 		d.scheduleDir = filepath.Join(configDir, "schedules")
 	}
+	d.timeZone = newTimeZoneSetting(configDir)
 	return d, nil
 }
 
 func (d *DockerRuntime) Name() string { return "docker" }
 
 func (d *DockerRuntime) Capabilities() Capabilities {
-	return Capabilities{Runtime: "docker", MultiInstance: true, Cron: true}
+	return Capabilities{Runtime: "docker", MultiInstance: true, Cron: true, ScheduleTimeZone: true}
 }
 
 func (d *DockerRuntime) Init() {
@@ -161,6 +163,16 @@ func dockerInstances(containers []DockerContainer, dataDir string) []*GameServer
 
 // ProcessStats sums up the processes of the linuxgsm user inside the container, measured the
 // same way as on a host (ps).
+// QueryHosts adds the Docker host to the live query targets. Game servers use host networking;
+// a dashboard on a bridge network reaches them through its default gateway. With host
+// networking for the dashboard 127.0.0.1 already works.
+func (d *DockerRuntime) QueryHosts() []string {
+	if gw := defaultGateway(); gw != "" {
+		return []string{gw}
+	}
+	return nil
+}
+
 func (d *DockerRuntime) ProcessStats(srv GameServerInstance) (float64, float64, []int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

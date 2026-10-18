@@ -155,3 +155,41 @@ func TestDockerRuntimeSelection(t *testing.T) {
 		t.Fatal("a system directory must be rejected as data directory")
 	}
 }
+
+func TestDefaultGateway(t *testing.T) {
+	dir := t.TempDir()
+	old := routeFile
+	t.Cleanup(func() { routeFile = old })
+	routeFile = filepath.Join(dir, "route")
+	// /proc/net/route of a container on a Docker bridge: default via 172.18.0.1.
+	route := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+	if err := os.WriteFile(routeFile, []byte(route), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if gw := defaultGateway(); gw != "172.18.0.1" {
+		t.Fatalf("defaultGateway() = %q", gw)
+	}
+	if hosts := (&DockerRuntime{}).QueryHosts(); len(hosts) != 1 || hosts[0] != "172.18.0.1" {
+		t.Fatalf("QueryHosts() = %v", hosts)
+	}
+	routeFile = filepath.Join(dir, "missing")
+	if gw := defaultGateway(); gw != "" {
+		t.Fatalf("missing route file must give no gateway, got %q", gw)
+	}
+}
+
+func TestQueryTargetsWithExtraHosts(t *testing.T) {
+	targets := queryTargets(GameServerInstance{Game: "hldm", Port: 27015}, "172.18.0.1", "not-an-ip", "127.0.0.1")
+	hosts := map[string]bool{}
+	for _, tg := range targets {
+		hosts[tg.Host] = true
+	}
+	if !hosts["127.0.0.1"] || !hosts["172.18.0.1"] || hosts["not-an-ip"] || len(hosts) != 2 {
+		t.Fatalf("unexpected hosts %v", hosts)
+	}
+	if targets[0].Host != "127.0.0.1" {
+		t.Fatalf("localhost must stay first: %+v", targets[0])
+	}
+}
