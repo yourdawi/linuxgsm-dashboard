@@ -19,6 +19,18 @@ func fileOwnerUID(path string) (int, error) {
 	return -1, nil
 }
 
+// fileOwnerIDs returns the numeric owner and group of path (following symlinks).
+func fileOwnerIDs(path string) (uid, gid int, err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return -1, -1, err
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return int(st.Uid), int(st.Gid), nil
+	}
+	return -1, -1, nil
+}
+
 // lfileOwnerUID returns the numeric owner of path without following a final symlink.
 func lfileOwnerUID(path string) (int, error) {
 	info, err := os.Lstat(path)

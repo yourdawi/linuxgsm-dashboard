@@ -72,12 +72,15 @@ func parseDetailsIP(output string) string {
 
 // Helpers
 
-func parseServerPort(homeDir string, scriptName string) int {
+// parseServerPort reads the game port from the LinuxGSM configs of the server in homeDir.
+// configLgsm is the directory holding the per-instance config directories (lgsm/config-lgsm on a
+// host).
+func parseServerPort(homeDir, configLgsm string, scriptName string) int {
 	// Try to find the port in config files
 	// Order: <script>.cfg -> common.cfg -> _default.cfg
 	rootScript := strings.Split(scriptName, "-")[0]
-	configDir := filepath.Join(homeDir, "lgsm", "config-lgsm", scriptName)
-	rootConfigDir := filepath.Join(homeDir, "lgsm", "config-lgsm", rootScript)
+	configDir := filepath.Join(configLgsm, scriptName)
+	rootConfigDir := filepath.Join(configLgsm, rootScript)
 	filesToTry := []string{
 		filepath.Join(configDir, fmt.Sprintf("%s.cfg", scriptName)),
 		filepath.Join(rootConfigDir, fmt.Sprintf("%s.cfg", scriptName)),
@@ -360,7 +363,7 @@ func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Reque
 		copy(configProbes, srv.ParsedPorts)
 	} else {
 		// Try to parse ports directly from config files
-		configProbes = parseServerPortsFromConfig(srv.Dir, srv.Script, srv.Game)
+		configProbes = parseServerPortsFromConfig(srv.Dir, filepath.Join(srv.Dir, srv.configLgsmRel()), srv.Script, srv.Game)
 	}
 
 	// If no probes could be parsed, fallback to heuristics
@@ -458,7 +461,7 @@ func checkUDPQuery(ip string, port int) bool {
 	return buf[0] == 0xFF && buf[1] == 0xFF && buf[2] == 0xFF && buf[3] == 0xFF
 }
 
-func parseServerPortsFromConfig(homeDir string, scriptName string, game string) []PortProbe {
+func parseServerPortsFromConfig(homeDir, configLgsm string, scriptName string, game string) []PortProbe {
 	// Game-specific overrides for port configurations
 	if scriptName == "mtaserver" || game == "multitheftauto" {
 		mtaConfig := filepath.Join(homeDir, "serverfiles", "mods", "deathmatch", "mtaserver.conf")
@@ -567,7 +570,7 @@ func parseServerPortsFromConfig(homeDir string, scriptName string, game string) 
 		}
 	}
 
-	configDir := filepath.Join(homeDir, "lgsm", "config-lgsm", scriptName)
+	configDir := filepath.Join(configLgsm, scriptName)
 	filesToTry := []string{
 		filepath.Join(configDir, fmt.Sprintf("%s.cfg", scriptName)),
 		filepath.Join(configDir, "common.cfg"),
@@ -683,13 +686,4 @@ func parseServerPortsFromConfig(homeDir string, scriptName string, game string) 
 	}
 
 	return probes
-}
-
-func cleanupLeftoverSudoers() {
-	files, err := filepath.Glob("/etc/sudoers.d/lgsm-*")
-	if err == nil {
-		for _, f := range files {
-			_ = os.Remove(f)
-		}
-	}
 }

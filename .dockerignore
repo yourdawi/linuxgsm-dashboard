@@ -1,0 +1,18 @@
+# Keep the build context small and free of local data and secrets.
+.git
+.github
+.claude
+.vscode
+.idea
+config/
+server_tags.json
+*.key
+*.log
+*.exe
+*.test
+*.out
+lgsm-dashboard
+lgsm-dashboard.*
+.test-*/
+docker-compose*.yml
+# dist/ is needed by the release target and therefore not excluded.

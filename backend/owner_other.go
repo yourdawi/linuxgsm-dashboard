@@ -12,6 +12,13 @@ func fileOwnerUID(path string) (int, error) {
 	return -1, nil
 }
 
+func fileOwnerIDs(path string) (int, int, error) {
+	if _, err := os.Stat(path); err != nil {
+		return -1, -1, err
+	}
+	return -1, -1, nil
+}
+
 func lfileOwnerUID(path string) (int, error) {
 	if _, err := os.Lstat(path); err != nil {
 		return -1, err

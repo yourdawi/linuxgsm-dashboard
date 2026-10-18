@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -49,6 +50,9 @@ type SystemMetricsCollector struct {
 	lastCPUTime  uint64
 	lastCPUIdle  uint64
 	cpuModelName string
+
+	// ProcessStats measures a server that has no usage values yet (set by the caller).
+	ProcessStats func(GameServerInstance) (cpu float64, ram float64, pids []int)
 }
 
 func NewSystemMetricsCollector() *SystemMetricsCollector {
@@ -91,7 +95,9 @@ func (s *SystemMetricsCollector) getServersStats(servers []GameServerInstance) [
 	for i, srv := range servers {
 		cpu, ram, pids := srv.CPU, srv.RAM, srv.PIDs
 		if pids == nil && cpu == 0 && ram == 0 {
-			cpu, ram, pids = srv.GetProcessResourceUsage()
+			if s.ProcessStats != nil {
+				cpu, ram, pids = s.ProcessStats(srv)
+			}
 		}
 
 		stats[i] = ServerStats{
@@ -288,7 +294,13 @@ func GetProcessStatsForUser(username string) (cpu float64, ram float64, pids []i
 		return 0, 0, nil
 	}
 
-	scanner := bufio.NewScanner(&out)
+	return parsePsStats(&out)
+}
+
+// parsePsStats sums up the output of "ps -o pid,%cpu,rss --no-headers": CPU in percent, RAM in
+// GB and the PIDs.
+func parsePsStats(r io.Reader) (cpu float64, ram float64, pids []int) {
+	scanner := bufio.NewScanner(r)
 	var totalCPU float64
 	var totalRAMKB float64
 	var pidList []int
