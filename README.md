@@ -269,30 +269,30 @@ The dashboard picks the mode by itself: inside a container it uses Docker mode, 
 | Dashboard installation | `install-dashboard.sh`, systemd service | `docker compose` or `docker run` |
 | Game servers run as | one Linux user per server, LinuxGSM in its home directory | one container per server from `gameservermanagers/gameserver:<game>` |
 | Server discovery | home directories, users with UID 1000 or higher, additional server directories | containers with the `lgsm-dashboard.*` labels |
-| Install game servers | ✅ Linux user, optional installation directory | ✅ server name; the image is pulled and the data stored in `<LGSM_DATA_DIR>/<name>` |
+| Install game servers | Yes, Linux user, optional installation directory | Yes, server name; the image is pulled and the data stored in `<LGSM_DATA_DIR>/<name>` |
 | Game dependencies | installed by LinuxGSM during the installation (temporary `sudo`) | included in the image |
-| Clone instance | ✅ new instance script, shares `serverfiles` | ✅ new container with a copy of `serverfiles` and the configs |
-| Delete server | ✅ including the Linux user if it is not shared | ✅ container and data directory |
-| Start, stop, restart, update, validate and all other LinuxGSM commands, bulk actions | ✅ | ✅ through `docker exec` |
-| Game-specific actions (wipes, mods, MTA resources, TS3 password, map compressor) | ✅ | ✅ |
-| FastDL under `/fastdl/<server>/` | ✅ | ✅ |
-| List of installed mods | ✅ | ✅ |
-| Live console and logs | ✅ | ✅ |
-| Live query (players, map) and port check | ✅ | ✅ through the Docker host |
-| Config editor, file manager | ✅ | ✅ |
-| Backups: create, restore, upload, download, retention | ✅ | ✅ |
-| Cloud sync with rclone | ✅ rclone on the host | ❌ rclone is not part of the official images |
-| Notifications, stop mode | ✅ | ✅ |
-| Scheduler: monitor, update checks, daily `force-update`, weekly `update-lgsm`, automatic backups | ✅ crontab of the server user | ✅ run by the dashboard |
+| Clone instance | Yes, new instance script, shares `serverfiles` | Yes, new container with a copy of `serverfiles` and the configs |
+| Delete server | Yes, including the Linux user if it is not shared | Yes, container and data directory |
+| Start, stop, restart, update, validate and all other LinuxGSM commands, bulk actions | Yes | Yes, through `docker exec` |
+| Game-specific actions (wipes, mods, MTA resources, TS3 password, map compressor) | Yes | Yes |
+| FastDL under `/fastdl/<server>/` | Yes | Yes |
+| List of installed mods | Yes | Yes |
+| Live console and logs | Yes | Yes |
+| Live query (players, map) and port check | Yes | Yes, through the Docker host |
+| Config editor, file manager | Yes | Yes |
+| Backups: create, restore, upload, download, retention | Yes | Yes |
+| Cloud sync with rclone | Yes, rclone on the host | No, rclone is not part of the official images |
+| Notifications, stop mode | Yes | Yes |
+| Scheduler: monitor, update checks, daily `force-update`, weekly `update-lgsm`, automatic backups | Yes, crontab of the server user | Yes, run by the dashboard |
 | Time zone of the schedules | time zone of the host | **Settings > General** (default: `TZ` or UTC) |
 | Restart after a crash | cron job `monitor` | health check of the official images, plus the optional `monitor` schedule |
 | Autostart at boot | systemd service per server | restart policy `unless-stopped` |
-| CPU, RAM and disk usage per server | ✅ per Linux user | ✅ per container |
-| Host monitoring (CPU, RAM, disk) | ✅ | ✅ (disk: the file system of the dashboard container) |
-| Firewall status and opening ports | ✅ UFW/firewalld | ❌ manage the firewall on the host |
-| Additional server directories, custom installation directory | ✅ | ❌ all servers live in `LGSM_DATA_DIR` |
-| Users, permissions, two-factor authentication, audit log | ✅ | ✅ |
-| Dashboard updates | ✅ signed in-app updates | pull a new image |
+| CPU, RAM and disk usage per server | Yes, per Linux user | Yes, per container |
+| Host monitoring (CPU, RAM, disk) | Yes | Yes, (disk: the file system of the dashboard container) |
+| Firewall status and opening ports | Yes, UFW/firewalld | No, manage the firewall on the host |
+| Additional server directories, custom installation directory | Yes | No, all servers live in `LGSM_DATA_DIR` |
+| Users, permissions, two-factor authentication, audit log | Yes | Yes |
+| Dashboard updates | Yes, signed in-app updates | pull a new image |
 
 ## Docker mode in detail
 
@@ -329,7 +329,7 @@ Commands run inside the container as the `linuxgsm` user. Stopping a server thro
 | `docker` | Docker mode (set in the image). The dashboard stops with an error when the Docker engine is not reachable. |
 | `host` | Host mode, also inside a container |
 
-In Docker mode the settings show "PRODUCTION (Docker)" and the functions marked ❌ above are hidden.
+In Docker mode the settings show "PRODUCTION (Docker)". Firewall management, dashboard updates, additional server directories, the installation directory field and the systemd autostart are hidden; the cloud sync stays visible but reports that rclone is missing.
 
 Images are built from the signed release binaries and published to `ghcr.io/yourdawi/linuxgsm-dashboard` (tags `latest`, `X.Y` and `X.Y.Z`) by the release workflow once the repository variable `PUBLISH_DOCKER_IMAGE` is set to `true`.
 

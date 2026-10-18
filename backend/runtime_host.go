@@ -481,6 +481,7 @@ func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedU
 	_ = exec.Command("pkill", "-u", srv.User).Run()
 	time.Sleep(500 * time.Millisecond)
 	_ = exec.Command("pkill", "-9", "-u", srv.User).Run()
+	removeUserShm(srv.UID)
 
 	if err := exec.Command("userdel", "-r", srv.User).Run(); err != nil {
 		fmt.Printf("[ERROR] Failed to delete user %s: %v\n", srv.User, err)
@@ -553,6 +554,34 @@ func (h HostRuntime) Clone(ctx context.Context, srv GameServerInstance, cleanSuf
 	}
 
 	return newInstanceScript, nil
+}
+
+// shmDir can be overridden in tests.
+var shmDir = "/dev/shm"
+
+// removeUserShm deletes the shared memory files of a Linux user whose processes have ended. Game
+// servers keep files there with fixed names (TeamSpeak 3, for example); left behind, they stop a
+// server of another user from starting later. Only regular files owned by uid are removed.
+func removeUserShm(uid int) {
+	if uid <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(shmDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		path := filepath.Join(shmDir, e.Name())
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if owner, err := lfileOwnerUID(path); err == nil && owner == uid {
+			if err := os.Remove(path); err != nil {
+				fmt.Printf("[WARNING] Failed to remove %s: %v\n", path, err)
+			}
+		}
+	}
 }
 
 // -------------------------------------------------------------
