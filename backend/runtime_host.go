@@ -351,7 +351,73 @@ func ValidateInstallDir(dir string) error {
 }
 
 func (HostRuntime) ValidateInstall(req InstallRequest) error {
+	if existing, err := existingInstallUser(req); err != nil || existing != nil {
+		return err
+	}
 	return ValidateInstallDir(req.Dir)
+}
+
+// existingInstallUser returns the passwd entry when the Linux user of an installation request
+// already exists, e.g. left over from an earlier LinuxGSM setup. Such a user is reused if it is a
+// regular user whose home directory is missing, holds only dotfiles or already holds LinuxGSM; it
+// returns nil, nil when the user does not exist yet.
+func existingInstallUser(req InstallRequest) (*passwdEntry, error) {
+	users, err := readPasswd()
+	if err != nil {
+		return nil, fmt.Errorf("reading /etc/passwd: %w", err)
+	}
+	var entry *passwdEntry
+	for i := range users {
+		if users[i].Name == req.Username {
+			entry = &users[i]
+			break
+		}
+	}
+	if entry == nil {
+		return nil, nil
+	}
+	if entry.UID < 1000 || entry.UID >= 65534 {
+		return nil, fmt.Errorf("user %s already exists and is a system account", req.Username)
+	}
+	if !IsSafeServerDir(entry.Home) || IsForbiddenServerDir(entry.Home) {
+		return nil, fmt.Errorf("user %s already exists, but its home directory %s cannot be used", req.Username, entry.Home)
+	}
+	if req.Dir != "" && req.Dir != entry.Home {
+		return nil, fmt.Errorf("user %s already exists with the home directory %s: leave the installation directory empty or use that directory", req.Username, entry.Home)
+	}
+	info, err := os.Lstat(entry.Home)
+	if os.IsNotExist(err) {
+		return entry, nil
+	}
+	if err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("user %s already exists, but its home directory %s is not a directory", req.Username, entry.Home)
+	}
+	if uid, err := lfileOwnerUID(entry.Home); err != nil || (uid >= 0 && uid != entry.UID) {
+		return nil, fmt.Errorf("user %s already exists, but its home directory %s belongs to another user", req.Username, entry.Home)
+	}
+	entries, err := os.ReadDir(entry.Home)
+	if err != nil {
+		return nil, fmt.Errorf("user %s already exists, but its home directory %s cannot be read", req.Username, entry.Home)
+	}
+	// All scripts in a directory share serverfiles/, so a different game must not be added.
+	gameRoot := strings.Split(req.GameCmd, "-")[0]
+	for _, e := range entries {
+		name := e.Name()
+		if e.Type().IsRegular() && name != "linuxgsm.sh" && IsValidScriptName(name) && strings.Split(name, "-")[0] != gameRoot && isLinuxGSMScript(filepath.Join(entry.Home, name)) {
+			return nil, fmt.Errorf("user %s already exists and its home directory %s holds the LinuxGSM server %s", req.Username, entry.Home, name)
+		}
+	}
+	for _, e := range entries {
+		if e.Name() == "lgsm" || e.Name() == "linuxgsm.sh" {
+			return entry, nil
+		}
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".") {
+			return nil, fmt.Errorf("user %s already exists and its home directory %s contains other files", req.Username, entry.Home)
+		}
+	}
+	return entry, nil
 }
 
 // Install creates a Linux user, bootstraps LinuxGSM and installs the game server. The server is
@@ -374,20 +440,45 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 		"[INSTALL] Starting installation for "+gameCmd+" under system user '"+username+"'...",
 		"[INSTALL] Starte Installation für "+gameCmd+" unter Systemuser '"+username+"'..."))
 
-	homeDir := filepath.Join("/home", username)
-	useraddArgs := []string{"-m", "-s", "/bin/bash"}
-	if req.Dir != "" {
-		homeDir = req.Dir
-		useraddArgs = append(useraddArgs, "-d", req.Dir)
-		logLine(Msg(lang, "[INSTALL] Installation directory: "+req.Dir, "[INSTALL] Installationsverzeichnis: "+req.Dir))
-	}
-	useraddArgs = append(useraddArgs, "--", username)
-
-	// 1. Create Linux user
-	logLine(Msg(lang, "[INSTALL] Creating system user...", "[INSTALL] Lege Systembenutzer an..."))
-	if err := runCommandWithLogs("useradd", useraddArgs...); err != nil {
-		logLine(Msg(lang, "[ERROR] Failed to create user: ", "[FEHLER] Benutzer konnte nicht erstellt werden: ") + err.Error())
+	existing, err := existingInstallUser(req)
+	if err != nil {
+		logLine(Msg(lang, "[ERROR] ", "[FEHLER] ") + err.Error())
 		return err
+	}
+
+	homeDir := filepath.Join("/home", username)
+	if existing != nil {
+		// 1. Reuse the Linux user left over from an earlier installation
+		homeDir = existing.Home
+		logLine(Msg(lang,
+			"[INSTALL] System user '"+username+"' already exists, using it with the home directory "+homeDir,
+			"[INSTALL] Systembenutzer '"+username+"' existiert bereits, verwende ihn mit dem Home-Verzeichnis "+homeDir))
+		if _, err := os.Lstat(homeDir); os.IsNotExist(err) {
+			if err := os.Mkdir(homeDir, 0750); err != nil {
+				logLine(Msg(lang, "[ERROR] Failed to create the home directory: ", "[FEHLER] Home-Verzeichnis konnte nicht erstellt werden: ") + err.Error())
+				return err
+			}
+			if err := os.Chown(homeDir, existing.UID, existing.GID); err != nil {
+				_ = os.Remove(homeDir)
+				logLine(Msg(lang, "[ERROR] Failed to hand the home directory over to the user: ", "[FEHLER] Home-Verzeichnis konnte dem Benutzer nicht übergeben werden: ") + err.Error())
+				return err
+			}
+		}
+	} else {
+		useraddArgs := []string{"-m", "-s", "/bin/bash"}
+		if req.Dir != "" {
+			homeDir = req.Dir
+			useraddArgs = append(useraddArgs, "-d", req.Dir)
+			logLine(Msg(lang, "[INSTALL] Installation directory: "+req.Dir, "[INSTALL] Installationsverzeichnis: "+req.Dir))
+		}
+		useraddArgs = append(useraddArgs, "--", username)
+
+		// 1. Create Linux user
+		logLine(Msg(lang, "[INSTALL] Creating system user...", "[INSTALL] Lege Systembenutzer an..."))
+		if err := runCommandWithLogs("useradd", useraddArgs...); err != nil {
+			logLine(Msg(lang, "[ERROR] Failed to create user: ", "[FEHLER] Benutzer konnte nicht erstellt werden: ") + err.Error())
+			return err
+		}
 	}
 
 	// Set password if provided
@@ -400,26 +491,33 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 		}
 	}
 
-	// 2. Download linuxgsm.sh bootstrap script (as the new user, into its own directory)
-	logLine(Msg(lang, "[INSTALL] Downloading LinuxGSM bootstrap script...", "[INSTALL] Lade LinuxGSM Bootstrap-Skript herunter..."))
-	bootstrapPath := filepath.Join(homeDir, "linuxgsm.sh")
-	if err := runCommandWithLogs("runuser", "-u", username, "--", "wget", "-O", bootstrapPath, "https://linuxgsm.sh"); err != nil {
-		logLine(Msg(lang, "[ERROR] Failed to download bootstrap script: ", "[FEHLER] Bootstrap-Skript konnte nicht geladen werden: ") + err.Error())
-		return err
-	}
+	// An existing ./<gameCmd> is used as is: the bootstrap would add a second instance <gameCmd>-2.
+	if existing != nil && isLinuxGSMScript(filepath.Join(homeDir, gameCmd)) {
+		logLine(Msg(lang,
+			"[INSTALL] The LinuxGSM script "+gameCmd+" already exists, skipping the bootstrap.",
+			"[INSTALL] Das LinuxGSM Skript "+gameCmd+" existiert bereits, überspringe das Bootstrap."))
+	} else {
+		// 2. Download linuxgsm.sh bootstrap script (as the new user, into its own directory)
+		logLine(Msg(lang, "[INSTALL] Downloading LinuxGSM bootstrap script...", "[INSTALL] Lade LinuxGSM Bootstrap-Skript herunter..."))
+		bootstrapPath := filepath.Join(homeDir, "linuxgsm.sh")
+		if err := runCommandWithLogs("runuser", "-u", username, "--", "wget", "-O", bootstrapPath, "https://linuxgsm.sh"); err != nil {
+			logLine(Msg(lang, "[ERROR] Failed to download bootstrap script: ", "[FEHLER] Bootstrap-Skript konnte nicht geladen werden: ") + err.Error())
+			return err
+		}
 
-	// Make executable
-	if err := exec.CommandContext(ctx, "runuser", "-u", username, "--", "chmod", "+x", "--", bootstrapPath).Run(); err != nil {
-		logLine(Msg(lang, "[ERROR] Failed to set permissions: ", "[FEHLER] Berechtigungskonfiguration schlug fehl: ") + err.Error())
-		return err
-	}
+		// Make executable
+		if err := exec.CommandContext(ctx, "runuser", "-u", username, "--", "chmod", "+x", "--", bootstrapPath).Run(); err != nil {
+			logLine(Msg(lang, "[ERROR] Failed to set permissions: ", "[FEHLER] Berechtigungskonfiguration schlug fehl: ") + err.Error())
+			return err
+		}
 
-	// 3. Run bootstrap: runuser -l <user> -c "cd '<dir>' && ./linuxgsm.sh '<gameCmd>'"
-	logLine(Msg(lang, "[INSTALL] Initializing LinuxGSM script...", "[INSTALL] Initialisiere LinuxGSM Skript..."))
-	bootstrapCmd := fmt.Sprintf("cd %s && ./linuxgsm.sh %s", ShellQuote(homeDir), ShellQuote(gameCmd))
-	if err := runCommandWithLogs("runuser", "-l", username, "-c", bootstrapCmd); err != nil {
-		logLine(Msg(lang, "[ERROR] Script initialization failed: ", "[FEHLER] Skriptinitialisierung schlug fehl: ") + err.Error())
-		return err
+		// 3. Run bootstrap: runuser -l <user> -c "cd '<dir>' && ./linuxgsm.sh '<gameCmd>'"
+		logLine(Msg(lang, "[INSTALL] Initializing LinuxGSM script...", "[INSTALL] Initialisiere LinuxGSM Skript..."))
+		bootstrapCmd := fmt.Sprintf("cd %s && ./linuxgsm.sh %s", ShellQuote(homeDir), ShellQuote(gameCmd))
+		if err := runCommandWithLogs("runuser", "-l", username, "-c", bootstrapCmd); err != nil {
+			logLine(Msg(lang, "[ERROR] Script initialization failed: ", "[FEHLER] Skriptinitialisierung schlug fehl: ") + err.Error())
+			return err
+		}
 	}
 
 	// 3.5 Grant temporary sudo access for LinuxGSM dependency auto-installer
