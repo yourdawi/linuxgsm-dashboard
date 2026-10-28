@@ -42,6 +42,7 @@ const state = {
     activeConfigContent: '',
     configMode: 'form', // form or raw
     parsedConfigItems: [],
+    formBaseContent: '', // text the config form was built from
     theme: 'dark', // dark or light
     language: 'en', // en or de
     games: [],
@@ -977,7 +978,7 @@ async function handleLogin(e) {
         } else if (res.status === 200) {
             completeLogin();
         } else {
-            el.loginError.textContent = data.error || 'Ungültige Zugangsdaten';
+            el.loginError.textContent = data.error || t('login-invalid');
             el.loginError.style.display = 'block';
         }
     } catch (err) {
@@ -1847,6 +1848,7 @@ async function loadConfigFile(path, name, liElement) {
         
         // Parse config and build form
         state.parsedConfigItems = parseConfig(data.content, path);
+        state.formBaseContent = data.content;
         if (state.parsedConfigItems.length > 0) {
             el.configModeToggle.style.display = 'flex';
             buildConfigForm(state.parsedConfigItems);
@@ -1868,29 +1870,7 @@ async function saveConfigFile() {
     el.btnConfigSave.disabled = true;
     el.btnConfigSave.textContent = t('saving');
     
-    let content = '';
-    if (state.configMode === 'form') {
-        const formValues = {};
-        state.parsedConfigItems.forEach(item => {
-            const inputEl = document.getElementById(`config-form-val-${item.key}`);
-            if (inputEl) {
-                if (item.type === 'boolean') {
-                    formValues[item.key] = inputEl.checked ? 'true' : 'false';
-                } else {
-                    formValues[item.key] = inputEl.value;
-                }
-            }
-        });
-        
-        const ext = state.activeConfigFile.split('.').pop().toLowerCase();
-        if (ext === 'json') {
-            content = serializeJsonForm(state.activeConfigContent, formValues);
-        } else {
-            content = serializeConfigForm(state.activeConfigContent, formValues);
-        }
-    } else {
-        content = el.editorTextarea.value;
-    }
+    const content = state.configMode === 'form' ? configFormContent() : el.editorTextarea.value;
     
     try {
         const res = await apiFetch(`/api/servers/${state.activeConfigServer}/configs/file`, {
@@ -1920,7 +1900,15 @@ async function saveConfigFile() {
             state.activeConfigContent = content;
             el.editorTextarea.value = content;
             updateEditorLineNumbers();
-            
+            // The saved text is the new base for detecting changed form fields.
+            state.formBaseContent = content;
+            state.parsedConfigItems = parseConfig(content, state.activeConfigFile);
+            if (state.configMode === 'form') {
+                const scroll = el.editorFormWrapper.scrollTop;
+                buildConfigForm(state.parsedConfigItems);
+                el.editorFormWrapper.scrollTop = scroll;
+            }
+
             el.btnConfigSave.textContent = t('saved');
             setTimeout(() => {
                 el.btnConfigSave.textContent = t('modal-config-btn-save');
@@ -2758,161 +2746,204 @@ function setAlertFieldsDisabled(disabled) {
 
 function switchConfigMode(mode) {
     state.configMode = mode;
-    
+
     if (mode === 'form') {
         el.btnConfigForm.classList.add('active');
         el.btnConfigRaw.classList.remove('active');
-        
+
         el.editorFormWrapper.classList.remove('hidden');
         el.editorTextWrapper.classList.add('hidden');
-        
+
         // Rebuild form with the latest textarea text in case they modified it in raw view
         const currentText = el.editorTextarea.value;
         const parsed = parseConfig(currentText, state.activeConfigFile);
         if (parsed.length > 0) {
             state.parsedConfigItems = parsed;
+            state.formBaseContent = currentText;
             buildConfigForm(parsed);
         }
     } else {
         el.btnConfigForm.classList.remove('active');
         el.btnConfigRaw.classList.add('active');
-        
+
         el.editorFormWrapper.classList.add('hidden');
         el.editorTextWrapper.classList.remove('hidden');
-        
+
         // Serialize form values back to text in case they modified them in the form
-        const formValues = {};
-        state.parsedConfigItems.forEach(item => {
-            const inputEl = document.getElementById(`config-form-val-${item.key}`);
-            if (inputEl) {
-                if (item.type === 'boolean') {
-                    formValues[item.key] = inputEl.checked ? 'true' : 'false';
-                } else {
-                    formValues[item.key] = inputEl.value;
-                }
-            }
-        });
-        
-        const ext = state.activeConfigFile.split('.').pop().toLowerCase();
-        let content = '';
-        if (ext === 'json') {
-            content = serializeJsonForm(state.activeConfigContent, formValues);
-        } else {
-            content = serializeConfigForm(state.activeConfigContent, formValues);
-        }
-        
-        el.editorTextarea.value = content;
+        el.editorTextarea.value = configFormContent();
         updateEditorLineNumbers();
     }
 }
 
+// configFormContent applies the changed form fields to the text the form was built from. Fields
+// the user did not touch are never rewritten.
+function configFormContent() {
+    const base = state.formBaseContent;
+    const changes = new Map();
+    state.parsedConfigItems.forEach(item => {
+        const inputEl = document.getElementById(`config-form-val-${item.id}`);
+        if (!inputEl) return;
+        if (item.type === 'boolean') {
+            if (inputEl.checked !== item.checked) changes.set(item.id, formatConfigBool(item.value, inputEl.checked));
+        } else if (inputEl.value !== item.value) {
+            changes.set(item.id, inputEl.value);
+        }
+    });
+    if (changes.size === 0) return base;
+    const ext = state.activeConfigFile.split('.').pop().toLowerCase();
+    return ext === 'json' ? serializeJsonForm(base, state.parsedConfigItems, changes)
+                          : serializeConfigForm(base, state.parsedConfigItems, changes, ext);
+}
+
+// Keeps the spelling of the original value (true/True/TRUE).
+function formatConfigBool(original, checked) {
+    const word = checked ? 'true' : 'false';
+    if (original === original.toUpperCase()) return word.toUpperCase();
+    if (original[0] === original[0].toUpperCase()) return word[0].toUpperCase() + word.slice(1);
+    return word;
+}
+
+// JSON numbers beyond 2^53 lose precision in JSON.parse, so such files are only edited as text.
+const UNSAFE_JSON_NUMBER = /[:\[,]\s*-?\d{16,}/;
+
+// parseConfig returns the editable values of a config. Every item remembers its line (or JSON
+// key), so duplicate keys and keys in different INI sections stay separate.
 function parseConfig(content, path) {
     const ext = path.split('.').pop().toLowerCase();
     const items = [];
-    
+    const typed = (value) => {
+        if (/^(true|false)$/i.test(value)) return 'boolean';
+        if (/^-?\d+(\.\d+)?$/.test(value)) return 'number';
+        return 'text';
+    };
+
     if (ext === 'json') {
+        if (UNSAFE_JSON_NUMBER.test(content)) return [];
         try {
             const obj = JSON.parse(content);
-            for (let key in obj) {
-                if (typeof obj[key] !== 'object' && obj[key] !== null) {
-                    let type = 'text';
-                    if (typeof obj[key] === 'boolean') type = 'boolean';
-                    else if (typeof obj[key] === 'number') type = 'number';
-                    
-                    items.push({
-                        key: key,
-                        value: obj[key],
-                        type: type,
-                        comments: ''
-                    });
-                }
-            }
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return [];
+            Object.keys(obj).forEach(key => {
+                const v = obj[key];
+                if (v === null || typeof v === 'object') return;
+                const value = String(v);
+                items.push({
+                    id: items.length,
+                    key: key,
+                    label: key,
+                    value: value,
+                    checked: v === true,
+                    jsonType: typeof v,
+                    type: typeof v === 'boolean' ? 'boolean' : (typeof v === 'number' ? 'number' : 'text'),
+                    comments: ''
+                });
+            });
             return items;
         } catch (e) {
             return [];
         }
     }
-    
+
     const lines = content.split('\n');
-    const kvRegex = /^\s*([\w\.\-]+)\s*([=:])\s*(.*)$/;
+    const kvRegex = /^(\s*([\w\.\-]+)\s*[=:]\s*)(.*)$/;
     let accumulatedComments = [];
-    
-    for (let line of lines) {
+    let section = '';
+
+    lines.forEach((rawLine, index) => {
+        const line = rawLine.replace(/\r$/, '');
         const trimmed = line.trim();
         if (trimmed.startsWith('#') || trimmed.startsWith('//') || trimmed.startsWith(';')) {
             const cleanComment = trimmed.replace(/^[#\/;*\s]+/, '');
             if (cleanComment.length > 0) {
                 accumulatedComments.push(cleanComment);
             }
-            continue;
+            return;
         }
-        
+
         if (trimmed === '') {
             accumulatedComments = [];
+            return;
+        }
+
+        const sectionMatch = trimmed.match(/^\[(.+)\]$/);
+        if (sectionMatch) {
+            section = sectionMatch[1];
+            accumulatedComments = [];
+            return;
+        }
+
+        const match = line.match(kvRegex);
+        if (!match) return;
+        const rest = match[3];
+        let value = rest.trim();
+        let quote = '';
+        let suffix = '';
+        if (value[0] === '"' || value[0] === "'") {
+            quote = value[0];
+            const close = findClosingQuote(value, quote, ext === 'cfg');
+            if (close < 0) return; // value spans several lines: raw view only
+            suffix = value.slice(close + 1);
+            value = value.slice(1, close);
+            if (quote === '"' && ext === 'cfg') value = value.replace(/\\(["\\`])/g, '$1');
+        }
+
+        const type = typed(value);
+        items.push({
+            id: items.length,
+            key: match[2],
+            label: section ? `[${section}] ${match[2]}` : match[2],
+            value: value,
+            checked: /^true$/i.test(value),
+            type: type,
+            comments: accumulatedComments.join(' '),
+            line: index,
+            prefix: match[1],
+            quote: quote,
+            suffix: suffix,
+            cr: rawLine.endsWith('\r') ? '\r' : ''
+        });
+
+        accumulatedComments = [];
+    });
+
+    return items;
+}
+
+// Index of the quote that closes value[0], or -1. In bash configs \" does not close the string.
+function findClosingQuote(value, quote, bashEscapes) {
+    for (let i = 1; i < value.length; i++) {
+        if (bashEscapes && quote === '"' && value[i] === '\\') {
+            i++;
             continue;
         }
-        
-        const match = line.match(kvRegex);
-        if (match) {
-            const key = match[1];
-            let val = match[3].trim();
-            
-            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-                val = val.substring(1, val.length - 1);
-            }
-            
-            let type = 'text';
-            let parsedVal = val;
-            
-            if (val.toLowerCase() === 'true' || val.toLowerCase() === 'false') {
-                type = 'boolean';
-                parsedVal = val.toLowerCase() === 'true';
-            } else if (/^\d+$/.test(val)) {
-                type = 'number';
-                parsedVal = parseInt(val, 10);
-            } else if (/^\d+\.\d+$/.test(val)) {
-                type = 'number';
-                parsedVal = parseFloat(val);
-            }
-            
-            items.push({
-                key: key,
-                value: parsedVal,
-                type: type,
-                comments: accumulatedComments.join(' ')
-            });
-            
-            accumulatedComments = [];
-        }
+        if (value[i] === quote) return i;
     }
-    
-    return items;
+    return -1;
 }
 
 function buildConfigForm(items) {
     el.configFormBuilder.innerHTML = '';
-    
+
     items.forEach(item => {
         const formItem = document.createElement('div');
         formItem.className = 'config-form-item';
-        
+
         const left = document.createElement('div');
         left.className = 'config-form-item-left';
-        
+
         let prettyLabel = item.key
             .replace(/[-_]/g, ' ')
             .replace(/\b\w/g, c => c.toUpperCase());
-            
+
         const labelEl = document.createElement('div');
         labelEl.className = 'config-form-label';
         labelEl.textContent = prettyLabel;
         left.appendChild(labelEl);
-        
+
         const keyEl = document.createElement('div');
         keyEl.className = 'config-form-key';
-        keyEl.textContent = item.key;
+        keyEl.textContent = item.label;
         left.appendChild(keyEl);
-        
+
         if (item.comments) {
             const descEl = document.createElement('div');
             descEl.className = 'config-form-description';
@@ -2930,101 +2961,80 @@ function buildConfigForm(items) {
             gsltBtn.style.marginTop = '0.3rem';
             left.appendChild(gsltBtn);
         }
-        
+
         formItem.appendChild(left);
-        
+
         const container = document.createElement('div');
         container.className = 'config-form-input-container';
-        
+
         if (item.type === 'boolean') {
             const switchEl = document.createElement('label');
             switchEl.className = 'switch';
-            
+
             const check = document.createElement('input');
             check.type = 'checkbox';
-            check.id = `config-form-val-${item.key}`;
-            check.checked = item.value;
+            check.id = `config-form-val-${item.id}`;
+            check.checked = item.checked;
             switchEl.appendChild(check);
-            
+
             const slider = document.createElement('span');
             slider.className = 'slider';
             switchEl.appendChild(slider);
-            
+
             container.appendChild(switchEl);
-        } else if (item.type === 'number') {
-            const input = document.createElement('input');
-            input.type = 'number';
-            input.id = `config-form-val-${item.key}`;
-            input.className = 'form-control form-control-sm';
-            input.style.width = '120px';
-            input.value = item.value;
-            container.appendChild(input);
         } else {
+            // Numbers stay text: a number input would round values like 64-bit Steam IDs.
             const input = document.createElement('input');
             input.type = 'text';
-            input.id = `config-form-val-${item.key}`;
+            input.id = `config-form-val-${item.id}`;
             input.className = 'form-control form-control-sm';
-            input.style.minWidth = '280px';
+            if (item.type === 'number') {
+                input.inputMode = 'decimal';
+                input.style.width = '180px';
+            } else {
+                input.style.minWidth = '280px';
+            }
             input.value = item.value;
             container.appendChild(input);
         }
-        
+
         formItem.appendChild(container);
         el.configFormBuilder.appendChild(formItem);
     });
 }
 
-function serializeConfigForm(originalContent, formValues) {
+function serializeConfigForm(originalContent, items, changes, ext) {
     const lines = originalContent.split('\n');
-    const result = [];
-    const kvRegex = /^\s*([\w\.\-]+)\s*([=:])\s*(.*)$/;
-    
-    for (let line of lines) {
-        const match = line.match(kvRegex);
-        if (match) {
-            const key = match[1];
-            const delimiter = match[2];
-            const rawVal = match[3].trim();
-            
-            if (formValues.hasOwnProperty(key)) {
-                let newVal = formValues[key];
-                
-                const isDoubleQuoted = rawVal.startsWith('"') && rawVal.endsWith('"');
-                const isSingleQuoted = rawVal.startsWith("'") && rawVal.endsWith("'");
-                
-                const indent = line.substring(0, line.indexOf(key));
-                
-                if (isDoubleQuoted) {
-                    result.push(`${indent}${key}${delimiter}"${newVal}"`);
-                } else if (isSingleQuoted) {
-                    result.push(`${indent}${key}${delimiter}'${newVal}'`);
-                } else {
-                    result.push(`${indent}${key}${delimiter}${newVal}`);
-                }
-                continue;
-            }
+    items.forEach(item => {
+        if (!changes.has(item.id)) return;
+        let value = changes.get(item.id);
+        let quote = item.quote;
+        if (ext === 'cfg') {
+            // LinuxGSM configs are bash: escape quotes, keep ${variables} working.
+            if (quote === "'" && value.includes("'")) quote = '"';
+            if (quote === '"') value = value.replace(/(["\\`])/g, '\\$1');
         }
-        result.push(line);
-    }
-    
-    return result.join('\n');
+        lines[item.line] = `${item.prefix}${quote}${value}${quote}${item.suffix}${item.cr}`;
+    });
+    return lines.join('\n');
 }
 
-function serializeJsonForm(originalContent, formValues) {
+function serializeJsonForm(originalContent, items, changes) {
     try {
         const obj = JSON.parse(originalContent);
-        for (let key in formValues) {
-            if (obj.hasOwnProperty(key)) {
-                let val = formValues[key];
-                if (val === 'true') val = true;
-                else if (val === 'false') val = false;
-                else if (!isNaN(val) && val !== '') {
-                    val = Number(val);
-                }
-                obj[key] = val;
+        items.forEach(item => {
+            if (!changes.has(item.id)) return;
+            const value = changes.get(item.id);
+            if (item.jsonType === 'boolean') {
+                obj[item.key] = /^true$/i.test(value);
+            } else if (item.jsonType === 'number' && value.trim() !== '' && !isNaN(Number(value))) {
+                obj[item.key] = Number(value);
+            } else {
+                obj[item.key] = value;
             }
-        }
-        return JSON.stringify(obj, null, 2);
+        });
+        const indent = (originalContent.match(/\n([ \t]+)"/) || [null, '  '])[1];
+        return JSON.stringify(obj, null, indent) + (originalContent.endsWith('\n') ? '\n' : '');
     } catch (e) {
         return originalContent;
     }
@@ -3098,6 +3108,11 @@ const i18n = {
         "menu-logout": "Logout",
         "login-title": "LinuxGSM WebAdmin",
         "login-subtitle": "Sign in to manage your game servers.",
+        "login-invalid": "Invalid credentials",
+        "btn-clear": "Clear",
+        "action-failed": "The action failed.",
+        "menu-open": "Open menu",
+        "theme-toggle": "Toggle theme",
         "username-label": "Username",
         "password-label": "Password",
         "btn-login": "Login",
@@ -3306,7 +3321,7 @@ const i18n = {
         "modal-portcheck-close-btn": "Close",
         "btn-delete-server": "Delete",
         "modal-delete-title": "Delete Game Server",
-        "modal-delete-warning": "WARNING: This action is permanent and cannot be undone! It will permanently delete all game files, configs, and the dedicated system user from this server.",
+        "modal-delete-warning": "WARNING: This action is permanent and cannot be undone! It deletes the game files and configs of this server. A Linux user that exists only for this server is deleted together with its home directory; other users are kept.",
         "modal-delete-prompt-label": "Please type the name of the server to confirm deletion:",
         "modal-delete-cancel-btn": "Cancel",
         "modal-delete-submit-btn": "Delete Server Permanently",
@@ -3479,6 +3494,9 @@ const i18n = {
         "settings-stopmode-11": "Mode 11: end",
         "settings-stopmode-12": "Mode 12: shutdown",
         "settings-stopmode-13": "Mode 13: Soulmask",
+        "settings-stopmode-14": "Mode 14: Running With Rifles",
+        "settings-stopmode-15": "Mode 15: Rising World",
+        "settings-stopmode-16": "Mode 16: Conan Exiles",
         "settings-btn-clone": "Clone Instance",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Sync Now",
@@ -3505,6 +3523,7 @@ const i18n = {
         "stopmode-save-success": "Stop mode saved successfully!",
         "stopmode-save-error": "Failed to save stop mode",
         "clone-success": "Instance cloned successfully! Reloading...",
+        "clone-ports-hint": "The clone uses the same ports as the original: set port (and queryport etc.) in its instance config before running both at the same time.",
         "clone-error": "Failed to clone instance",
         "cloudbackup-save-success": "Cloud backup settings saved!",
         "cloudbackup-save-error": "Failed to save cloud backup settings",
@@ -3581,6 +3600,11 @@ const i18n = {
         "menu-logout": "Abmelden",
         "login-title": "LinuxGSM WebAdmin",
         "login-subtitle": "Melde dich an, um deine Gameserver zu verwalten.",
+        "login-invalid": "Ungültige Zugangsdaten",
+        "btn-clear": "Leeren",
+        "action-failed": "Die Aktion ist fehlgeschlagen.",
+        "menu-open": "Menü öffnen",
+        "theme-toggle": "Theme wechseln",
         "username-label": "Benutzername",
         "password-label": "Passwort",
         "btn-login": "Anmelden",
@@ -3797,7 +3821,7 @@ const i18n = {
         "modal-portcheck-close-btn": "Schließen",
         "btn-delete-server": "Löschen",
         "modal-delete-title": "Gameserver löschen",
-        "modal-delete-warning": "WARNUNG: Diese Aktion kann nicht rückgängig gemacht werden! Dadurch werden alle Spieldateien, Konfigurationen und (falls exklusiv genutzt) der gesamte Systembenutzer dauerhaft vom Server gelöscht.",
+        "modal-delete-warning": "WARNUNG: Diese Aktion kann nicht rückgängig gemacht werden! Die Spieldateien und Konfigurationen dieses Servers werden gelöscht. Ein Linux-Benutzer, der nur für diesen Server existiert, wird samt Home-Verzeichnis gelöscht; andere Benutzer bleiben erhalten.",
         "modal-delete-prompt-label": "Bitte gebe den Namen des Servers ein, um das Löschen zu bestätigen:",
         "modal-delete-cancel-btn": "Abbrechen",
         "modal-delete-submit-btn": "Server unwiderruflich löschen",
@@ -3970,6 +3994,9 @@ const i18n = {
         "settings-stopmode-11": "Modus 11: end",
         "settings-stopmode-12": "Modus 12: shutdown",
         "settings-stopmode-13": "Modus 13: Soulmask",
+        "settings-stopmode-14": "Modus 14: Running With Rifles",
+        "settings-stopmode-15": "Modus 15: Rising World",
+        "settings-stopmode-16": "Modus 16: Conan Exiles",
         "settings-btn-clone": "Instanz klonen",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Jetzt synchronisieren",
@@ -3996,6 +4023,7 @@ const i18n = {
         "stopmode-save-success": "Stop-Modus erfolgreich gespeichert!",
         "stopmode-save-error": "Fehler beim Speichern des Stop-Modus",
         "clone-success": "Instanz erfolgreich geklont! Aktualisiere...",
+        "clone-ports-hint": "Der Klon nutzt dieselben Ports wie das Original: Setze port (und queryport usw.) in seiner Instanz-Config, bevor beide gleichzeitig laufen.",
         "clone-error": "Fehler beim Klonen der Instanz",
         "cloudbackup-save-success": "Cloud-Backup Einstellungen gespeichert!",
         "cloudbackup-save-error": "Fehler beim Speichern der Cloud-Backup Einstellungen",
@@ -4105,7 +4133,21 @@ function applyLanguage(lang) {
             element.placeholder = i18n[lang][key];
         }
     });
-    
+
+    document.querySelectorAll('[data-i18n-title]').forEach(element => {
+        const key = element.getAttribute('data-i18n-title');
+        if (i18n[lang] && i18n[lang][key]) {
+            element.title = i18n[lang][key];
+        }
+    });
+
+    document.querySelectorAll('[data-i18n-aria-label]').forEach(element => {
+        const key = element.getAttribute('data-i18n-aria-label');
+        if (i18n[lang] && i18n[lang][key]) {
+            element.setAttribute('aria-label', i18n[lang][key]);
+        }
+    });
+
     // Re-render all dynamic components in the active language
     renderGridColumnsOptions();
     if (state.servers && state.servers.length > 0) {
@@ -6170,12 +6212,12 @@ async function handleCloneSubmit() {
         if (res.status === 200) {
             if (el.modalCloneMessage) {
                 el.modalCloneMessage.className = 'info-message text-success';
-                el.modalCloneMessage.textContent = t('clone-success');
+                el.modalCloneMessage.textContent = t('clone-success') + ' ' + t('clone-ports-hint');
             }
             setTimeout(() => {
                 el.modalCloneInstance.classList.add('hidden');
                 refreshDashboard();
-            }, 1000);
+            }, 6000);
         } else {
             if (el.modalCloneMessage) {
                 el.modalCloneMessage.className = 'info-message text-danger';
