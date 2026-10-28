@@ -314,3 +314,51 @@ func TestMeasureServerDisk(t *testing.T) {
 		t.Fatalf("unexpected backup size %d (used %d)", u.Backups, u.Used)
 	}
 }
+
+func TestServerName(t *testing.T) {
+	// LinuxGSM prints "NOT SET" when it cannot read the name from the game config.
+	if name, _ := parseDetailsOutput("Server name:      NOT SET\nGame  27015  udp  0\n"); name != "" {
+		t.Errorf("NOT SET taken as name: %q", name)
+	}
+	// Only the "Server name:" row counts, not text that merely contains it.
+	if name, _ := parseDetailsOutput("Steam Server name: x\nServer name:\t\x1b[0mMy \"Best\" <Server>\n"); name != "My \"Best\" <Server>" {
+		t.Errorf("name = %q", name)
+	}
+
+	rt := &fakeRuntime{}
+	im := NewStaticInstanceManager(t.TempDir())
+	im.static = false
+	srv := GameServerInstance{ID: "cssserver", Script: "cssserver", User: "css", Dir: "/home/css", Status: "stopped", ParsedPorts: noDetails}
+	im.rt = discoverRuntime{rt, []GameServerInstance{srv}}
+	im.ScanInstances()
+	im.mu.Lock()
+	im.instances["cssserver"].Name = "From details" // no ports parsed
+	im.mu.Unlock()
+	im.ScanInstances()
+	if s, _ := im.getServer("cssserver"); s.Name != "From details" {
+		t.Errorf("name lost on rescan: %q", s.Name)
+	}
+
+	// A running server's query name is the current name.
+	im.applyQueryName(srv, QueryInfo{Online: true, Name: "Renamed via RCON"})
+	if s, _ := im.getServer("cssserver"); s.Name != "Renamed via RCON" {
+		t.Errorf("query name not applied: %q", s.Name)
+	}
+	im.applyQueryName(srv, QueryInfo{Online: false, Name: "stale"})
+	if s, _ := im.getServer("cssserver"); s.Name != "Renamed via RCON" {
+		t.Errorf("offline query changed the name: %q", s.Name)
+	}
+
+	// details without a name falls back to the game name.
+	rt.lgsmOut = "Server name:      NOT SET\n"
+	im.executeRefreshDetails("cssserver", srv)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s, _ := im.getServer("cssserver"); s.Name == mapScriptToGameName("cssserver") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	s, _ := im.getServer("cssserver")
+	t.Errorf("name after details without a name = %q", s.Name)
+}

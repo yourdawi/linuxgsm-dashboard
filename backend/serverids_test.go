@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+// Servers with known ports do not start `details` in the background, which would read im.rt
+// while the tests replace it.
+var noDetails = []PortProbe{{Port: 1, Protocol: "UDP", Description: "Game"}}
+
 func scanIDs(t *testing.T, im *InstanceManager, found ...GameServerInstance) map[string]string {
 	t.Helper()
 	im.rt = discoverRuntime{&fakeRuntime{}, found}
@@ -24,7 +28,7 @@ func TestServerIDsStayStable(t *testing.T) {
 	im := NewStaticInstanceManager(t.TempDir())
 	im.static = false
 	srv := func(user, id string) GameServerInstance {
-		return GameServerInstance{ID: id, Script: "ts3server", User: user, Dir: "/home/" + user}
+		return GameServerInstance{ID: id, Script: "ts3server", User: user, Dir: "/home/" + user, ParsedPorts: noDetails}
 	}
 
 	ids := scanIDs(t, im, srv("a", "ts3server"), srv("b", "ts3server@b"))
@@ -50,7 +54,7 @@ func TestServerIDsStayStable(t *testing.T) {
 	}
 
 	// Docker containers keep their names.
-	im.rt = discoverRuntime{&fakeRuntime{}, []GameServerInstance{{ID: "vh1", Script: "vhserver", Dir: "/data/vh1", Layout: LayoutData}}}
+	im.rt = discoverRuntime{&fakeRuntime{}, []GameServerInstance{{ID: "vh1", Script: "vhserver", Dir: "/data/vh1", Layout: LayoutData, ParsedPorts: noDetails}}}
 	im.ScanInstances()
 	if _, ok := im.instances["vh1"]; !ok {
 		t.Fatal("container ID changed")
@@ -62,8 +66,8 @@ func TestDeleteServerReleasesIDAndTag(t *testing.T) {
 	im.static = false
 	rt := &fakeRuntime{}
 	found := []GameServerInstance{
-		{ID: "ts3server", Script: "ts3server", User: "a", Dir: "/home/a"},
-		{ID: "ts3server@b", Script: "ts3server", User: "b", Dir: "/home/b"},
+		{ID: "ts3server", Script: "ts3server", User: "a", Dir: "/home/a", ParsedPorts: noDetails},
+		{ID: "ts3server@b", Script: "ts3server", User: "b", Dir: "/home/b", ParsedPorts: noDetails},
 	}
 	im.rt = discoverRuntime{rt, found}
 	im.ScanInstances()

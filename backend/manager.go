@@ -260,10 +260,11 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 				// Don't overwrite active operations statuses ("installing" is set below)
 				v.Status = existing.Status
 			}
-			// Retain parsed ports/name if already loaded
+			// The name from details or the game server query replaces the game name.
+			v.Name = existing.Name
+			// Retain parsed ports if already loaded
 			if len(existing.ParsedPorts) > 0 {
 				v.ParsedPorts = existing.ParsedPorts
-				v.Name = existing.Name
 				v.Port = existing.Port
 			}
 			v.BindIP = existing.BindIP
@@ -390,6 +391,9 @@ func (im *InstanceManager) executeRefreshDetails(serverID string, srv GameServer
 		if exists && cur.Dir == srv.Dir && cur.Script == srv.Script {
 			if serverName != "" {
 				cur.Name = serverName
+			} else {
+				// details ran but LinuxGSM knows no name (any more): show the game name.
+				cur.Name = mapScriptToGameName(srv.Script)
 			}
 			if bindIP != "" {
 				cur.BindIP = bindIP

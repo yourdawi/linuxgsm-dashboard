@@ -482,6 +482,8 @@ func (im *InstanceManager) SaveServerFileContent(serverID string, relPath string
 	if err := writeResolvedFile(srv, target, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to save file")
 	}
+	// The file may be the game config holding the server name and ports.
+	go im.RefreshServerDetailsForce(serverID)
 	return nil
 }
 

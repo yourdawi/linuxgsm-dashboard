@@ -24,7 +24,7 @@ func parseDetailsOutput(output string) (string, []PortProbe) {
 	ports := []PortProbe{}
 
 	lines := strings.Split(output, "\n")
-	reName := regexp.MustCompile(`(?i)Server name:\s*(.+)`)
+	reName := regexp.MustCompile(`(?i)^Server name:\s*(.+)$`)
 	// LinuxGSM port table rows, e.g. "Game  27015  udp  1" or "Query (http)  8080  tcp  0".
 	rePort := regexp.MustCompile(`(?i)^\s*([a-z0-9][a-z0-9 _\-()+:]*?)\s+(\d+)\s+(tcp|udp)\b`)
 	reClean := regexp.MustCompile(`(?i)(\x1b|\\x1b|\\e|\\033)?\[[0-9;]*[a-zA-Z]`)
@@ -36,6 +36,11 @@ func parseDetailsOutput(output string) (string, []PortProbe) {
 		if match := reName.FindStringSubmatch(line); len(match) > 1 {
 			rawName := strings.TrimSpace(match[1])
 			serverName = strings.TrimSpace(reClean.ReplaceAllString(rawName, ""))
+			// LinuxGSM prints "NOT SET" when it cannot read the name from the game config
+			// (info_game.sh), e.g. before a new instance created its config.
+			if strings.EqualFold(serverName, "NOT SET") {
+				serverName = ""
+			}
 			continue
 		}
 

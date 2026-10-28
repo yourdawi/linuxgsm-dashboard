@@ -195,7 +195,9 @@ func (im *InstanceManager) pollQueries() {
 		go func(srv GameServerInstance) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			im.setQuery(srv.ID, im.queryServer(srv))
+			st := im.queryServer(srv)
+			im.setQuery(srv.ID, st)
+			im.applyQueryName(srv, st.info)
 		}(srv)
 	}
 	wg.Wait()
@@ -236,6 +238,19 @@ func (im *InstanceManager) setQuery(id string, st queryState) {
 		im.queryCache = make(map[string]queryState)
 	}
 	im.queryCache[id] = st
+}
+
+// applyQueryName takes over the name a running server reports: it is the current name, while
+// details only reads it when the server starts or its config is saved.
+func (im *InstanceManager) applyQueryName(srv GameServerInstance, info QueryInfo) {
+	if !info.Online || info.Name == "" {
+		return
+	}
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if cur, ok := im.instances[srv.ID]; ok && cur.Dir == srv.Dir && cur.Script == srv.Script {
+		cur.Name = info.Name
+	}
 }
 
 func (im *InstanceManager) cachedQuery(id string) QueryInfo {
