@@ -65,7 +65,7 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 - Port check: probes the configured game, query and RCON ports from the public IP.
 - Live status from the game server itself: map, player count, bots and a player list with playtime and score (kick and ban for users with the `console` permission). The dashboard queries running servers every 15 seconds via the Valve/Steam query protocol (A2S, used by most Steam games), the Minecraft Java server list ping and the Minecraft Bedrock ping. Games without a query protocol (for example TeamSpeak 3) simply show no player data.
 - Disk usage per server: allocated size of the server directory including backups, plus free space on the disk the server lives on. `serverfiles` and backup directories moved to another disk are included. The size is measured in the background every 10 minutes.
-- Server deletion, including its systemd service and cron entries. If the Linux user only hosts this one server, the user and its home directory are removed as well.
+- Server deletion, including its systemd service and cron entries. A Linux user that exists only for this server (its home directory is the server directory and holds nothing but LinuxGSM and dotfiles) is removed together with its home directory. Any other user, for example a personal account LinuxGSM was installed into, is kept; then only the server's script and configs are removed, and its LinuxGSM files once no other instance is left in the directory.
 
 ### Console and logs
 
@@ -357,6 +357,7 @@ The directory is created with mode `0700`; files containing settings are written
 | `config.json` | Port and dashboard users (Argon2id password hashes, roles, permissions, 2FA secrets and hashed recovery codes) |
 | `audit_log.json` | Audit log |
 | `server_tags.json` | Server tags |
+| `server_ids.json` | Host mode: the ID of every server (keyed by its script path), so IDs and the permissions that refer to them never move to another server. Deleting a server in the dashboard releases its ID and removes it from all users |
 | `server_paths.json` | Additional server directories |
 | `games_cache.json`, `icons/` | Cached game list and icons from linuxgsm.com |
 | `schedules/<server>.cron`, `schedule_settings.json` | Docker mode only: schedules of the game servers and their time zone |

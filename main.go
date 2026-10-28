@@ -1031,7 +1031,12 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 	switch route {
 	case "delete":
 		a.auth.LogAudit(user.Username, ctx.ip, "SERVER_DELETE", "Deleted server", serverID)
-		a.inst.DeleteServer(w, r, serverID)
+		if a.inst.DeleteServer(w, r, serverID) {
+			// A later server may get the same ID; it must not inherit these permissions.
+			if err := a.auth.RemoveServerFromUsers(serverID); err != nil {
+				fmt.Printf("[WARNING] Failed to remove %s from user permissions: %v\n", serverID, err)
+			}
+		}
 	case "portcheck":
 		a.inst.CheckServerPorts(w, r, serverID)
 	case "action":

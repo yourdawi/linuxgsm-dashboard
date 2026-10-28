@@ -552,9 +552,10 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 	return nil
 }
 
-// Delete removes the systemd unit and cron entries of a stopped server. A server with its own
-// Linux user is removed together with the user and its home directory; on a shared user only
-// the instance script and its config are removed.
+// Delete removes the systemd unit and cron entries of a stopped server. A dedicated Linux user
+// (see isDedicatedServerUser) that hosts only this server is removed together with its home
+// directory. Otherwise only this instance is removed, and the LinuxGSM files of its directory
+// once no other instance is left there; the Linux user is kept.
 func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedUser bool) error {
 	// Remove systemd service if it exists (current and legacy naming)
 	for _, unit := range []string{"linuxgsm-" + srv.Script, srv.ID} {
@@ -570,18 +571,11 @@ func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedU
 		}
 	}
 
-	// Remove crontab entries & files
-	if sharedUser {
-		// Shared user! Only remove this instance's cron lines, script and config.
+	if sharedUser || !isDedicatedServerUser(srv) {
+		// Keep the Linux user: it hosts other servers or is not a dedicated game server user
+		// (for example a personal account that LinuxGSM was installed into).
 		_ = removeCronLinesForScript(h, srv, nil)
-
-		if p, err := ResolveInRoot(srv.Dir, srv.Script); err == nil {
-			_ = os.Remove(p)
-		}
-		if p, err := ResolveInRoot(srv.Dir, filepath.Join("lgsm", "config-lgsm", srv.Script)); err == nil && filepath.Base(p) == srv.Script {
-			_ = os.RemoveAll(p)
-		}
-		return nil
+		return removeInstanceFiles(srv)
 	}
 
 	_ = exec.Command("crontab", "-u", srv.User, "-r").Run()
@@ -595,6 +589,104 @@ func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedU
 	if err := exec.Command("userdel", "-r", srv.User).Run(); err != nil {
 		fmt.Printf("[ERROR] Failed to delete user %s: %v\n", srv.User, err)
 		return fmt.Errorf("failed to delete user")
+	}
+	return nil
+}
+
+// linuxGSMRootEntries are the entries LinuxGSM creates in its root directory, next to the scripts.
+var linuxGSMRootEntries = map[string]bool{
+	"linuxgsm.sh": true, "lgsm": true, "log": true, "serverfiles": true,
+	"backup": true, "backups": true, "public_html": true,
+}
+
+// isDedicatedServerUser reports whether the Linux user of srv exists only for LinuxGSM: a regular
+// user whose home directory is the server directory and holds nothing but dotfiles and LinuxGSM.
+// Only such a user may be deleted together with its home directory.
+func isDedicatedServerUser(srv GameServerInstance) bool {
+	users, err := readPasswd()
+	if err != nil {
+		return false
+	}
+	var entry *passwdEntry
+	for i := range users {
+		if users[i].Name == srv.User {
+			entry = &users[i]
+			break
+		}
+	}
+	if entry == nil || entry.UID < 1000 || entry.UID >= 65534 || entry.UID != srv.UID {
+		return false
+	}
+	if filepath.Clean(entry.Home) != filepath.Clean(srv.Dir) {
+		return false
+	}
+	entries, err := os.ReadDir(srv.Dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || linuxGSMRootEntries[name] {
+			continue
+		}
+		if e.Type().IsRegular() && IsValidScriptName(name) && isLinuxGSMScript(filepath.Join(srv.Dir, name)) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// removeInstanceFiles removes the script and the instance configs of srv. When no other LinuxGSM
+// instance is left in its directory, the shared LinuxGSM files (serverfiles, lgsm, log and the
+// bootstrap script) are removed as well. Symlinks are removed, never followed.
+func removeInstanceFiles(srv GameServerInstance) error {
+	root, err := filepath.EvalSymlinks(srv.Dir)
+	if err != nil {
+		return fmt.Errorf("server directory not found")
+	}
+	remove := func(rel string, all bool) {
+		p := filepath.Join(root, rel)
+		info, err := os.Lstat(p)
+		if err != nil {
+			return
+		}
+		// Every parent must be a real directory inside the server directory.
+		if parent, err := filepath.EvalSymlinks(filepath.Dir(p)); err != nil || parent != filepath.Dir(p) {
+			return
+		}
+		if all && info.IsDir() {
+			_ = os.RemoveAll(p)
+		} else {
+			_ = os.Remove(p)
+		}
+	}
+
+	cfgRel := srv.lgsmConfigRel()
+	remove(filepath.Join(cfgRel, srv.Script+".cfg"), false)
+	remove(filepath.Join(cfgRel, "secrets-"+srv.Script+".cfg"), false)
+	if legacy := srv.configRel(srv.Script); legacy != cfgRel {
+		// Instance config directory created by older dashboard versions; LinuxGSM never reads it.
+		remove(legacy, true)
+	}
+	remove(filepath.Join(srv.lgsmDataRel(), srv.Script+".uid"), false)
+	remove(srv.Script, false)
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name != "linuxgsm.sh" && e.Type().IsRegular() && IsValidScriptName(name) && isLinuxGSMScript(filepath.Join(root, name)) {
+			return nil // another instance still uses the shared files
+		}
+	}
+	for _, name := range []string{"serverfiles", "lgsm", "linuxgsm.sh"} {
+		remove(name, true)
+	}
+	if info, err := os.Lstat(filepath.Join(root, "log", "script")); err == nil && info.IsDir() {
+		remove("log", true)
 	}
 	return nil
 }
@@ -647,16 +739,9 @@ func (h HostRuntime) Clone(ctx context.Context, srv GameServerInstance, cleanSuf
 
 	initialConfig := fmt.Sprintf("## LinuxGSM Multi-Instance Config: %s\n## Generated by LinuxGSM Dashboard\n\n", newInstanceScript)
 
-	// 1. Create config in lgsm/config-lgsm/<rootScript>/<newInstanceScript>.cfg (LinuxGSM standard)
-	// 2. Also ensure lgsm/config-lgsm/<newInstanceScript>/<newInstanceScript>.cfg is available
-	for _, rel := range []string{
-		filepath.Join(srv.configRel(rootScript), newInstanceScript+".cfg"),
-		filepath.Join(srv.configRel(newInstanceScript), newInstanceScript+".cfg"),
-	} {
-		resolved, err := ResolveInRoot(srv.Dir, rel)
-		if err != nil {
-			continue
-		}
+	// LinuxGSM loads the instance config from config-lgsm/<gameservername>/<instance>.cfg.
+	rel := filepath.Join(srv.configRel(rootScript), newInstanceScript+".cfg")
+	if resolved, err := ResolveInRoot(srv.Dir, rel); err == nil {
 		if _, err := os.Lstat(resolved); os.IsNotExist(err) {
 			_ = writeServerFile(srv, rel, []byte(initialConfig))
 		}

@@ -98,6 +98,7 @@ type InstanceManager struct {
 
 	detailsMu    sync.Mutex
 	detailsTried map[string]time.Time
+	installing   map[string]int // Linux users (container names in Docker mode) being installed
 
 	queryMu    sync.Mutex
 	queryCache map[string]queryState
@@ -242,6 +243,7 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 		fmt.Println("Error discovering servers:", err)
 		return
 	}
+	im.assignStableIDs(found)
 	detected := make(map[string]*GameServerInstance, len(found))
 	for _, inst := range found {
 		detected[inst.ID] = inst
@@ -254,8 +256,8 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 			v.Tag = t
 		}
 		if existing, ok := im.instances[k]; ok && existing.Dir == v.Dir && existing.Script == v.Script {
-			if existing.Status == "installing" || existing.Status == "updating" {
-				// Don't overwrite active operations statuses
+			if existing.Status == "updating" {
+				// Don't overwrite active operations statuses ("installing" is set below)
 				v.Status = existing.Status
 			}
 			// Retain parsed ports/name if already loaded
@@ -271,6 +273,11 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 		}
 	}
 
+	for _, v := range detected {
+		if im.isInstalling(v) {
+			v.Status = "installing"
+		}
+	}
 	im.instances = detected
 
 	// Measure the disk usage of directories that were never measured (new servers).
@@ -283,10 +290,35 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 	// Trigger details refresh in background for newly detected or not-yet-parsed servers.
 	// Attempts are throttled so failing `details` calls are not repeated on every poll.
 	for k, v := range detected {
-		if len(v.ParsedPorts) == 0 && im.shouldTryDetails(k) {
+		if len(v.ParsedPorts) == 0 && !im.isInstalling(v) && im.shouldTryDetails(k) {
 			go im.RefreshServerDetails(k)
 		}
 	}
+}
+
+// beginInstall marks an installation under username until the returned function is called.
+// LinuxGSM must not run `details` for a server whose auto-install is still running: both would
+// download modules and create directories at the same time.
+func (im *InstanceManager) beginInstall(username string) func() {
+	im.detailsMu.Lock()
+	if im.installing == nil {
+		im.installing = make(map[string]int)
+	}
+	im.installing[username]++
+	im.detailsMu.Unlock()
+	return func() {
+		im.detailsMu.Lock()
+		if im.installing[username]--; im.installing[username] <= 0 {
+			delete(im.installing, username)
+		}
+		im.detailsMu.Unlock()
+	}
+}
+
+func (im *InstanceManager) isInstalling(srv *GameServerInstance) bool {
+	im.detailsMu.Lock()
+	defer im.detailsMu.Unlock()
+	return im.installing[srv.User] > 0 || im.installing[srv.ID] > 0
 }
 
 func (im *InstanceManager) shouldTryDetails(serverID string) bool {
@@ -334,7 +366,7 @@ func (im *InstanceManager) RefreshServerDetailsForce(serverID string) {
 }
 
 func (im *InstanceManager) executeRefreshDetails(serverID string, srv GameServerInstance) {
-	if im.static {
+	if im.static || im.isInstalling(&srv) {
 		return
 	}
 	go func() {
@@ -754,11 +786,13 @@ func (im *InstanceManager) RunBulkAction(action string, serverIDs []string) map[
 // Server deletion
 // -------------------------------------------------------------
 
-func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, serverID string) {
+// DeleteServer deletes a server and reports whether it succeeded. Its ID is released afterwards;
+// the caller removes it from the user permissions.
+func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, serverID string) bool {
 	srv, ok := im.getServer(serverID)
 	if !ok {
 		http.Error(w, "Server not found", http.StatusNotFound)
-		return
+		return false
 	}
 
 	// 1. Stop the server first
@@ -779,12 +813,14 @@ func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, 
 	// 3. Remove autostart, schedules and files
 	if err := im.rt.Delete(context.Background(), srv, userInstancesCount > 1); err != nil {
 		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
-		return
+		return false
 	}
 
-	// 6. Force scan update
+	// 4. Release the ID, then rescan
+	im.releaseServerID(srv)
 	im.ScanInstances()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "message": "Server deleted successfully"})
+	return true
 }

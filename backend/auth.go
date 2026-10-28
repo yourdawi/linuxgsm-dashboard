@@ -501,6 +501,29 @@ func (am *AuthManager) UpdateUser(username, password, role string, servers, perm
 	return errors.New("user not found")
 }
 
+// RemoveServerFromUsers removes a deleted server from the server lists of all users.
+func (am *AuthManager) RemoveServerFromUsers(serverID string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	changed := false
+	for i, u := range am.config.Users {
+		kept := make([]string, 0, len(u.Servers))
+		for _, s := range u.Servers {
+			if s != serverID {
+				kept = append(kept, s)
+			}
+		}
+		if len(kept) != len(u.Servers) {
+			am.config.Users[i].Servers = kept
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return am.saveConfigLocked()
+}
+
 func (am *AuthManager) DeleteUser(username string) error {
 	am.mu.Lock()
 	defer am.mu.Unlock()
