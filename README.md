@@ -479,7 +479,7 @@ When upgrading from version 1.0.7 or older:
 - Player names are only available where the game reports them (A2S player list, Minecraft player sample). Kick and ban send `kick <name>` / `ban <name>` to the console, which not every game understands.
 - The live query uses the local address or the `Server IP` reported by LinuxGSM (in Docker mode also the Docker host); servers that block queries from the host itself show no player data.
 - The file manager edits files as plain text, without syntax highlighting, and opens files up to 5 MB in the editor.
-- During the installation of a new game server, the new Linux user temporarily gets passwordless `sudo`, because LinuxGSM installs missing system packages itself. The permission is removed when the installation ends and on the next start of the dashboard.
+- During the installation of a new game server, the new Linux user temporarily gets passwordless `sudo`, because LinuxGSM installs missing system packages itself. The permission is removed when the installation ends and on the next start of the dashboard. The service runs with `ProtectSystem=true` (a read-only `/usr`), so LinuxGSM's `auto-install` runs as a transient systemd unit (`systemd-run`) outside of that sandbox.
 - CPU and RAM are measured per Linux user, so instances that share a user show the same values. The same applies to disk usage when instances share a directory (marked in the tooltip).
 
 ## Development

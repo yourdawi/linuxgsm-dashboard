@@ -55,6 +55,27 @@ func runHostCmd(cmd *exec.Cmd, stdio ExecIO) error {
 	return cmd.Wait()
 }
 
+// systemdRunPath can be overridden in tests.
+var systemdRunPath = "systemd-run"
+
+// outsideServiceSandbox returns name and args wrapped in systemd-run when the dashboard runs as a
+// systemd service. The service has ProtectSystem=true, which makes /usr read-only for every
+// process it starts, so LinuxGSM's auto-install could not install missing packages (e.g. Java)
+// with its temporary sudo. A transient unit has its own, unrestricted mount namespace and cgroup.
+// Outside of a service (INVOCATION_ID unset) or without systemd-run the command is unchanged.
+func outsideServiceSandbox(name string, args ...string) (string, []string) {
+	if os.Getenv("INVOCATION_ID") == "" {
+		return name, args
+	}
+	runner, err := exec.LookPath(systemdRunPath)
+	if err != nil {
+		return name, args
+	}
+	wrapped := []string{"--quiet", "--wait", "--pipe", "--collect", "--service-type=exec",
+		"--description=LinuxGSM Dashboard: game server installation", "--", name}
+	return runner, append(wrapped, args...)
+}
+
 // lgsmShellCommand builds the shell snippet executed through `runuser -l <user> -c`.
 // Every interpolated value is single-quoted; values are additionally validated at discovery.
 func lgsmShellCommand(srv GameServerInstance, args ...string) string {
@@ -544,7 +565,8 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 	// 4. Run game auto-install: runuser -l <user> -c "cd '<dir>' && ./'<gameCmd>' auto-install"
 	logLine(Msg(lang, "[INSTALL] Installing server via LinuxGSM (SteamCMD)...", "[INSTALL] Installiere Server via LinuxGSM (SteamCMD)..."))
 	installCmd := fmt.Sprintf("cd %s && ./%s auto-install", ShellQuote(homeDir), ShellQuote(gameCmd))
-	if err := runCommandWithLogs("runuser", "-l", username, "-c", installCmd); err != nil {
+	installName, installArgs := outsideServiceSandbox("runuser", "-l", username, "-c", installCmd)
+	if err := runCommandWithLogs(installName, installArgs...); err != nil {
 		logLine(Msg(lang, "[ERROR] Server installation failed: ", "[FEHLER] Server-Installation fehlgeschlagen: ") + err.Error())
 		return err
 	}

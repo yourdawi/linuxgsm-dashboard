@@ -77,3 +77,28 @@ func TestExistingInstallUser(t *testing.T) {
 		t.Errorf("ValidateInstall rejected a reusable user: %v", err)
 	}
 }
+
+func TestOutsideServiceSandbox(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "")
+	if name, args := outsideServiceSandbox("runuser", "-l", "vh"); name != "runuser" || len(args) != 2 {
+		t.Errorf("not a service: %s %v", name, args)
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("needs a POSIX executable named systemd-run")
+	}
+	bin := filepath.Join(t.TempDir(), "systemd-run")
+	mustWrite(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := systemdRunPath
+	systemdRunPath = bin
+	t.Cleanup(func() { systemdRunPath = old })
+	t.Setenv("INVOCATION_ID", "abc")
+	name, args := outsideServiceSandbox("runuser", "-l", "vh", "-c", "cd '/home/vh' && ./vhserver auto-install")
+	got := name + " " + strings.Join(args, " ")
+	want := bin + " --quiet --wait --pipe --collect --service-type=exec --description=LinuxGSM Dashboard: game server installation -- runuser -l vh -c cd '/home/vh' && ./vhserver auto-install"
+	if got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
