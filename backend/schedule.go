@@ -3,6 +3,7 @@ package backend
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -21,20 +22,32 @@ func scriptPathOf(srv GameServerInstance) string {
 	return filepath.ToSlash(filepath.Join(srv.Dir, srv.Script))
 }
 
-// cronLineCommand parses a crontab line of the form "<schedule> <scriptPath> <command> ...".
-// It only matches the exact script path, so "vhserver" never matches "vhserver-2".
+// cronLineCommand parses a crontab line of the form "<schedule> <scriptPath> <command> ..." or
+// "<schedule> cd <dir> && ./<script> <command> ...". It only matches the exact script, so
+// "vhserver" never matches "vhserver-2".
 func cronLineCommand(line, scriptPath string) (expr string, command string, ok bool) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 		return "", "", false
 	}
 	fields := strings.Fields(trimmed)
-	for i, f := range fields {
-		if f == scriptPath {
-			if i == 0 || i+1 >= len(fields) {
+	n := 5 // schedule fields
+	if strings.HasPrefix(fields[0], "@") {
+		n = 1
+	}
+	dir, script := path.Split(scriptPath)
+	dir = strings.TrimSuffix(dir, "/")
+	inDir := false
+	for i := n; i < len(fields); i++ {
+		f := fields[i]
+		if f == "cd" && i+1 < len(fields) && strings.TrimRight(fields[i+1], ";") == dir {
+			inDir = true
+		}
+		if f == scriptPath || (inDir && f == "./"+script) {
+			if i+1 >= len(fields) {
 				return "", "", false
 			}
-			return strings.Join(fields[:i], " "), fields[i+1], true
+			return strings.Join(fields[:n], " "), fields[i+1], true
 		}
 	}
 	return "", "", false
@@ -92,8 +105,16 @@ func ValidateCronSchedule(s CronSchedule) error {
 	return nil
 }
 
+// maintenanceComment marks the maintenance lines of a server. It names the script, which never
+// changes, unlike the server name that `details` reads from the game config.
 func maintenanceComment(srv GameServerInstance) string {
-	return fmt.Sprintf("# LinuxGSM %s Geplante Wartungsaufgaben", sanitizeDisplayText(srv.Name, 128))
+	return fmt.Sprintf("# LinuxGSM %s: scheduled maintenance", srv.Script)
+}
+
+// isLegacyMaintenanceComment matches the comment of older versions ("# LinuxGSM <server name>
+// Geplante Wartungsaufgaben"), which cannot be told apart by server.
+func isLegacyMaintenanceComment(line string) bool {
+	return strings.HasPrefix(line, "# LinuxGSM ") && strings.HasSuffix(line, " Geplante Wartungsaufgaben")
 }
 
 var maintenanceCommands = map[string]bool{"monitor": true, "update": true, "force-update": true, "update-lgsm": true}
@@ -107,21 +128,39 @@ func rewriteCrontab(rt Runtime, srv GameServerInstance, drop map[string]bool, ex
 	}
 	scriptPath := scriptPathOf(srv)
 	comment := maintenanceComment(srv)
+	dropComments := drop == nil || drop["monitor"]
 	var newLines []string
+	pendingLegacy := "" // a legacy comment is dropped together with the line after it
 	for _, line := range strings.Split(crontabStr, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		if drop == nil || drop["monitor"] {
-			if trimmed == comment {
-				continue
-			}
+		if dropComments && trimmed == comment {
+			continue
 		}
-		if _, cmd, ok := cronLineCommand(trimmed, scriptPath); ok && (drop == nil || drop[cmd]) {
+		if dropComments && isLegacyMaintenanceComment(trimmed) {
+			if pendingLegacy != "" {
+				newLines = append(newLines, pendingLegacy)
+			}
+			pendingLegacy = line
+			continue
+		}
+		_, cmd, ok := cronLineCommand(trimmed, scriptPath)
+		dropLine := ok && (drop == nil || drop[cmd])
+		if pendingLegacy != "" {
+			if !dropLine {
+				newLines = append(newLines, pendingLegacy)
+			}
+			pendingLegacy = ""
+		}
+		if dropLine {
 			continue
 		}
 		newLines = append(newLines, line)
+	}
+	if pendingLegacy != "" {
+		newLines = append(newLines, pendingLegacy)
 	}
 	newLines = append(newLines, extra...)
 	return rt.WriteCrontab(srv, strings.Join(newLines, "\n"))
@@ -236,8 +275,6 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 // Backup settings (LinuxGSM config + automatic backup cron)
 // -------------------------------------------------------------
 
-var reBackupSetting = regexp.MustCompile(`^\s*(maxbackups|maxbackupdays|stoponbackup)\s*=\s*["']?([^"'\s#]*)["']?`)
-
 // ValidateBackupSettings checks values written into the bash-sourced LinuxGSM config and crontab.
 func ValidateBackupSettings(s BackupSettings) error {
 	if s.MaxBackups != "" && !isIntInRange(s.MaxBackups, 0, 999) {
@@ -261,31 +298,12 @@ func (im *InstanceManager) GetBackupSettings(serverID string) (BackupSettings, e
 		return BackupSettings{}, fmt.Errorf("server not found")
 	}
 
-	configRel := srv.configRel(srv.Script)
-	settings := BackupSettings{}
-
-	parseFile := func(rel string) {
-		content, err := readServerCfg(srv, rel)
-		if err != nil {
-			return
-		}
-		for _, line := range strings.Split(content, "\n") {
-			matches := reBackupSetting.FindStringSubmatch(line)
-			if len(matches) > 2 {
-				switch matches[1] {
-				case "maxbackups":
-					settings.MaxBackups = matches[2]
-				case "maxbackupdays":
-					settings.MaxBackupDays = matches[2]
-				case "stoponbackup":
-					settings.StopOnBackup = matches[2]
-				}
-			}
-		}
+	values := lgsmCfgValues(srv, false)
+	settings := BackupSettings{
+		MaxBackups:    values["maxbackups"],
+		MaxBackupDays: values["maxbackupdays"],
+		StopOnBackup:  values["stoponbackup"],
 	}
-
-	parseFile(filepath.Join(configRel, "common.cfg"))
-	parseFile(filepath.Join(configRel, srv.Script+".cfg"))
 
 	// Read and parse crontab for automatic backups
 	if crontabStr, err := im.rt.ReadCrontab(srv); err == nil {
@@ -300,31 +318,6 @@ func (im *InstanceManager) GetBackupSettings(serverID string) (BackupSettings, e
 	}
 
 	return settings, nil
-}
-
-// setCfgValues replaces or appends key="value" lines in a LinuxGSM config file. All values must
-// already be validated with IsSafeCfgValue.
-func setCfgValues(content string, values map[string]string, order []string, appendEmpty bool) string {
-	lines := strings.Split(content, "\n")
-	reKey := regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*=`)
-	updated := make(map[string]bool)
-	for i, line := range lines {
-		m := reKey.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		if val, ok := values[m[1]]; ok {
-			lines[i] = fmt.Sprintf("%s=\"%s\"", m[1], val)
-			updated[m[1]] = true
-		}
-	}
-	for _, key := range order {
-		val := values[key]
-		if !updated[key] && (appendEmpty || val != "") {
-			lines = append(lines, fmt.Sprintf("%s=\"%s\"", key, val))
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // readServerCfg reads a config file inside the server directory (empty if missing).
@@ -359,17 +352,11 @@ func (im *InstanceManager) SaveBackupSettings(serverID string, settings BackupSe
 		return err
 	}
 
-	rel := filepath.Join(srv.configRel(srv.Script), srv.Script+".cfg")
-	content, err := readServerCfg(srv, rel)
-	if err != nil {
-		return fmt.Errorf("failed to read config")
-	}
-	newContent := setCfgValues(content, map[string]string{
+	if err := saveInstanceCfgValues(srv, map[string]string{
 		"maxbackups":    settings.MaxBackups,
 		"maxbackupdays": settings.MaxBackupDays,
 		"stoponbackup":  settings.StopOnBackup,
-	}, []string{"maxbackups", "maxbackupdays", "stoponbackup"}, false)
-	if err := writeServerFile(srv, rel, []byte(newContent)); err != nil {
+	}, []string{"maxbackups", "maxbackupdays", "stoponbackup"}, false); err != nil {
 		return fmt.Errorf("failed to write config")
 	}
 

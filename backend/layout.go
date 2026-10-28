@@ -27,9 +27,22 @@ func (srv GameServerInstance) configLgsmRel() string {
 	return filepath.Join("lgsm", "config-lgsm")
 }
 
-// configRel returns the LinuxGSM config directory of an instance (or of another script).
+// configRel returns config-lgsm/<script>. LinuxGSM itself only uses the directory of the game
+// server (see lgsmConfigRel), also for instances like vhserver-2.
 func (srv GameServerInstance) configRel(script string) string {
 	return filepath.Join(srv.configLgsmRel(), script)
+}
+
+// gameServerName is the LinuxGSM game server name of the script: vhserver for vhserver-2.
+func gameServerName(script string) string {
+	return strings.Split(script, "-")[0]
+}
+
+// lgsmConfigRel is the directory LinuxGSM loads the configs of this instance from
+// (configdirserver = config-lgsm/<gameservername>): _default.cfg, common.cfg,
+// secrets-common.cfg, <script>.cfg and secrets-<script>.cfg.
+func (srv GameServerInstance) lgsmConfigRel() string {
+	return srv.configRel(gameServerName(srv.Script))
 }
 
 // lgsmDataRel is the LinuxGSM data directory (serverlist, uid files).

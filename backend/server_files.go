@@ -133,16 +133,10 @@ func readResolvedFileLimited(resolved string, limit int64) ([]byte, error) {
 // Config editor
 // -------------------------------------------------------------
 
-func configDirsRel(srv GameServerInstance) (string, string) {
-	rootScript := strings.Split(srv.Script, "-")[0]
-	return srv.configRel(srv.Script), srv.configRel(rootScript)
-}
-
 // configRoots returns the directories the config editor may access.
 func configRoots(srv GameServerInstance) []string {
-	instRel, rootRel := configDirsRel(srv)
 	var roots []string
-	for _, rel := range []string{instRel, rootRel, "serverfiles"} {
+	for _, rel := range []string{srv.lgsmConfigRel(), "serverfiles"} {
 		if r, err := ServerSubRoot(srv.Dir, rel, srv.UID); err == nil {
 			roots = append(roots, r)
 		}
@@ -182,47 +176,23 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 		})
 	}
 
-	instRel, rootRel := configDirsRel(srv)
-
-	// 1. Scan primary LinuxGSM config directory for this specific instance: <dir>/lgsm/config-lgsm/<script>/
-	configDir := filepath.Join(srv.Dir, instRel)
-	if files, err := os.ReadDir(configDir); err == nil {
-		for _, f := range files {
-			if f.Type().IsRegular() && strings.HasSuffix(f.Name(), ".cfg") {
-				layer := "instance"
-				if f.Name() == "_default.cfg" {
-					layer = "default"
-				} else if f.Name() == "common.cfg" {
-					layer = "common"
-				} else if strings.HasPrefix(f.Name(), "secrets-") {
-					layer = "secrets"
-				}
-				addConfig(f.Name(), filepath.Join(configDir, f.Name()), layer)
-			}
+	// 1. The LinuxGSM configs of this instance, in LinuxGSM's load order. All instances of a game
+	// server share config-lgsm/<gameservername> (e.g. vhserver-2 uses config-lgsm/vhserver).
+	configDir := filepath.Join(srv.Dir, srv.lgsmConfigRel())
+	for _, f := range []struct{ name, layer string }{
+		{"_default.cfg", "default"},
+		{"common.cfg", "common"},
+		{"secrets-common.cfg", "secrets"},
+		{srv.Script + ".cfg", "instance"},
+		{"secrets-" + srv.Script + ".cfg", "secrets"},
+	} {
+		p := filepath.Join(configDir, f.name)
+		if info, err := os.Lstat(p); err == nil && info.Mode().IsRegular() {
+			addConfig(f.name, p, f.layer)
 		}
 	}
 
-	// 2. If this is a multi-instance (e.g. mtaserver-2), also scan the root config directory
-	if rootRel != instRel {
-		rootConfigDir := filepath.Join(srv.Dir, rootRel)
-		if files, err := os.ReadDir(rootConfigDir); err == nil {
-			for _, f := range files {
-				if f.Type().IsRegular() && strings.HasSuffix(f.Name(), ".cfg") {
-					if f.Name() == "_default.cfg" {
-						addConfig(f.Name(), filepath.Join(rootConfigDir, f.Name()), "default")
-					} else if f.Name() == "common.cfg" {
-						addConfig(f.Name(), filepath.Join(rootConfigDir, f.Name()), "common")
-					} else if f.Name() == fmt.Sprintf("%s.cfg", srv.Script) {
-						addConfig(f.Name(), filepath.Join(rootConfigDir, f.Name()), "instance")
-					} else if strings.HasPrefix(f.Name(), fmt.Sprintf("secrets-%s", srv.Script)) {
-						addConfig(f.Name(), filepath.Join(rootConfigDir, f.Name()), "secrets")
-					}
-				}
-			}
-		}
-	}
-
-	// 3. Scan gameserver files directory recursively: <dir>/serverfiles/
+	// 2. Scan gameserver files directory recursively: <dir>/serverfiles/
 	serverfilesDir := filepath.Join(srv.Dir, "serverfiles")
 	if _, err := ServerSubRoot(srv.Dir, "serverfiles", srv.UID); err == nil {
 		found := findConfigsInDir(srv.Dir, serverfilesDir, 0)
@@ -334,6 +304,23 @@ func (im *InstanceManager) saveDefaultCfgOverrides(srv GameServerInstance, defau
 	}
 	if err := writeResolvedFile(srv, target, []byte(setCfgRawValues(instContent, changed, keys)), 0644); err != nil {
 		return ConfigSaveResult{}, fmt.Errorf("failed to save %s", instanceName)
+	}
+	// secrets-<script>.cfg is loaded after the instance config: keys set there are updated too.
+	if secrets, err := resolveConfigPath(srv, filepath.Join(filepath.Dir(defaultPath), "secrets-"+instanceName)); err == nil {
+		if data, err := readResolvedFileLimited(secrets, MaxEditableFileSize); err == nil {
+			existing, _ := cfgRawValues(string(data))
+			overlap := make(map[string]string)
+			for key, val := range changed {
+				if _, ok := existing[key]; ok {
+					overlap[key] = val
+				}
+			}
+			if len(overlap) > 0 {
+				if err := writeResolvedFile(srv, secrets, []byte(setCfgRawValues(string(data), overlap, nil)), 0600); err != nil {
+					return ConfigSaveResult{}, fmt.Errorf("failed to save secrets-%s", instanceName)
+				}
+			}
+		}
 	}
 	go im.RefreshServerDetailsForce(srv.ID)
 	return result, nil

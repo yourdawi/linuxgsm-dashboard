@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -239,6 +240,23 @@ func TestQueryTargets(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("bind IP not used as query host")
+	}
+}
+
+func TestParseDetailsOutputPorts(t *testing.T) {
+	out := "Server name:  Test\nDESCRIPTION  PORT   PROTOCOL  LISTEN\nGame: Master  10999  udp  1\nQuery (http)  8080  tcp  0\nVoice (unused)  9988  udp  0\nGame+2  27017  udp  1\n"
+	name, ports := parseDetailsOutput(out)
+	if name != "Test" {
+		t.Errorf("name = %q", name)
+	}
+	want := []string{"Game: Master/10999/UDP", "Query (http)/8080/TCP", "Voice (unused)/9988/UDP", "Game+2/27017/UDP"}
+	if len(ports) != len(want) {
+		t.Fatalf("ports = %+v", ports)
+	}
+	for i, p := range ports {
+		if got := fmt.Sprintf("%s/%d/%s", p.Description, p.Port, p.Protocol); got != want[i] {
+			t.Errorf("port %d = %s, want %s", i, got, want[i])
+		}
 	}
 }
 

@@ -2,9 +2,6 @@ package backend
 
 import (
 	"fmt"
-	"path/filepath"
-	"regexp"
-	"strings"
 )
 
 type AlertSettings struct {
@@ -94,103 +91,76 @@ func (a *AlertSettings) Validate() error {
 	return nil
 }
 
-var reAlertSetting = regexp.MustCompile(`^\s*([a-zA-Z0-9]+)\s*=\s*["']?([^"'\s#]*)["']?`)
-
-func alertConfigRels(srv GameServerInstance) (common, rootCommon, instance, rootInstance string) {
-	instRel, rootRel := configDirsRel(srv)
-	return filepath.Join(instRel, "common.cfg"), filepath.Join(rootRel, "common.cfg"),
-		filepath.Join(instRel, srv.Script+".cfg"), filepath.Join(rootRel, srv.Script+".cfg")
-}
-
 func (im *InstanceManager) loadAlertSettings(srv GameServerInstance) AlertSettings {
-	commonRel, rootCommonRel, instanceRel, rootInstanceRel := alertConfigRels(srv)
 	settings := AlertSettings{}
-
-	parseFile := func(rel string) {
-		content, err := readServerCfg(srv, rel)
-		if err != nil {
-			return
-		}
-		for _, line := range strings.Split(content, "\n") {
-			matches := reAlertSetting.FindStringSubmatch(line)
-			if len(matches) <= 2 {
-				continue
-			}
-			key := strings.ToLower(matches[1])
-			val := matches[2]
-			switch key {
-			case "discordalert":
-				settings.DiscordEnabled = (val == "on")
-			case "discordwebhook":
-				settings.DiscordWebhook = val
-			case "telegramalert":
-				settings.TelegramEnabled = (val == "on")
-			case "telegramtoken":
-				settings.TelegramToken = val
-			case "telegramchatid":
-				settings.TelegramChatID = val
-			case "emailalert":
-				settings.EmailEnabled = (val == "on")
-			case "emailserver":
-				settings.EmailSMTP = val
-			case "emailport":
-				settings.EmailPort = val
-			case "emailuser":
-				settings.EmailUser = val
-			case "emailpassword":
-				settings.EmailPass = val
-			case "emaildest":
-				settings.EmailDest = val
-			case "matrixalert":
-				settings.MatrixEnabled = (val == "on")
-			case "matrixhomeserver":
-				settings.MatrixHomeserver = val
-			case "matrixroomid":
-				settings.MatrixRoomID = val
-			case "matrixaccesstoken":
-				settings.MatrixAccessToken = val
-			case "ntfyalert":
-				settings.NtfyEnabled = (val == "on")
-			case "ntfyurl":
-				settings.NtfyURL = val
-			case "ntfytopic":
-				settings.NtfyTopic = val
-			case "ntfyauthtoken":
-				settings.NtfyAuthToken = val
-			case "slackalert":
-				settings.SlackEnabled = (val == "on")
-			case "slackwebhook":
-				settings.SlackWebhook = val
-			case "pushoveralert":
-				settings.PushoverEnabled = (val == "on")
-			case "pushovertoken":
-				settings.PushoverToken = val
-			case "pushoveruser":
-				settings.PushoverUser = val
-			case "pushbulletalert":
-				settings.PushbulletEnabled = (val == "on")
-			case "pushbullettoken":
-				settings.PushbulletToken = val
-			case "pushbulletchannel":
-				settings.PushbulletChannel = val
-			case "iftttalert":
-				settings.IftttEnabled = (val == "on")
-			case "iftttkey":
-				settings.IftttKey = val
-			case "iftttevent":
-				settings.IftttEvent = val
-			case "rocketchatalert":
-				settings.RocketchatEnabled = (val == "on")
-			case "rocketchatwebhook":
-				settings.RocketchatWebhook = val
-			}
+	for key, val := range lgsmCfgValues(srv, false) {
+		switch key {
+		case "discordalert":
+			settings.DiscordEnabled = (val == "on")
+		case "discordwebhook":
+			settings.DiscordWebhook = val
+		case "telegramalert":
+			settings.TelegramEnabled = (val == "on")
+		case "telegramtoken":
+			settings.TelegramToken = val
+		case "telegramchatid":
+			settings.TelegramChatID = val
+		case "emailalert":
+			settings.EmailEnabled = (val == "on")
+		case "emailserver":
+			settings.EmailSMTP = val
+		case "emailport":
+			settings.EmailPort = val
+		case "emailuser":
+			settings.EmailUser = val
+		case "emailpassword":
+			settings.EmailPass = val
+		case "emaildest":
+			settings.EmailDest = val
+		case "matrixalert":
+			settings.MatrixEnabled = (val == "on")
+		case "matrixhomeserver":
+			settings.MatrixHomeserver = val
+		case "matrixroomid":
+			settings.MatrixRoomID = val
+		case "matrixaccesstoken":
+			settings.MatrixAccessToken = val
+		case "ntfyalert":
+			settings.NtfyEnabled = (val == "on")
+		case "ntfyurl":
+			settings.NtfyURL = val
+		case "ntfytopic":
+			settings.NtfyTopic = val
+		case "ntfyauthtoken":
+			settings.NtfyAuthToken = val
+		case "slackalert":
+			settings.SlackEnabled = (val == "on")
+		case "slackwebhook":
+			settings.SlackWebhook = val
+		case "pushoveralert":
+			settings.PushoverEnabled = (val == "on")
+		case "pushovertoken":
+			settings.PushoverToken = val
+		case "pushoveruser":
+			settings.PushoverUser = val
+		case "pushbulletalert":
+			settings.PushbulletEnabled = (val == "on")
+		case "pushbullettoken":
+			settings.PushbulletToken = val
+		case "pushbulletchannel":
+			settings.PushbulletChannel = val
+		case "iftttalert":
+			settings.IftttEnabled = (val == "on")
+		case "iftttkey":
+			settings.IftttKey = val
+		case "iftttevent":
+			settings.IftttEvent = val
+		case "rocketchatalert":
+			settings.RocketchatEnabled = (val == "on")
+		case "rocketchatwebhook":
+			settings.RocketchatWebhook = val
 		}
 	}
-
-	parseFile(rootCommonRel)
-	parseFile(commonRel)
-	parseFile(rootInstanceRel)
-	parseFile(instanceRel)
 	return settings
 }
 
@@ -212,12 +182,6 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 	settings.mergeSecrets(im.loadAlertSettings(srv))
 	if err := settings.Validate(); err != nil {
 		return err
-	}
-
-	instRel, rootRel := configDirsRel(srv)
-	instancePaths := []string{filepath.Join(instRel, srv.Script+".cfg")}
-	if rootRel != instRel {
-		instancePaths = append(instancePaths, filepath.Join(rootRel, srv.Script+".cfg"))
 	}
 
 	onOff := func(b bool) string {
@@ -270,17 +234,9 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 		"rocketchatwebhook": settings.RocketchatWebhook,
 	}
 
-	for _, rel := range instancePaths {
-		content, err := readServerCfg(srv, rel)
-		if err != nil {
-			return fmt.Errorf("failed to read config")
-		}
-		newContent := setCfgValues(content, valMap, order, true)
-		if err := writeServerFile(srv, rel, []byte(newContent)); err != nil {
-			return fmt.Errorf("failed to write config")
-		}
+	if err := saveInstanceCfgValues(srv, valMap, order, true); err != nil {
+		return fmt.Errorf("failed to write config")
 	}
-
 	return nil
 }
 
@@ -288,41 +244,22 @@ func (im *InstanceManager) SaveAlertSettings(serverID string, settings AlertSett
 // Stop Mode Configurator
 // -------------------------------------------------------------
 
-// IsValidStopMode validates LinuxGSM stopmode values offered by the UI.
+// IsValidStopMode validates LinuxGSM stopmode values (fn_stop_graceful_select knows 1-16).
 func IsValidStopMode(mode string) bool {
-	return mode == "" || mode == "default" || isIntInRange(mode, 1, 13)
+	return mode == "" || mode == "default" || isIntInRange(mode, 1, 16)
 }
 
-var reStopModeValue = regexp.MustCompile(`^\s*stopmode\s*=\s*["']?([^"'\s#]*)["']?`)
-var reStopModeKey = regexp.MustCompile(`^\s*stopmode\s*=`)
-
+// GetStopModeSettings returns the stop mode set by the user, or "default" when only the game's
+// _default.cfg sets it.
 func (im *InstanceManager) GetStopModeSettings(serverID string) (string, error) {
 	srv, ok := im.getServer(serverID)
 	if !ok {
 		return "", fmt.Errorf("server not found")
 	}
-
-	commonRel, rootCommonRel, instanceRel, rootInstanceRel := alertConfigRels(srv)
-
-	stopMode := "default"
-	parseFile := func(rel string) {
-		content, err := readServerCfg(srv, rel)
-		if err != nil {
-			return
-		}
-		for _, line := range strings.Split(content, "\n") {
-			matches := reStopModeValue.FindStringSubmatch(line)
-			if len(matches) > 1 && matches[1] != "" {
-				stopMode = matches[1]
-			}
-		}
+	if mode := lgsmCfgValues(srv, false)["stopmode"]; mode != "" {
+		return mode, nil
 	}
-
-	parseFile(rootCommonRel)
-	parseFile(commonRel)
-	parseFile(rootInstanceRel)
-	parseFile(instanceRel)
-	return stopMode, nil
+	return "default", nil
 }
 
 func (im *InstanceManager) SaveStopModeSettings(serverID string, stopMode string) error {
@@ -334,40 +271,11 @@ func (im *InstanceManager) SaveStopModeSettings(serverID string, stopMode string
 		return fmt.Errorf("invalid stop mode")
 	}
 
-	instRel, rootRel := configDirsRel(srv)
-	instancePaths := []string{filepath.Join(instRel, srv.Script+".cfg")}
-	if rootRel != instRel {
-		instancePaths = append(instancePaths, filepath.Join(rootRel, srv.Script+".cfg"))
+	if stopMode == "default" {
+		stopMode = "" // removes the override
 	}
-
-	for _, rel := range instancePaths {
-		content, err := readServerCfg(srv, rel)
-		if err != nil {
-			return fmt.Errorf("failed to read config")
-		}
-
-		lines := strings.Split(content, "\n")
-		updated := false
-		for i, line := range lines {
-			if reStopModeKey.MatchString(line) {
-				if stopMode == "default" || stopMode == "" {
-					lines[i] = "# stopmode=\"\""
-				} else {
-					lines[i] = fmt.Sprintf("stopmode=\"%s\"", stopMode)
-				}
-				updated = true
-				break
-			}
-		}
-
-		if !updated && stopMode != "default" && stopMode != "" {
-			lines = append(lines, fmt.Sprintf("stopmode=\"%s\"", stopMode))
-		}
-
-		if err := writeServerFile(srv, rel, []byte(strings.Join(lines, "\n"))); err != nil {
-			return fmt.Errorf("failed to write config")
-		}
+	if err := saveInstanceCfgValues(srv, map[string]string{"stopmode": stopMode}, []string{"stopmode"}, false); err != nil {
+		return fmt.Errorf("failed to write config")
 	}
-
 	return nil
 }
