@@ -448,6 +448,7 @@ const el = {
     btnBulkRestart: document.getElementById('btn-bulk-restart'),
     btnBulkUpdate: document.getElementById('btn-bulk-update'),
     filterTagSelect: document.getElementById('filter-tag-select'),
+    gridColumnsSelect: document.getElementById('grid-columns-select'),
 
     cronMonitorSelect: document.getElementById('cron-monitor-select'),
     cronUpdateSelect: document.getElementById('cron-update-select'),
@@ -502,6 +503,7 @@ function initApp() {
     // Dashboard listeners
     el.searchServers.addEventListener('input', renderServersGrid);
     if (el.filterTagSelect) el.filterTagSelect.addEventListener('change', renderServersGrid);
+    if (el.gridColumnsSelect) el.gridColumnsSelect.addEventListener('change', () => setGridColumns(el.gridColumnsSelect.value));
     el.btnRefreshDashboard.addEventListener('click', refreshDashboard);
 
     if (el.btnBulkStart) el.btnBulkStart.addEventListener('click', () => runBulkAction('start'));
@@ -698,6 +700,7 @@ function initApp() {
 
     // Initialize Theme and Language
     initTheme();
+    initGridColumns();
     initLanguage();
 
     // Initial check for authentication
@@ -3128,6 +3131,9 @@ const i18n = {
         "firewall-rules-header": "Detected Rules / Open Ports",
         "bulk-label": "Bulk Actions:",
         "filter-all-tags": "All Clusters / Tags",
+        "grid-columns-auto": "Columns: auto",
+        "grid-columns-one": "1 column",
+        "grid-columns-n": "{n} columns",
         "cron-builder-title": "Visual Crontab Scheduler",
         "cron-builder-desc": "Configure automated interval tasks and scheduled actions for this server.",
         "cron-monitor-label": "Crash-Monitoring Interval",
@@ -3608,6 +3614,9 @@ const i18n = {
         "firewall-rules-header": "Erkannte Regeln / Offene Ports",
         "bulk-label": "Massen-Aktionen:",
         "filter-all-tags": "Alle Clusters / Tags",
+        "grid-columns-auto": "Spalten: Auto",
+        "grid-columns-one": "1 Spalte",
+        "grid-columns-n": "{n} Spalten",
         "cron-builder-title": "Visueller Crontab-Scheduler",
         "cron-builder-desc": "Konfiguriere automatische Intervall-Aufgaben für diesen Server.",
         "cron-monitor-label": "Crash-Monitoring Intervall",
@@ -4037,6 +4046,36 @@ function toggleTheme() {
     setTheme(state.theme === 'dark' ? 'light' : 'dark');
 }
 
+const GRID_COLUMN_CHOICES = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12];
+
+function initGridColumns() {
+    const saved = localStorage.getItem('gridColumns') || 'auto';
+    setGridColumns(GRID_COLUMN_CHOICES.includes(parseInt(saved, 10)) ? saved : 'auto');
+}
+
+function renderGridColumnsOptions() {
+    if (!el.gridColumnsSelect) return;
+    const options = [`<option value="auto">${escapeHtml(t('grid-columns-auto'))}</option>`];
+    GRID_COLUMN_CHOICES.forEach(n => {
+        options.push(`<option value="${n}">${escapeHtml(t(n === 1 ? 'grid-columns-one' : 'grid-columns-n').replace('{n}', n))}</option>`);
+    });
+    el.gridColumnsSelect.innerHTML = options.join('');
+    el.gridColumnsSelect.value = state.gridColumns || 'auto';
+}
+
+// A fixed column count also lifts the content width limit, so wide screens fit more cards.
+function setGridColumns(value) {
+    state.gridColumns = String(value);
+    localStorage.setItem('gridColumns', state.gridColumns);
+    const grid = document.getElementById('servers-container');
+    const fixed = state.gridColumns !== 'auto';
+    grid.classList.toggle('fixed-cols', fixed);
+    if (fixed) grid.style.setProperty('--grid-cols', state.gridColumns);
+    else grid.style.removeProperty('--grid-cols');
+    document.body.classList.toggle('dashboard-wide', fixed);
+    if (el.gridColumnsSelect) el.gridColumnsSelect.value = state.gridColumns;
+}
+
 // Default set to English ('en')
 function initLanguage() {
     const savedLang = localStorage.getItem('language') || 'en';
@@ -4068,6 +4107,7 @@ function applyLanguage(lang) {
     });
     
     // Re-render all dynamic components in the active language
+    renderGridColumnsOptions();
     if (state.servers && state.servers.length > 0) {
         renderServersGrid();
     }
