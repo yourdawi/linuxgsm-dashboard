@@ -59,12 +59,13 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 - Start, stop, restart, update, validate, backup and `details` for each server, with the command output streamed live into the browser.
 - Bulk actions: select several servers and start, stop, restart or update them together.
 - Tags for grouping servers (for example "Production" or "Cluster A") and a tag filter on the dashboard.
-- Game installer: list of all LinuxGSM games (synchronised from linuxgsm.com), creates the Linux user, bootstraps LinuxGSM and runs `auto-install`. An installation directory outside of `/home` can be chosen.
+- Adjustable number of card columns on the dashboard and in the game installer (each remembered separately); a fixed column count uses the full window width on large screens.
+- Game installer: list of all LinuxGSM games (synchronised from linuxgsm.com), creates the Linux user, bootstraps LinuxGSM and runs `auto-install`. An installation directory outside of `/home` can be chosen. A regular Linux user that already exists, for example from an earlier LinuxGSM setup, is reused if its home directory is missing, holds only dotfiles or already holds LinuxGSM for the same game.
 - Multi-instance cloning: creates an additional instance (for example `vhserver-2`) as an independent copy of the script, including its instance config.
 - Port check: probes the configured game, query and RCON ports from the public IP.
 - Live status from the game server itself: map, player count, bots and a player list with playtime and score (kick and ban for users with the `console` permission). The dashboard queries running servers every 15 seconds via the Valve/Steam query protocol (A2S, used by most Steam games), the Minecraft Java server list ping and the Minecraft Bedrock ping. Games without a query protocol (for example TeamSpeak 3) simply show no player data.
 - Disk usage per server: allocated size of the server directory including backups, plus free space on the disk the server lives on. `serverfiles` and backup directories moved to another disk are included. The size is measured in the background every 10 minutes.
-- Server deletion, including its systemd service and cron entries. If the Linux user only hosts this one server, the user and its home directory are removed as well.
+- Server deletion, including its systemd service and cron entries. A Linux user that exists only for this server (its home directory is the server directory and holds nothing but LinuxGSM and dotfiles) is removed together with its home directory. Any other user, for example a personal account LinuxGSM was installed into, is kept; then only the server's script and configs are removed, and its LinuxGSM files once no other instance is left in the directory.
 
 ### Console and logs
 
@@ -89,7 +90,7 @@ The dashboard also serves FastDL content directly under `/fastdl/<server>/`, so 
 
 ### Configuration and files
 
-- Config editor for the LinuxGSM configuration layers (`_default.cfg`, `common.cfg`, instance config and secrets files) and for config files found in `serverfiles/` (`.cfg`, `.ini`, `.properties`, `.conf`, `.json`). Each file can be edited in a form view or as raw text. Editing `_default.cfg` shows a warning, because LinuxGSM overwrites it during updates.
+- Config editor for the LinuxGSM configuration layers (`_default.cfg`, `common.cfg`, instance config and secrets files) and for config files found in `serverfiles/` (`.cfg`, `.ini`, `.properties`, `.conf`, `.json`). Each file can be edited in a form view or as raw text. LinuxGSM restores `_default.cfg` every time the server script runs, so values changed there are saved to the instance config (`<script>.cfg`), which overrides them.
 - Stop mode selection (all 13 LinuxGSM stop modes or the default).
 - File manager for `serverfiles/`: browse, view, edit, upload and download files.
 
@@ -356,6 +357,7 @@ The directory is created with mode `0700`; files containing settings are written
 | `config.json` | Port and dashboard users (Argon2id password hashes, roles, permissions, 2FA secrets and hashed recovery codes) |
 | `audit_log.json` | Audit log |
 | `server_tags.json` | Server tags |
+| `server_ids.json` | Host mode: the ID of every server (keyed by its script path), so IDs and the permissions that refer to them never move to another server. Deleting a server in the dashboard releases its ID and removes it from all users |
 | `server_paths.json` | Additional server directories |
 | `games_cache.json`, `icons/` | Cached game list and icons from linuxgsm.com |
 | `schedules/<server>.cron`, `schedule_settings.json` | Docker mode only: schedules of the game servers and their time zone |
@@ -477,7 +479,7 @@ When upgrading from version 1.0.7 or older:
 - Player names are only available where the game reports them (A2S player list, Minecraft player sample). Kick and ban send `kick <name>` / `ban <name>` to the console, which not every game understands.
 - The live query uses the local address or the `Server IP` reported by LinuxGSM (in Docker mode also the Docker host); servers that block queries from the host itself show no player data.
 - The file manager edits files as plain text, without syntax highlighting, and opens files up to 5 MB in the editor.
-- During the installation of a new game server, the new Linux user temporarily gets passwordless `sudo`, because LinuxGSM installs missing system packages itself. The permission is removed when the installation ends and on the next start of the dashboard.
+- During the installation of a new game server, the new Linux user temporarily gets passwordless `sudo`, because LinuxGSM installs missing system packages itself. The permission is removed when the installation ends and on the next start of the dashboard. The service runs with `ProtectSystem=true` (a read-only `/usr`), so LinuxGSM's `auto-install` runs as a transient systemd unit (`systemd-run`) outside of that sandbox.
 - CPU and RAM are measured per Linux user, so instances that share a user show the same values. The same applies to disk usage when instances share a directory (marked in the tooltip).
 
 ## Development

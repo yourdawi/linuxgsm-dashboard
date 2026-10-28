@@ -30,9 +30,11 @@ func (im *InstanceManager) InstallGame(w http.ResponseWriter, r *http.Request, g
 	}
 
 	// The installation keeps running when the browser disconnects.
+	done := im.beginInstall(username)
 	err := im.rt.Install(context.Background(), req, sse.log)
+	done()
 
-	// Trigger reload
+	// Trigger reload; details of the new server run now that auto-install has finished.
 	im.ScanInstances()
 
 	sse.exit(ExitCode(err))

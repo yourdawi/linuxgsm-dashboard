@@ -661,6 +661,10 @@ input:checked + .slider:before { transform: translateX(16px); }
     grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
     gap: 0.9rem;
 }
+/* Column count chosen in the filter bar; the dashboard then uses the full window width. */
+.servers-grid.fixed-cols, .games-grid.fixed-cols { grid-template-columns: repeat(var(--grid-cols, 4), minmax(0, 1fr)); }
+body.dashboard-wide .main-content:has(#view-dashboard:not(.hidden)),
+body.installer-wide .main-content:has(#view-installer:not(.hidden)) { max-width: none; }
 
 .server-card {
     background: var(--bg-surface);
@@ -1163,6 +1167,8 @@ body.light-theme .terminal-card { border-color: #2b3036; }
     .console-layout { height: auto; min-height: 520px; }
     .console-controls { flex-direction: column; align-items: stretch; }
     .divider-y { display: none; }
+    .servers-grid.fixed-cols { grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
+    .games-grid.fixed-cols { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
 }
 
 @media (max-width: 576px) {
@@ -1172,7 +1178,8 @@ body.light-theme .terminal-card { border-color: #2b3036; }
     .stat-bubble { align-items: flex-start; }
     .filter-group { min-width: 0; flex-direction: column; }
     .search-box { max-width: none; }
-    .servers-grid { grid-template-columns: 1fr; }
+    .servers-grid, .servers-grid.fixed-cols { grid-template-columns: 1fr; }
+    .games-grid.fixed-cols { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
     .sc-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .sc-stats > div:nth-child(4) { border-left: 0; }
     .sc-stats > div:nth-child(n+4) { border-top: 1px solid var(--border-color); }

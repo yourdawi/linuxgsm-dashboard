@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeRuntime records every call and answers with canned results.
@@ -240,4 +241,57 @@ func TestCronRewriteUsesRuntimeCrontab(t *testing.T) {
 	if rt.crontab != "0 4 * * * /usr/bin/other" {
 		t.Fatalf("unexpected crontab %q", rt.crontab)
 	}
+}
+
+type discoverRuntime struct {
+	*fakeRuntime
+	found []GameServerInstance
+}
+
+func (d discoverRuntime) Discover([]string) ([]*GameServerInstance, error) {
+	var out []*GameServerInstance
+	for i := range d.found {
+		inst := d.found[i]
+		out = append(out, &inst)
+	}
+	return out, nil
+}
+
+// While LinuxGSM's auto-install runs, the dashboard must not start `details` for the new script.
+func TestNoDetailsDuringInstall(t *testing.T) {
+	rt := &fakeRuntime{}
+	im := NewStaticInstanceManager(t.TempDir())
+	im.static = false
+	im.rt = discoverRuntime{rt, []GameServerInstance{{ID: "ts3server", Script: "ts3server", User: "ts3", Dir: t.TempDir(), Status: "stopped"}}}
+
+	done := im.beginInstall("ts3")
+	im.ScanInstances()
+	if s, _ := im.getServer("ts3server"); s.Status != "installing" {
+		t.Errorf("status during install = %q", s.Status)
+	}
+	im.RefreshServerDetailsForce("ts3server")
+	time.Sleep(100 * time.Millisecond)
+	rt.mu.Lock()
+	calls := len(rt.calls)
+	rt.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("LinuxGSM was run during the installation: %v", rt.calls)
+	}
+
+	done()
+	im.ScanInstances()
+	if s, _ := im.getServer("ts3server"); s.Status != "stopped" {
+		t.Errorf("status after install = %q", s.Status)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rt.mu.Lock()
+		calls = len(rt.calls)
+		rt.mu.Unlock()
+		if calls > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Error("details did not run after the installation")
 }

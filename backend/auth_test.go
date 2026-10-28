@@ -215,3 +215,17 @@ func TestWriteFileAtomic(t *testing.T) {
 		t.Fatal("temporary files left behind")
 	}
 }
+
+func TestRemoveServerFromUsers(t *testing.T) {
+	am := newTestAuth(t)
+	if err := am.CreateUser("viewer", "Viewer-Pass-123", RoleUser, []string{"ts3server", "vhserver"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := am.RemoveServerFromUsers("ts3server"); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := am.GetUser("viewer")
+	if len(u.Servers) != 1 || u.Servers[0] != "vhserver" {
+		t.Fatalf("servers = %v", u.Servers)
+	}
+}

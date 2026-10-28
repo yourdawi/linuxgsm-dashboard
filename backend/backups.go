@@ -2,7 +2,6 @@ package backend
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -26,42 +25,29 @@ import (
 // Backup directories
 // -------------------------------------------------------------
 
-var reBackupDirSetting = regexp.MustCompile(`^\s*backupdir\s*=\s*["']?([^"']+)["']?`)
-
-// customBackupDir reads backupdir from the LinuxGSM config (<script>.cfg -> common.cfg -> _default.cfg).
+// customBackupDir reads backupdir from the LinuxGSM configs of the server, merged like LinuxGSM.
 func customBackupDir(srv GameServerInstance) string {
-	configDir := filepath.Join(srv.Dir, srv.configRel(srv.Script))
-	for _, name := range []string{srv.Script + ".cfg", "common.cfg", "_default.cfg"} {
-		data, err := os.ReadFile(filepath.Join(configDir, name))
-		if err != nil {
-			continue
-		}
-		scanner := bufio.NewScanner(bytes.NewReader(data))
-		for scanner.Scan() {
-			matches := reBackupDirSetting.FindStringSubmatch(scanner.Text())
-			if len(matches) > 1 {
-				customDir := strings.TrimSpace(matches[1])
-				lgsmDir := filepath.Join(srv.Dir, "lgsm")
-				replacer := strings.NewReplacer(
-					"${lgsmdir}", lgsmDir, "$lgsmdir", lgsmDir,
-					"${rootdir}", srv.Dir, "$rootdir", srv.Dir,
-					"${username}", srv.User, "$username", srv.User,
-					"${selfname}", srv.Script, "$selfname", srv.Script,
-				)
-				if srv.Layout == LayoutData {
-					// Inside the container: the script lives in /app, the data in /data.
-					replacer = strings.NewReplacer(
-						"${lgsmdir}", "/app/lgsm", "$lgsmdir", "/app/lgsm",
-						"${rootdir}", "/app", "$rootdir", "/app",
-						"${selfname}", srv.Script, "$selfname", srv.Script,
-					)
-					return srv.dashboardPath(replacer.Replace(customDir))
-				}
-				return filepath.Clean(replacer.Replace(customDir))
-			}
-		}
+	customDir := strings.TrimSpace(lgsmCfgValues(srv, true)["backupdir"])
+	if customDir == "" {
+		return ""
 	}
-	return ""
+	if srv.Layout == LayoutData {
+		// Inside the container: the script lives in /app, the data in /data.
+		replacer := strings.NewReplacer(
+			"${lgsmdir}", "/app/lgsm", "$lgsmdir", "/app/lgsm",
+			"${rootdir}", "/app", "$rootdir", "/app",
+			"${selfname}", srv.Script, "$selfname", srv.Script,
+		)
+		return srv.dashboardPath(replacer.Replace(customDir))
+	}
+	lgsmDir := filepath.Join(srv.Dir, "lgsm")
+	replacer := strings.NewReplacer(
+		"${lgsmdir}", lgsmDir, "$lgsmdir", lgsmDir,
+		"${rootdir}", srv.Dir, "$rootdir", srv.Dir,
+		"${username}", srv.User, "$username", srv.User,
+		"${selfname}", srv.Script, "$selfname", srv.Script,
+	)
+	return filepath.Clean(replacer.Replace(customDir))
 }
 
 // isAllowedBackupDir decides whether the dashboard (running as root) may list, read and write

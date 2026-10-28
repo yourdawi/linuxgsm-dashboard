@@ -24,8 +24,9 @@ func parseDetailsOutput(output string) (string, []PortProbe) {
 	ports := []PortProbe{}
 
 	lines := strings.Split(output, "\n")
-	reName := regexp.MustCompile(`(?i)Server name:\s*(.+)`)
-	rePort := regexp.MustCompile(`(?i)^\s*([a-zA-Z0-9\s_\-]+)\s+(\d+)\s+(tcp|udp)`)
+	reName := regexp.MustCompile(`(?i)^Server name:\s*(.+)$`)
+	// LinuxGSM port table rows, e.g. "Game  27015  udp  1" or "Query (http)  8080  tcp  0".
+	rePort := regexp.MustCompile(`(?i)^\s*([a-z0-9][a-z0-9 _\-()+:]*?)\s+(\d+)\s+(tcp|udp)\b`)
 	reClean := regexp.MustCompile(`(?i)(\x1b|\\x1b|\\e|\\033)?\[[0-9;]*[a-zA-Z]`)
 
 	for _, line := range lines {
@@ -35,6 +36,11 @@ func parseDetailsOutput(output string) (string, []PortProbe) {
 		if match := reName.FindStringSubmatch(line); len(match) > 1 {
 			rawName := strings.TrimSpace(match[1])
 			serverName = strings.TrimSpace(reClean.ReplaceAllString(rawName, ""))
+			// LinuxGSM prints "NOT SET" when it cannot read the name from the game config
+			// (info_game.sh), e.g. before a new instance created its config.
+			if strings.EqualFold(serverName, "NOT SET") {
+				serverName = ""
+			}
 			continue
 		}
 
@@ -76,46 +82,11 @@ func parseDetailsIP(output string) string {
 // configLgsm is the directory holding the per-instance config directories (lgsm/config-lgsm on a
 // host).
 func parseServerPort(homeDir, configLgsm string, scriptName string) int {
-	// Try to find the port in config files
-	// Order: <script>.cfg -> common.cfg -> _default.cfg
-	rootScript := strings.Split(scriptName, "-")[0]
-	configDir := filepath.Join(configLgsm, scriptName)
-	rootConfigDir := filepath.Join(configLgsm, rootScript)
-	filesToTry := []string{
-		filepath.Join(configDir, fmt.Sprintf("%s.cfg", scriptName)),
-		filepath.Join(rootConfigDir, fmt.Sprintf("%s.cfg", scriptName)),
-		filepath.Join(configDir, "common.cfg"),
-		filepath.Join(rootConfigDir, "common.cfg"),
-		filepath.Join(configDir, "_default.cfg"),
-		filepath.Join(rootConfigDir, "_default.cfg"),
+	// The game port as LinuxGSM sees it: port= from the merged configs.
+	if p, err := strconv.Atoi(lgsmCfgValuesAt(configLgsm, scriptName)["port"]); err == nil && p > 0 {
+		return p
 	}
-
-	portRegex := regexp.MustCompile(`port="?(\d+)"?`)
-
-	for _, fp := range filesToTry {
-		port := func() int {
-			file, err := os.Open(fp)
-			if err != nil {
-				return 0
-			}
-			defer file.Close()
-
-			scanner := bufio.NewScanner(file)
-			for scanner.Scan() {
-				matches := portRegex.FindStringSubmatch(scanner.Text())
-				if len(matches) > 1 {
-					p, err := strconv.Atoi(matches[1])
-					if err == nil {
-						return p
-					}
-				}
-			}
-			return 0
-		}()
-		if port > 0 {
-			return port
-		}
-	}
+	rootScript := gameServerName(scriptName)
 
 	// Game-specific fallbacks if not found in LGSM config
 	if rootScript == "mtaserver" || scriptName == "mtaserver" {
@@ -570,42 +541,13 @@ func parseServerPortsFromConfig(homeDir, configLgsm string, scriptName string, g
 		}
 	}
 
-	configDir := filepath.Join(configLgsm, scriptName)
-	filesToTry := []string{
-		filepath.Join(configDir, fmt.Sprintf("%s.cfg", scriptName)),
-		filepath.Join(configDir, "common.cfg"),
-		filepath.Join(configDir, "_default.cfg"),
-	}
-
-	// Maps of parsed values
+	// Port variables from the merged LinuxGSM configs
 	parsedPorts := make(map[string]int)
-
-	// Regex for port variables: var="port" or var=port
-	varRegex := regexp.MustCompile(`^(port|queryport|rconport|appport|sourcetvport)="?(\d+)"?`)
-
-	for _, fp := range filesToTry {
-		file, err := os.Open(fp)
-		if err != nil {
-			continue
+	values := lgsmCfgValuesAt(configLgsm, scriptName)
+	for _, name := range []string{"port", "queryport", "rconport", "appport", "sourcetvport"} {
+		if p, err := strconv.Atoi(values[name]); err == nil && p > 0 && p < 65536 {
+			parsedPorts[name] = p
 		}
-
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			// Remove comments
-			if strings.HasPrefix(line, "#") {
-				continue
-			}
-			matches := varRegex.FindStringSubmatch(line)
-			if len(matches) == 3 {
-				varName := matches[1]
-				portVal, _ := strconv.Atoi(matches[2])
-				if _, exists := parsedPorts[varName]; !exists && portVal > 0 {
-					parsedPorts[varName] = portVal
-				}
-			}
-		}
-		file.Close()
 	}
 
 	var probes []PortProbe

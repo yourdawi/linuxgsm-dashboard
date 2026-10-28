@@ -1031,7 +1031,12 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 	switch route {
 	case "delete":
 		a.auth.LogAudit(user.Username, ctx.ip, "SERVER_DELETE", "Deleted server", serverID)
-		a.inst.DeleteServer(w, r, serverID)
+		if a.inst.DeleteServer(w, r, serverID) {
+			// A later server may get the same ID; it must not inherit these permissions.
+			if err := a.auth.RemoveServerFromUsers(serverID); err != nil {
+				fmt.Printf("[WARNING] Failed to remove %s from user permissions: %v\n", serverID, err)
+			}
+		}
 	case "portcheck":
 		a.inst.CheckServerPorts(w, r, serverID)
 	case "action":
@@ -1217,8 +1222,14 @@ func (c serverCtx) configFile() {
 		writeError(c.w, http.StatusBadRequest, "Invalid payload")
 		return
 	}
-	if err := c.app.inst.SaveConfigFileContent(c.serverID, payload.Path, payload.Content); err != nil {
+	result, err := c.app.inst.SaveConfigFileContent(c.serverID, payload.Path, payload.Content)
+	if err != nil {
 		writeError(c.w, http.StatusForbidden, err.Error())
+		return
+	}
+	if result.RedirectedTo != "" {
+		c.audit("CONFIG_EDIT", "Saved _default.cfg changes to "+filepath.Base(result.RedirectedTo))
+		writeJSON(c.w, http.StatusOK, map[string]interface{}{"status": "ok", "redirected_to": result.RedirectedTo, "keys": result.Keys})
 		return
 	}
 	c.audit("CONFIG_EDIT", "Saved config "+filepath.Base(payload.Path))
