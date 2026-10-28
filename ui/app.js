@@ -43,6 +43,7 @@ const state = {
     configMode: 'form', // form or raw
     parsedConfigItems: [],
     formBaseContent: '', // text the config form was built from
+    gridColumns: {}, // column choice per card grid (see COLUMN_GRIDS)
     theme: 'dark', // dark or light
     language: 'en', // en or de
     games: [],
@@ -449,7 +450,6 @@ const el = {
     btnBulkRestart: document.getElementById('btn-bulk-restart'),
     btnBulkUpdate: document.getElementById('btn-bulk-update'),
     filterTagSelect: document.getElementById('filter-tag-select'),
-    gridColumnsSelect: document.getElementById('grid-columns-select'),
 
     cronMonitorSelect: document.getElementById('cron-monitor-select'),
     cronUpdateSelect: document.getElementById('cron-update-select'),
@@ -504,7 +504,6 @@ function initApp() {
     // Dashboard listeners
     el.searchServers.addEventListener('input', renderServersGrid);
     if (el.filterTagSelect) el.filterTagSelect.addEventListener('change', renderServersGrid);
-    if (el.gridColumnsSelect) el.gridColumnsSelect.addEventListener('change', () => setGridColumns(el.gridColumnsSelect.value));
     el.btnRefreshDashboard.addEventListener('click', refreshDashboard);
 
     if (el.btnBulkStart) el.btnBulkStart.addEventListener('click', () => runBulkAction('start'));
@@ -2682,7 +2681,7 @@ WantedBy=multi-user.target`;
 
     // 2. Generate Cronjob template
     const isDe = state.language === 'de';
-    const cronCode = `# LinuxGSM ${server.name} ${isDe ? 'Geplante Wartungsaufgaben' : 'Scheduled Maintenance Tasks'}
+    const cronCode = `# LinuxGSM ${server.script}: scheduled maintenance
 # 1. ${isDe ? 'Server auf Abstürze überwachen (alle 5 Minuten)' : 'Monitor server for crashes (every 5 minutes)'}
 */5 * * * * ${serverDir}/${server.script} monitor > /dev/null 2>&1
 
@@ -4076,32 +4075,51 @@ function toggleTheme() {
 
 const GRID_COLUMN_CHOICES = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12];
 
+// Card grids with a column picker: the server cards on the dashboard and the game list of the
+// installer. Each remembers its own choice.
+const COLUMN_GRIDS = {
+    servers: { select: 'grid-columns-select', grid: 'servers-container', wideClass: 'dashboard-wide', storage: 'gridColumns' },
+    games: { select: 'games-columns-select', grid: 'games-container', wideClass: 'installer-wide', storage: 'gameColumns' }
+};
+
 function initGridColumns() {
-    const saved = localStorage.getItem('gridColumns') || 'auto';
-    setGridColumns(GRID_COLUMN_CHOICES.includes(parseInt(saved, 10)) ? saved : 'auto');
+    Object.entries(COLUMN_GRIDS).forEach(([name, cfg]) => {
+        const select = document.getElementById(cfg.select);
+        if (select) select.addEventListener('change', () => setGridColumns(name, select.value));
+        let saved = 'auto';
+        try { saved = localStorage.getItem(cfg.storage) || 'auto'; } catch (e) {}
+        setGridColumns(name, GRID_COLUMN_CHOICES.includes(parseInt(saved, 10)) ? saved : 'auto');
+    });
 }
 
 function renderGridColumnsOptions() {
-    if (!el.gridColumnsSelect) return;
     const options = [`<option value="auto">${escapeHtml(t('grid-columns-auto'))}</option>`];
     GRID_COLUMN_CHOICES.forEach(n => {
         options.push(`<option value="${n}">${escapeHtml(t(n === 1 ? 'grid-columns-one' : 'grid-columns-n').replace('{n}', n))}</option>`);
     });
-    el.gridColumnsSelect.innerHTML = options.join('');
-    el.gridColumnsSelect.value = state.gridColumns || 'auto';
+    Object.entries(COLUMN_GRIDS).forEach(([name, cfg]) => {
+        const select = document.getElementById(cfg.select);
+        if (!select) return;
+        select.innerHTML = options.join('');
+        select.value = state.gridColumns[name] || 'auto';
+    });
 }
 
 // A fixed column count also lifts the content width limit, so wide screens fit more cards.
-function setGridColumns(value) {
-    state.gridColumns = String(value);
-    localStorage.setItem('gridColumns', state.gridColumns);
-    const grid = document.getElementById('servers-container');
-    const fixed = state.gridColumns !== 'auto';
-    grid.classList.toggle('fixed-cols', fixed);
-    if (fixed) grid.style.setProperty('--grid-cols', state.gridColumns);
-    else grid.style.removeProperty('--grid-cols');
-    document.body.classList.toggle('dashboard-wide', fixed);
-    if (el.gridColumnsSelect) el.gridColumnsSelect.value = state.gridColumns;
+function setGridColumns(name, value) {
+    const cfg = COLUMN_GRIDS[name];
+    state.gridColumns[name] = String(value);
+    try { localStorage.setItem(cfg.storage, state.gridColumns[name]); } catch (e) {}
+    const grid = document.getElementById(cfg.grid);
+    const fixed = state.gridColumns[name] !== 'auto';
+    if (grid) {
+        grid.classList.toggle('fixed-cols', fixed);
+        if (fixed) grid.style.setProperty('--grid-cols', state.gridColumns[name]);
+        else grid.style.removeProperty('--grid-cols');
+    }
+    document.body.classList.toggle(cfg.wideClass, fixed);
+    const select = document.getElementById(cfg.select);
+    if (select) select.value = state.gridColumns[name];
 }
 
 // Default set to English ('en')

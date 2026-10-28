@@ -59,7 +59,7 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 - Start, stop, restart, update, validate, backup and `details` for each server, with the command output streamed live into the browser.
 - Bulk actions: select several servers and start, stop, restart or update them together.
 - Tags for grouping servers (for example "Production" or "Cluster A") and a tag filter on the dashboard.
-- Adjustable number of card columns on the dashboard; a fixed column count uses the full window width on large screens.
+- Adjustable number of card columns on the dashboard and in the game installer (each remembered separately); a fixed column count uses the full window width on large screens.
 - Game installer: list of all LinuxGSM games (synchronised from linuxgsm.com), creates the Linux user, bootstraps LinuxGSM and runs `auto-install`. An installation directory outside of `/home` can be chosen. A regular Linux user that already exists, for example from an earlier LinuxGSM setup, is reused if its home directory is missing, holds only dotfiles or already holds LinuxGSM for the same game.
 - Multi-instance cloning: creates an additional instance (for example `vhserver-2`) as an independent copy of the script, including its instance config.
 - Port check: probes the configured game, query and RCON ports from the public IP.
