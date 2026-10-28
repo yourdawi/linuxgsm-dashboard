@@ -399,6 +399,17 @@ func existingInstallUser(req InstallRequest) (*passwdEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("user %s already exists, but its home directory %s cannot be read", req.Username, entry.Home)
 	}
+	// An existing ./<game> is taken over by auto-install, so it must be LinuxGSM and stopped.
+	script := filepath.Join(entry.Home, req.GameCmd)
+	if info, err := os.Lstat(script); err == nil {
+		if !info.Mode().IsRegular() || !isLinuxGSMScript(script) {
+			return nil, fmt.Errorf("user %s already exists and %s is not a LinuxGSM script", req.Username, script)
+		}
+		srv := GameServerInstance{User: entry.Name, Script: req.GameCmd, Dir: entry.Home, UID: entry.UID, GID: entry.GID}
+		if isTmuxSessionActive(HostRuntime{}, srv) {
+			return nil, fmt.Errorf("user %s already exists and its server %s is running: stop it before installing", req.Username, req.GameCmd)
+		}
+	}
 	// All scripts in a directory share serverfiles/, so a different game must not be added.
 	gameRoot := strings.Split(req.GameCmd, "-")[0]
 	for _, e := range entries {

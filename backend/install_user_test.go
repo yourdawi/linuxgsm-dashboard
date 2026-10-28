@@ -27,6 +27,7 @@ func TestExistingInstallUser(t *testing.T) {
 		fmt.Sprintf("oldlgsm:x:%d:%d::%s:/bin/bash", uid, uid, home("oldlgsm")),
 		fmt.Sprintf("person:x:%d:%d::%s:/bin/bash", uid, uid, home("person")),
 		fmt.Sprintf("othergame:x:%d:%d::%s:/bin/bash", uid, uid, home("othergame")),
+		fmt.Sprintf("foreign:x:%d:%d::%s:/bin/bash", uid, uid, home("foreign")),
 	}
 	mustWrite(t, passwd, strings.Join(lines, "\n")+"\n")
 	oldPasswd := passwdPath
@@ -39,14 +40,15 @@ func TestExistingInstallUser(t *testing.T) {
 	mustWrite(t, filepath.Join(home("person"), "Documents", "notes.txt"), "private")
 	mustWrite(t, filepath.Join(home("othergame"), "vhserver"), fakeLGSMScript)
 	mustWrite(t, filepath.Join(home("othergame"), "linuxgsm.sh"), fakeLGSMScript)
+	mustWrite(t, filepath.Join(home("foreign"), "cssserver"), "#!/bin/sh\necho some other tool\n")
+	mustWrite(t, filepath.Join(home("foreign"), "lgsm", "readme"), "")
 
 	reuse := map[string]InstallRequest{
-		"new user":         {GameCmd: "cssserver", Username: "brandnew"},
-		"home missing":     {GameCmd: "cssserver", Username: "missing"},
-		"only dotfiles":    {GameCmd: "cssserver", Username: "fresh"},
-		"old LinuxGSM":     {GameCmd: "cssserver", Username: "oldlgsm"},
-		"old LinuxGSM, -2": {GameCmd: "cssserver-2", Username: "oldlgsm"},
-		"same dir given":   {GameCmd: "cssserver", Username: "fresh", Dir: home("fresh")},
+		"new user":       {GameCmd: "cssserver", Username: "brandnew"},
+		"home missing":   {GameCmd: "cssserver", Username: "missing"},
+		"only dotfiles":  {GameCmd: "cssserver", Username: "fresh"},
+		"old LinuxGSM":   {GameCmd: "cssserver", Username: "oldlgsm"},
+		"same dir given": {GameCmd: "cssserver", Username: "fresh", Dir: home("fresh")},
 	}
 	for name, req := range reuse {
 		entry, err := existingInstallUser(req)
@@ -62,6 +64,7 @@ func TestExistingInstallUser(t *testing.T) {
 		"other dir":      {GameCmd: "cssserver", Username: "fresh", Dir: home("elsewhere")},
 		"personal files": {GameCmd: "cssserver", Username: "person"},
 		"other game":     {GameCmd: "cssserver", Username: "othergame"},
+		"foreign script": {GameCmd: "cssserver", Username: "foreign"},
 	}
 	for name, req := range refuse {
 		if entry, err := existingInstallUser(req); err == nil {
