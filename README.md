@@ -89,7 +89,7 @@ The dashboard also serves FastDL content directly under `/fastdl/<server>/`, so 
 
 ### Configuration and files
 
-- Config editor for the LinuxGSM configuration layers (`_default.cfg`, `common.cfg`, instance config and secrets files) and for config files found in `serverfiles/` (`.cfg`, `.ini`, `.properties`, `.conf`, `.json`). Each file can be edited in a form view or as raw text. Editing `_default.cfg` shows a warning, because LinuxGSM overwrites it during updates.
+- Config editor for the LinuxGSM configuration layers (`_default.cfg`, `common.cfg`, instance config and secrets files) and for config files found in `serverfiles/` (`.cfg`, `.ini`, `.properties`, `.conf`, `.json`). Each file can be edited in a form view or as raw text. LinuxGSM restores `_default.cfg` every time the server script runs, so values changed there are saved to the instance config (`<script>.cfg`), which overrides them.
 - Stop mode selection (all 13 LinuxGSM stop modes or the default).
 - File manager for `serverfiles/`: browse, view, edit, upload and download files.
 

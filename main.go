@@ -1217,8 +1217,14 @@ func (c serverCtx) configFile() {
 		writeError(c.w, http.StatusBadRequest, "Invalid payload")
 		return
 	}
-	if err := c.app.inst.SaveConfigFileContent(c.serverID, payload.Path, payload.Content); err != nil {
+	result, err := c.app.inst.SaveConfigFileContent(c.serverID, payload.Path, payload.Content)
+	if err != nil {
 		writeError(c.w, http.StatusForbidden, err.Error())
+		return
+	}
+	if result.RedirectedTo != "" {
+		c.audit("CONFIG_EDIT", "Saved _default.cfg changes to "+filepath.Base(result.RedirectedTo))
+		writeJSON(c.w, http.StatusOK, map[string]interface{}{"status": "ok", "redirected_to": result.RedirectedTo, "keys": result.Keys})
 		return
 	}
 	c.audit("CONFIG_EDIT", "Saved config "+filepath.Base(payload.Path))

@@ -1762,7 +1762,7 @@ function switchConsoleMode(mode) {
 // Config Editor Modal
 // -------------------------------------------------------------
 
-async function openConfigEditor(serverId) {
+async function openConfigEditor(serverId, selectPath) {
     state.activeConfigServer = serverId;
     state.activeConfigFile = null;
     state.activeConfigContent = '';
@@ -1813,6 +1813,7 @@ async function openConfigEditor(serverId) {
             li.innerHTML = `<span>${escapeHtml(file.name)}</span>${layerBadge}`;
             li.addEventListener('click', () => loadConfigFile(file.path, file.name, li));
             el.configFilesList.appendChild(li);
+            if (file.path === selectPath) loadConfigFile(file.path, file.name, li);
         });
     } catch (e) {
         el.configFilesList.innerHTML = `<li class="config-file-item text-danger">${t('config-load-error')}</li>`;
@@ -1899,6 +1900,20 @@ async function saveConfigFile() {
         });
         
         if (res.status === 200) {
+            const result = await res.json().catch(() => ({}));
+            if (result.redirected_to) {
+                // LinuxGSM restores _default.cfg on every run; the backend stored the changes in the instance config.
+                const target = result.redirected_to.split('/').pop();
+                el.btnConfigSave.textContent = t('modal-config-btn-save');
+                if (result.keys && result.keys.length > 0) {
+                    alert(t('config-default-redirected').replace('{file}', target).replace('{keys}', result.keys.join(', ')));
+                    await openConfigEditor(state.activeConfigServer, result.redirected_to);
+                } else {
+                    alert(t('config-default-no-changes'));
+                    el.btnConfigSave.disabled = false;
+                }
+                return;
+            }
             state.activeConfigContent = content;
             el.editorTextarea.value = content;
             updateEditorLineNumbers();
@@ -3212,7 +3227,9 @@ const i18n = {
         "modal-config-btn-save": "Save Config",
         "modal-config-placeholder": "Select a configuration file from the list on the left to edit it.",
         "modal-config-select-prompt": "Select a configuration file from the list on the left.",
-        "modal-config-default-warning": "Note: LinuxGSM overwrites _default.cfg during updates. Please edit the config or common.cfg instead.",
+        "modal-config-default-warning": "Note: LinuxGSM restores _default.cfg every time the server script runs. Changed values are saved to the instance config instead, which overrides _default.cfg.",
+        "config-default-redirected": "LinuxGSM restores _default.cfg every time the server script runs, so the changes were saved to {file} instead: {keys}",
+        "config-default-no-changes": "No values were changed.",
         "inst-user-placeholder": "e.g. valheimserver",
         "inst-user-help": "Allowed: lowercase letters, numbers, and underscores (3-16 chars). The user will be created on the host.",
         "inst-pass-placeholder": "Leave blank for random password",
@@ -3700,7 +3717,9 @@ const i18n = {
         "modal-config-btn-save": "Speichern",
         "modal-config-placeholder": "Wähle eine Konfigurationsdatei aus der Liste links aus, um sie zu bearbeiten.",
         "modal-config-select-prompt": "Wähle eine Konfigurationsdatei aus der Liste links aus.",
-        "modal-config-default-warning": "Hinweis: LinuxGSM überschreibt _default.cfg bei Updates. Editiere stattdessen die datei.cfg oder common.cfg.",
+        "modal-config-default-warning": "Hinweis: LinuxGSM stellt _default.cfg bei jedem Aufruf des Server-Scripts wieder her. Geänderte Werte werden deshalb in der Instanz-Config gespeichert, die _default.cfg überschreibt.",
+        "config-default-redirected": "LinuxGSM stellt _default.cfg bei jedem Aufruf des Server-Scripts wieder her, deshalb wurden die Änderungen in {file} gespeichert: {keys}",
+        "config-default-no-changes": "Es wurden keine Werte geändert.",
         "inst-user-placeholder": "z.B. valheimserver",
         "inst-user-help": "Erlaubt sind Kleinbuchstaben, Zahlen und Unterstriche (3-16 Zeichen). Der Benutzer wird auf dem Server angelegt.",
         "inst-pass-placeholder": "Frei lassen für zufälliges Passwort",

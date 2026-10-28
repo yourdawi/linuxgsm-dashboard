@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -267,25 +268,120 @@ func (im *InstanceManager) GetConfigFileContent(serverID, path string) (string, 
 	return string(content), nil
 }
 
-func (im *InstanceManager) SaveConfigFileContent(serverID, path, content string) error {
+// ConfigSaveResult tells the editor where a save ended up. RedirectedTo is set when changes to
+// _default.cfg were written to the instance config instead.
+type ConfigSaveResult struct {
+	RedirectedTo string   `json:"redirected_to,omitempty"`
+	Keys         []string `json:"keys,omitempty"`
+}
+
+func (im *InstanceManager) SaveConfigFileContent(serverID, path, content string) (ConfigSaveResult, error) {
 	srv, ok := im.getServer(serverID)
 	if !ok {
-		return fmt.Errorf("server not found")
+		return ConfigSaveResult{}, fmt.Errorf("server not found")
 	}
 	resolved, err := resolveConfigPath(srv, path)
 	if err != nil {
-		return err
+		return ConfigSaveResult{}, err
 	}
 	// Only existing config files can be edited; this endpoint never creates new files.
 	info, err := os.Lstat(resolved)
 	if err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("config file not found")
+		return ConfigSaveResult{}, fmt.Errorf("config file not found")
+	}
+	if filepath.Base(resolved) == "_default.cfg" {
+		return im.saveDefaultCfgOverrides(srv, resolved, filepath.Clean(path), content)
 	}
 	if err := writeResolvedFile(srv, resolved, []byte(content), info.Mode().Perm()); err != nil {
-		return fmt.Errorf("failed to save config file")
+		return ConfigSaveResult{}, fmt.Errorf("failed to save config file")
 	}
 	go im.RefreshServerDetailsForce(serverID)
-	return nil
+	return ConfigSaveResult{}, nil
+}
+
+// saveDefaultCfgOverrides writes the values changed in _default.cfg to <script>.cfg next to it.
+// linuxgsm.sh restores _default.cfg from config-default on every run, so edits there are lost.
+// listedPath is the path as the config file list shows it, so the editor can select the target.
+func (im *InstanceManager) saveDefaultCfgOverrides(srv GameServerInstance, defaultPath, listedPath, content string) (ConfigSaveResult, error) {
+	current, err := readResolvedFileLimited(defaultPath, MaxEditableFileSize)
+	if err != nil {
+		return ConfigSaveResult{}, fmt.Errorf("failed to read config file")
+	}
+	oldValues, _ := cfgRawValues(string(current))
+	newValues, order := cfgRawValues(content)
+	changed := make(map[string]string)
+	var keys []string
+	for _, key := range order {
+		if old, ok := oldValues[key]; !ok || old != newValues[key] {
+			changed[key] = newValues[key]
+			keys = append(keys, key)
+		}
+	}
+	instanceName := srv.Script + ".cfg"
+	result := ConfigSaveResult{RedirectedTo: filepath.Join(filepath.Dir(listedPath), instanceName), Keys: keys}
+	if len(keys) == 0 {
+		return result, nil
+	}
+	target, err := resolveConfigPath(srv, filepath.Join(filepath.Dir(defaultPath), instanceName))
+	if err != nil {
+		return ConfigSaveResult{}, err
+	}
+	instContent := ""
+	if data, err := readResolvedFileLimited(target, MaxEditableFileSize); err == nil {
+		instContent = string(data)
+	} else if _, statErr := os.Lstat(target); !os.IsNotExist(statErr) {
+		return ConfigSaveResult{}, fmt.Errorf("failed to read %s", instanceName)
+	}
+	if err := writeResolvedFile(srv, target, []byte(setCfgRawValues(instContent, changed, keys)), 0644); err != nil {
+		return ConfigSaveResult{}, fmt.Errorf("failed to save %s", instanceName)
+	}
+	go im.RefreshServerDetailsForce(srv.ID)
+	return result, nil
+}
+
+var reCfgAssignment = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
+
+// cfgRawValues returns the right-hand side (quotes included) of every key=value line, the last
+// assignment of a key winning like in bash, and the keys in the order they first appear.
+func cfgRawValues(content string) (map[string]string, []string) {
+	values := make(map[string]string)
+	var order []string
+	for _, line := range strings.Split(content, "\n") {
+		m := reCfgAssignment.FindStringSubmatch(strings.TrimRight(line, "\r"))
+		if m == nil {
+			continue
+		}
+		if _, seen := values[m[1]]; !seen {
+			order = append(order, m[1])
+		}
+		values[m[1]] = strings.TrimSpace(m[2])
+	}
+	return values, order
+}
+
+// setCfgRawValues is setCfgValues for values taken verbatim from a config line.
+func setCfgRawValues(content string, values map[string]string, order []string) string {
+	lines := strings.Split(content, "\n")
+	updated := make(map[string]bool)
+	for i, line := range lines {
+		m := reCfgAssignment.FindStringSubmatch(strings.TrimRight(line, "\r"))
+		if m == nil {
+			continue
+		}
+		if val, ok := values[m[1]]; ok {
+			lines[i] = m[1] + "=" + val
+			updated[m[1]] = true
+		}
+	}
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for _, key := range order {
+		if !updated[key] {
+			lines = append(lines, key+"="+values[key])
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // -------------------------------------------------------------
