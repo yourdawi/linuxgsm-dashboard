@@ -128,7 +128,7 @@ Configuration of the LinuxGSM alert channels Discord, Telegram, e-mail (SMTP), M
 
 - A 64-bit Linux host with systemd (x86_64; the dashboard also runs on ARM64, but most LinuxGSM game servers need x86_64). The installer supports Debian/Ubuntu, RHEL/CentOS/AlmaLinux/Rocky, Arch and openSUSE; LinuxGSM game dependencies are installed automatically on Debian/Ubuntu and RHEL-based systems, on the others LinuxGSM lists missing packages during the game server installation. Signature checks in the installer need OpenSSL 3 (older systems fall back to the checksum).
 - Root privileges. The dashboard creates Linux users and runs commands as the game server users via `runuser`.
-- Only for builds from source: Git and Go 1.20 or newer. Go 1.18 and 1.19 can build the project as well, but without the per-request timeouts described under [Security](#security).
+- Only for builds from source: Git and Go 1.27 or newer. The installer does not use the distribution's Go package for this: it downloads the current official Go release from go.dev, checks its SHA-256 checksum, builds with it and removes it again.
 
 **Docker:**
 
@@ -179,7 +179,7 @@ During an installation the installer:
 
 1. checks the architecture and warns if the host has less than 2 GB of RAM,
 2. asks for the port on a new installation (an update keeps the current port) and checks that it is free,
-3. installs missing tools (curl and sudo; Git and Go only for builds from source) and the LinuxGSM game dependencies, and records which packages it installed,
+3. installs missing tools (curl and sudo; Git only for builds from source, which use a temporary official Go release) and the LinuxGSM game dependencies, and records which packages it installed,
 4. installs the binary to `/opt/lgsm-dashboard/lgsm-dashboard` and keeps the previous one as `lgsm-dashboard.old`,
 5. writes the systemd service `lgsm-dashboard` (with `ProtectSystem=true` and a restricted capability set),
 6. optionally opens the port in an active UFW or firewalld firewall (new installations only),
@@ -468,8 +468,8 @@ Updating with the installer (option 1) works as well and does the same checks.
 
 When upgrading from version 1.0.7 or older:
 
-- the old update button compiles the new version from source one last time; afterwards the dashboard reports the version `dev` and offers the signed release, which switches it to the release binaries,
-- alternatively run the installer once,
+- the old update button compiles the new version from source one last time with the Go installed on the system; afterwards the dashboard reports the version `dev` and offers the signed release, which switches it to the release binaries. This needs Go 1.27, or Go 1.21 or newer that is allowed to download the required Go version itself (`GOTOOLCHAIN=auto`, the default). With an older Go the build fails and the running version is kept,
+- in that case, or alternatively, run the installer once,
 - all users are logged out once,
 - users who changed cron schedules or notifications before need the new `schedule` or `alerts` permission.
 

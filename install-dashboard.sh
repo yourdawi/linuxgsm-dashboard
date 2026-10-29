@@ -7,6 +7,8 @@
 #
 # Installation modes:
 #   (default)      latest signed release binary from GitHub (no Go or Git needed)
+#                  Source builds use the installed Go if it is new enough, otherwise a temporary
+#                  official Go release from go.dev (checksum verified, removed after the build).
 #   --source       build from the main branch (development build)
 #   --dev          build from the dev branch (development build)
 #   --local        build from the current directory (for developers)
@@ -344,6 +346,92 @@ fetch_release_binary() {
 }
 
 # ------------------------------------------------------------------
+# Go toolchain for builds from source
+# ------------------------------------------------------------------
+
+# Go binary used for the build and the temporary directory of a downloaded Go release.
+GO_BIN=""
+GO_WORK=""
+
+# Prints the minimum Go version from the go directive of $1/go.mod (for example 1.27).
+required_go_version() {
+    sed -n -E 's/^go[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?)[[:space:]]*$/\1/p' "$1/go.mod" | head -n1
+}
+
+# version_at_least <have> <want>
+version_at_least() {
+    [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]
+}
+
+# Sets GO_BIN to a Go of at least version $1: the Go installed on the system when it is new
+# enough, otherwise the current official release from go.dev, checked against the SHA-256
+# checksum go.dev publishes and unpacked into a temporary directory (removed by cleanup_go).
+# Distribution packages are not used because they are often several releases behind.
+prepare_go() {
+    local required=$1 have arch entry version sha file
+    if command -v go &> /dev/null; then
+        have=$(cd / && GOTOOLCHAIN=local go env GOVERSION 2>/dev/null)
+        have=${have#go}
+        if [ -n "$have" ] && version_at_least "$have" "$required"; then
+            GO_BIN=$(command -v go)
+            echo -e "${CYAN}[SYS] Using the installed Go $have.${NC}" >&2
+            return 0
+        fi
+        echo -e "${YELLOW}[SYS] The installed Go ${have:-(unknown version)} is older than $required, using the official Go release instead.${NC}" >&2
+    fi
+
+    arch=$(release_asset_arch)
+    if [ -z "$arch" ]; then
+        echo -e "${RED}[ERROR] No official Go release for architecture $(uname -m).${NC}" >&2
+        return 1
+    fi
+    # The list holds the stable releases, newest first. The first archive for this platform is
+    # the current release.
+    entry=$(download "https://go.dev/dl/?mode=json" /dev/stdout 2>/dev/null | tr -d ' \t\r\n' |
+        grep -o "\"filename\":\"go[0-9.]*\.linux-$arch\.tar\.gz\"[^}]*\"kind\":\"archive\"" | head -n1)
+    version=$(sed -E 's/.*"version":"go([0-9.]+)".*/\1/' <<< "$entry")
+    sha=$(sed -E 's/.*"sha256":"([0-9a-f]{64})".*/\1/' <<< "$entry")
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || ! [[ "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+        echo -e "${RED}[ERROR] Could not determine the current Go release from go.dev.${NC}" >&2
+        return 1
+    fi
+    if ! version_at_least "$version" "$required"; then
+        echo -e "${RED}[ERROR] The current Go release $version is older than the required Go $required.${NC}" >&2
+        return 1
+    fi
+
+    GO_WORK=$(mktemp -d)
+    file="go$version.linux-$arch.tar.gz"
+    echo -e "${CYAN}[SYS] Downloading Go $version ($file)...${NC}" >&2
+    if ! download "https://go.dev/dl/$file" "$GO_WORK/$file"; then
+        echo -e "${RED}[ERROR] Download of Go $version failed.${NC}" >&2
+        cleanup_go
+        return 1
+    fi
+    if ! echo "$sha  $GO_WORK/$file" | sha256sum -c --status -; then
+        echo -e "${RED}[ERROR] Checksum mismatch for $file. Aborting.${NC}" >&2
+        cleanup_go
+        return 1
+    fi
+    if ! tar --no-same-owner -C "$GO_WORK" -xzf "$GO_WORK/$file"; then
+        echo -e "${RED}[ERROR] Unpacking $file failed.${NC}" >&2
+        cleanup_go
+        return 1
+    fi
+    rm -f "${GO_WORK:?}/$file"
+    GO_BIN="$GO_WORK/go/bin/go"
+    echo -e "${GREEN}[OK] Go $version verified.${NC}" >&2
+}
+
+# Removes a downloaded Go release including its module and build cache.
+cleanup_go() {
+    if [ -n "$GO_WORK" ]; then
+        rm -rf "$GO_WORK"
+    fi
+    GO_WORK=""
+}
+
+# ------------------------------------------------------------------
 # Source build
 # ------------------------------------------------------------------
 
@@ -375,9 +463,27 @@ build_from_source() {
         version="dev-$source-$(git -C "$src" rev-parse --short HEAD)"
     fi
 
+    local required
+    required=$(required_go_version "$src")
+    if [ -z "$required" ]; then
+        echo -e "${RED}[ERROR] go.mod of the source has no go directive.${NC}" >&2
+        return 1
+    fi
+    prepare_go "$required" || return 1
+
     echo -e "${YELLOW}[SYS] Compiling $version (this can take a minute)...${NC}" >&2
-    if ! (cd "$src" && go build -trimpath -ldflags "-X main.Version=$version" -o "$target" .) >&2; then
-        echo -e "${RED}[ERROR] Compilation failed. Go $(go env GOVERSION 2>/dev/null) is installed; Go 1.20 or newer is recommended.${NC}" >&2
+    # GOTOOLCHAIN=local: never switch to yet another downloaded toolchain. A downloaded Go keeps
+    # its module and build cache in its temporary directory, so nothing stays behind.
+    local build_ok="true"
+    if [ -n "$GO_WORK" ]; then
+        (cd "$src" && GOTOOLCHAIN=local GOPATH="$GO_WORK/gopath" GOCACHE="$GO_WORK/cache" \
+            "$GO_BIN" build -trimpath -ldflags "-X main.Version=$version" -o "$target" .) >&2 || build_ok="false"
+    else
+        (cd "$src" && GOTOOLCHAIN=local "$GO_BIN" build -trimpath -ldflags "-X main.Version=$version" -o "$target" .) >&2 || build_ok="false"
+    fi
+    cleanup_go
+    if [ "$build_ok" != "true" ]; then
+        echo -e "${RED}[ERROR] Compilation failed.${NC}" >&2
         return 1
     fi
     echo "$version"
@@ -556,11 +662,6 @@ do_install() {
     # 3. Tools
     STATE_CURL_PREEXISTED=$(track_tool curl "$STATE_CURL_PREEXISTED")
     STATE_SUDO_PREEXISTED=$(track_tool sudo "$STATE_SUDO_PREEXISTED")
-    local go_pkg="golang"
-    if [ "$OS_TYPE" == "arch" ] || [ "$OS_TYPE" == "alpine" ] || [ "$OS_TYPE" == "suse" ]; then
-        go_pkg="go"
-    fi
-
     # shellcheck disable=SC2206
     local installed_packages=($STATE_INSTALLED_DEPS)
     add_installed() {
@@ -573,20 +674,13 @@ do_install() {
     # LinuxGSM's dependency installer needs sudo (granted temporarily during game installation).
     is_package_installed sudo || command -v sudo &> /dev/null || { install_package sudo; add_installed sudo; }
 
+    # Go is not installed as a package: build_from_source uses a temporary official Go release
+    # unless the system already has a new enough Go.
     if [ "$mode" != "release" ]; then
         STATE_GIT_PREEXISTED=$(track_tool git "$STATE_GIT_PREEXISTED")
-        STATE_GO_PREEXISTED=$(track_tool go "$STATE_GO_PREEXISTED")
         if [ "$mode" != "local" ] && ! command -v git &> /dev/null; then
             install_package git
             add_installed git
-        fi
-        if ! command -v go &> /dev/null; then
-            install_package "$go_pkg"
-            add_installed "$go_pkg"
-        fi
-        if ! command -v go &> /dev/null; then
-            echo -e "${RED}[ERROR] Go could not be installed. Aborting.${NC}"
-            return 1
         fi
     fi
 

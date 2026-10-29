@@ -1335,10 +1335,11 @@ func uploadErrorStatus(err error) int {
 	return http.StatusBadRequest
 }
 
-// isBodyTooLarge detects the error of http.MaxBytesReader. The message is matched instead of the
-// http.MaxBytesError type, which only exists since Go 1.19 (distribution Go may be older).
+// isBodyTooLarge detects the error of http.MaxBytesReader. The message is matched as well because
+// some callers wrap the error with %v, which hides the http.MaxBytesError type.
 func isBodyTooLarge(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "http: request body too large")
+	var tooLarge *http.MaxBytesError
+	return errors.As(err, &tooLarge) || err != nil && strings.Contains(err.Error(), "http: request body too large")
 }
 
 func (c serverCtx) uploadBackup() {
