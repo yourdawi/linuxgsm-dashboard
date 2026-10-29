@@ -20,12 +20,12 @@ type AgentController struct {
 
 // NewAgentController loads the node registry. When nodes exist, the CA is loaded right away so
 // they can reconnect.
-func NewAgentController(configDir string, logf func(format string, args ...interface{})) (*AgentController, error) {
+func NewAgentController(configDir, version string, logf func(format string, args ...interface{})) (*AgentController, error) {
 	nodes, err := NewNodeRegistry(configDir)
 	if err != nil {
 		return nil, err
 	}
-	c := &AgentController{Nodes: nodes, Hub: NewAgentHub(nodes, logf), configDir: configDir, logf: logf}
+	c := &AgentController{Nodes: nodes, Hub: NewAgentHub(nodes, version, logf), configDir: configDir, logf: logf}
 	if len(nodes.Nodes()) > 0 {
 		if _, err := c.Gateway(true); err != nil {
 			return nil, err

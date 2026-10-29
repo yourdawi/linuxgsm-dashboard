@@ -187,7 +187,8 @@ func TestRBACMatrixAllServerRoutes(t *testing.T) {
 	other := e.login("other")
 	admin := e.login("admin2")
 
-	for key, perm := range serverRoutes {
+	for key, policy := range serverRoutes {
+		perm := policy.perm
 		method, path := routeRequest(key)
 
 		// A user assigned to a different server is always denied.

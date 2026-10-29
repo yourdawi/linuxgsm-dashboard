@@ -103,6 +103,22 @@ func NewAuthManager(configDir string) (*AuthManager, error) {
 	return am, nil
 }
 
+// NewAuditOnlyAuthManager is used by agents: they have no users and no logins, but keep their
+// own audit log (audit_log.json in configDir) of what the controller did on the node.
+func NewAuditOnlyAuthManager(configDir string) (*AuthManager, error) {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return nil, err
+	}
+	_ = os.Chmod(configDir, 0700)
+	return &AuthManager{
+		configPath: filepath.Join(configDir, "config.json"),
+		sessions:   make(map[string]Session),
+		challenges: make(map[string]loginChallenge),
+		setups:     make(map[string]pendingSetup),
+		now:        time.Now,
+	}, nil
+}
+
 func (am *AuthManager) GetPort() int {
 	am.mu.RLock()
 	defer am.mu.RUnlock()

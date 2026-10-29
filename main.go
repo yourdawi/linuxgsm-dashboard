@@ -19,10 +19,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/skip2/go-qrcode"
@@ -177,7 +181,7 @@ func main() {
 	metrics := backend.NewSystemMetricsCollector()
 	metrics.ProcessStats = instances.ProcessStats
 
-	agents, err := backend.NewAgentController(*configDirFlag, func(format string, args ...interface{}) {
+	agents, err := backend.NewAgentController(*configDirFlag, Version, func(format string, args ...interface{}) {
 		fmt.Printf(format+"\n", args...)
 	})
 	if err != nil {
@@ -254,6 +258,10 @@ type app struct {
 
 	agents    *backend.AgentController // nodes (multi-node)
 	agentPort int                      // direct agent port, 0 when disabled
+
+	// Agent mode: the app serves a controller through the tunnel instead of users.
+	agentMode   bool
+	agentPolicy atomic.Pointer[backend.AgentPolicy]
 
 	secureCookies  bool  // always set the Secure flag on cookies
 	trustProxy     bool  // honour X-Forwarded-For / X-Forwarded-Proto from a reverse proxy
@@ -335,6 +343,12 @@ func writeAuthzError(w http.ResponseWriter, err error) {
 
 // clientIP returns the address used for rate limiting and audit logs.
 func (a *app) clientIP(r *http.Request) string {
+	if a.agentMode {
+		if ip := net.ParseIP(r.Header.Get(backend.AgentActorIPHeader)); ip != nil {
+			return ip.String()
+		}
+		return "controller"
+	}
 	if a.trustProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			first := strings.TrimSpace(strings.Split(xff, ",")[0])
@@ -357,8 +371,17 @@ func (a *app) isHTTPS(r *http.Request) bool {
 	return a.trustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-// currentUser resolves the logged in user from the session cookie.
+// currentUser resolves the logged in user from the session cookie. On an agent every request
+// comes from the authenticated controller through the tunnel; the user it acts for is only
+// recorded for the audit log, the controller has already checked that user's permissions.
 func (a *app) currentUser(r *http.Request) (backend.User, string, error) {
+	if a.agentMode {
+		actor := r.Header.Get(backend.AgentActorHeader)
+		if !isValidUsername(actor) {
+			actor = "unknown"
+		}
+		return backend.User{Username: "controller:" + actor, Role: backend.RoleAdmin}, "", nil
+	}
 	cookie, err := r.Cookie(backend.SessionCookieName)
 	if err != nil {
 		return backend.User{}, "", backend.ErrUnauthenticated
@@ -832,6 +855,17 @@ func (a *app) handleChangePassword(w http.ResponseWriter, r *http.Request, user 
 
 func (a *app) visibleServers(user backend.User) []backend.GameServerInstance {
 	servers := a.inst.GetInstances()
+	if a.agentMode {
+		if allowed := a.policy().Servers; len(allowed) > 0 {
+			filtered := []backend.GameServerInstance{}
+			for _, srv := range servers {
+				if slices.Contains(allowed, srv.ID) {
+					filtered = append(filtered, srv)
+				}
+			}
+			servers = filtered
+		}
+	}
 	if user.IsAdmin() {
 		return servers
 	}
@@ -949,6 +983,16 @@ func (a *app) handleBulk(w http.ResponseWriter, r *http.Request, user backend.Us
 		writeError(w, http.StatusBadRequest, "Invalid bulk payload")
 		return
 	}
+	if a.agentMode {
+		if !a.agentAllows(w, backend.ActionAccess(payload.Action)) {
+			return
+		}
+		for _, id := range payload.ServerIDs {
+			if !a.agentAllowsServer(w, id) {
+				return
+			}
+		}
+	}
 
 	// Authorize EVERY server before anything is executed; one denied server rejects the request.
 	seen := make(map[string]bool)
@@ -979,58 +1023,66 @@ func (a *app) handleBulk(w http.ResponseWriter, r *http.Request, user backend.Us
 // permByAction marks routes whose permission depends on the requested LinuxGSM action.
 const permByAction = "by-action"
 
+// routePolicy is what a server scoped route requires: the user permission (checked by the
+// dashboard the user is logged in to) and the access class (checked by an agent against its
+// access mode, see backend.AgentModeAllows).
+type routePolicy struct {
+	perm   string
+	access string
+}
+
 // serverRoutes is the central RBAC policy for server scoped endpoints:
-// "<route>[/<sub>] <METHOD>" -> required permission.
-var serverRoutes = map[string]string{
-	"delete POST":               backend.PermAdmin,
-	"portcheck GET":             backend.PermView,
-	"action POST":               permByAction,
-	"console GET":               backend.PermConsole,
-	"console/send POST":         backend.PermConsole,
-	"rcon POST":                 backend.PermConsole,
-	"configs GET":               backend.PermConfig,
-	"configs/file GET":          backend.PermConfig,
-	"configs/file POST":         backend.PermConfig,
-	"tag POST":                  backend.PermAdmin,
-	"cron GET":                  backend.PermView,
-	"cron POST":                 backend.PermSchedule,
-	"cron/install POST":         backend.PermAdmin,
-	"backups GET":               backend.PermBackup,
-	"backups/delete POST":       backend.PermBackup,
-	"backups/upload POST":       backend.PermBackup,
-	"backups/download GET":      backend.PermBackup,
-	"backups/restore POST":      backend.PermBackup,
-	"backups/settings GET":      backend.PermBackup,
-	"backups/settings POST":     backend.PermBackup,
-	"alerts GET":                backend.PermAlerts,
-	"alerts POST":               backend.PermAlerts,
-	"systemd/install POST":      backend.PermAdmin,
-	"files GET":                 backend.PermFiles,
-	"files POST":                backend.PermFiles,
-	"files/download GET":        backend.PermFiles,
-	"files/content GET":         backend.PermFiles,
-	"files/upload POST":         backend.PermFiles,
-	"mods GET":                  backend.PermView,
-	"stopmode GET":              backend.PermView,
-	"stopmode POST":             backend.PermAdmin,
-	"clone POST":                backend.PermAdmin,
-	"cloudbackup/settings GET":  backend.PermBackup,
-	"cloudbackup/settings POST": backend.PermAdmin,
-	"cloudbackup/sync POST":     backend.PermBackup,
+// "<route>[/<sub>] <METHOD>" -> required permission and access class.
+var serverRoutes = map[string]routePolicy{
+	"delete POST":               {backend.PermAdmin, backend.AccessWrite},
+	"portcheck GET":             {backend.PermView, backend.AccessRead},
+	"action POST":               {permByAction, backend.AccessByAction},
+	"console GET":               {backend.PermConsole, backend.AccessRead},
+	"console/send POST":         {backend.PermConsole, backend.AccessWrite},
+	"rcon POST":                 {backend.PermConsole, backend.AccessWrite},
+	"configs GET":               {backend.PermConfig, backend.AccessRead},
+	"configs/file GET":          {backend.PermConfig, backend.AccessRead},
+	"configs/file POST":         {backend.PermConfig, backend.AccessWrite},
+	"tag POST":                  {backend.PermAdmin, backend.AccessWrite},
+	"cron GET":                  {backend.PermView, backend.AccessRead},
+	"cron POST":                 {backend.PermSchedule, backend.AccessWrite},
+	"cron/install POST":         {backend.PermAdmin, backend.AccessWrite},
+	"backups GET":               {backend.PermBackup, backend.AccessRead},
+	"backups/delete POST":       {backend.PermBackup, backend.AccessWrite},
+	"backups/upload POST":       {backend.PermBackup, backend.AccessWrite},
+	"backups/download GET":      {backend.PermBackup, backend.AccessRead},
+	"backups/restore POST":      {backend.PermBackup, backend.AccessWrite},
+	"backups/settings GET":      {backend.PermBackup, backend.AccessRead},
+	"backups/settings POST":     {backend.PermBackup, backend.AccessWrite},
+	"alerts GET":                {backend.PermAlerts, backend.AccessRead},
+	"alerts POST":               {backend.PermAlerts, backend.AccessWrite},
+	"systemd/install POST":      {backend.PermAdmin, backend.AccessWrite},
+	"files GET":                 {backend.PermFiles, backend.AccessRead},
+	"files POST":                {backend.PermFiles, backend.AccessWrite},
+	"files/download GET":        {backend.PermFiles, backend.AccessRead},
+	"files/content GET":         {backend.PermFiles, backend.AccessRead},
+	"files/upload POST":         {backend.PermFiles, backend.AccessWrite},
+	"mods GET":                  {backend.PermView, backend.AccessRead},
+	"stopmode GET":              {backend.PermView, backend.AccessRead},
+	"stopmode POST":             {backend.PermAdmin, backend.AccessWrite},
+	"clone POST":                {backend.PermAdmin, backend.AccessWrite},
+	"cloudbackup/settings GET":  {backend.PermBackup, backend.AccessRead},
+	"cloudbackup/settings POST": {backend.PermAdmin, backend.AccessWrite},
+	"cloudbackup/sync POST":     {backend.PermBackup, backend.AccessWrite},
 }
 
 // serverRoutePermission looks up the policy. status is 404 for unknown routes and 405 when the
 // route exists with a different method.
-func serverRoutePermission(route, method string) (perm string, status int) {
+func serverRoutePermission(route, method string) (policy routePolicy, status int) {
 	if p, ok := serverRoutes[route+" "+method]; ok {
 		return p, http.StatusOK
 	}
 	for key := range serverRoutes {
 		if strings.HasPrefix(key, route+" ") {
-			return "", http.StatusMethodNotAllowed
+			return routePolicy{}, http.StatusMethodNotAllowed
 		}
 	}
-	return "", http.StatusNotFound
+	return routePolicy{}, http.StatusNotFound
 }
 
 func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
@@ -1046,7 +1098,7 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 		route += "/" + parts[4]
 	}
 
-	perm, status := serverRoutePermission(route, r.Method)
+	policy, status := serverRoutePermission(route, r.Method)
 	if status != http.StatusOK {
 		if status == http.StatusMethodNotAllowed {
 			http.Error(w, "Method not allowed", status)
@@ -1056,12 +1108,19 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 		return
 	}
 
-	authPerm := perm
-	if perm == permByAction {
+	authPerm := policy.perm
+	if policy.perm == permByAction {
 		authPerm = backend.PermView // refined below once the action is known
+	}
+	if a.agentMode && !a.agentAllowsServer(w, serverID) {
+		return
 	}
 	if err := backend.AuthorizeServerAction(&user, serverID, authPerm, a.inst.ServerExists); err != nil {
 		writeAuthzError(w, err)
+		return
+	}
+	// On an agent the access mode applies on top (the action is checked in runAction).
+	if a.agentMode && policy.access != backend.AccessByAction && !a.agentAllows(w, policy.access) {
 		return
 	}
 
@@ -1069,7 +1128,7 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 	switch route {
 	case "delete":
 		a.auth.LogAudit(user.Username, ctx.ip, "SERVER_DELETE", "Deleted server", serverID)
-		if a.inst.DeleteServer(w, r, serverID) {
+		if a.inst.DeleteServer(w, r, serverID) && !a.agentMode {
 			// A later server may get the same ID; it must not inherit these permissions.
 			if err := a.auth.RemoveServerFromUsers(serverID); err != nil {
 				fmt.Printf("[WARNING] Failed to remove %s from user permissions: %v\n", serverID, err)
@@ -1173,6 +1232,9 @@ func (c serverCtx) runAction() {
 	}
 	if err := backend.AuthorizeServerAction(&c.user, c.serverID, perm, nil); err != nil {
 		writeAuthzError(c.w, err)
+		return
+	}
+	if c.app.agentMode && !c.app.agentAllows(c.w, backend.ActionAccess(payload.Action)) {
 		return
 	}
 	c.audit("ACTION_"+strings.ToUpper(payload.Action), fmt.Sprintf("Executed action %s", payload.Action))
@@ -1872,7 +1934,7 @@ func (a *app) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 
 type nodeView struct {
 	backend.Node
-	Online bool `json:"online"`
+	backend.NodeStatus
 }
 
 // GET /api/admin/nodes lists the nodes; POST creates a pairing command for a new node (name,
@@ -1884,7 +1946,13 @@ func (a *app) handleNodes(w http.ResponseWriter, r *http.Request, admin backend.
 		views := make([]nodeView, 0, len(nodes))
 		for _, n := range nodes {
 			n.Keys, n.MachineID = nil, ""
-			views = append(views, nodeView{Node: n, Online: a.agents.Hub.Online(n.ID)})
+			st := a.agents.Hub.Status(n.ID)
+			if st.Hello != nil {
+				hello := *st.Hello
+				hello.MachineID = ""
+				st.Hello = &hello
+			}
+			views = append(views, nodeView{Node: n, NodeStatus: st})
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": views, "agent_port": a.agentPort})
 
@@ -1986,11 +2054,194 @@ func (a *app) handleNodeDelete(w http.ResponseWriter, r *http.Request, admin bac
 	writeOK(w)
 }
 
-// runAgentCommand implements `lgsm-dashboard agent <join|status|mode>`.
+// -------------------------------------------------------------
+// Agent mode
+// -------------------------------------------------------------
+
+// policy returns the access mode and local restrictions of this node (agent mode).
+func (a *app) policy() backend.AgentPolicy {
+	if p := a.agentPolicy.Load(); p != nil {
+		return *p
+	}
+	return backend.AgentPolicy{Mode: backend.AgentModeReadOnly}
+}
+
+// agentAllows checks an access class against the node's access mode and answers 403 if it is
+// not allowed.
+func (a *app) agentAllows(w http.ResponseWriter, class string) bool {
+	if backend.AgentModeAllows(a.policy().Mode, class) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "This node is read-only (start, stop and restart are allowed)")
+	return false
+}
+
+// agentAllowsServer applies the node's server list; servers outside of it do not exist for the
+// controller.
+func (a *app) agentAllowsServer(w http.ResponseWriter, serverID string) bool {
+	if allowed := a.policy().Servers; len(allowed) == 0 || slices.Contains(allowed, serverID) {
+		return true
+	}
+	writeError(w, http.StatusNotFound, "Server not found")
+	return false
+}
+
+// Access classes of agent routes that are not decided per method.
+const (
+	accessInHandler  = "in-handler"  // server routes and bulk: decided per route or action
+	accessSelfUpdate = "self-update" // allowed by allow_self_update in every access mode
+)
+
+// agentRoute is one endpoint of the agent API. access maps each allowed method to its access
+// class; other methods are refused.
+type agentRoute struct {
+	pattern string
+	access  map[string]string
+	handler http.HandlerFunc
+}
+
+// agentRouteTable lists everything an agent serves. Users, logins, 2FA, the UI and the game
+// list exist only on the controller.
+func (a *app) agentRouteTable() []agentRoute {
+	read := map[string]string{http.MethodGet: backend.AccessRead}
+	readWrite := map[string]string{http.MethodGet: backend.AccessRead, http.MethodPut: backend.AccessWrite, http.MethodPost: backend.AccessWrite}
+	return []agentRoute{
+		{backend.AgentHelloPath, read, a.handleAgentHello},
+		{"/api/servers", read, a.requireAuth(a.handleListServers)},
+		{"/api/servers/bulk", map[string]string{http.MethodPost: accessInHandler}, a.requireAuth(a.handleBulk)},
+		{"/api/servers/", map[string]string{http.MethodGet: accessInHandler, http.MethodPost: accessInHandler}, a.requireAuth(a.handleServer)},
+		{"/api/system/stats", read, a.requireAuth(a.handleStats)},
+		{"/api/system/info", read, a.requireAuth(a.handleInfo)},
+		{"/api/system/firewall", read, a.requireAdmin(a.handleFirewallStatus)},
+		{"/api/system/firewall/open", map[string]string{http.MethodPost: backend.AccessWrite}, a.agentFirewallAllowed(a.requireAdmin(a.handleFirewallOpen))},
+		{"/api/games/install", map[string]string{http.MethodPost: backend.AccessWrite}, a.requireAdmin(a.handleInstall)},
+		{"/api/admin/server-paths", readWrite, a.requireAdmin(a.handleServerPaths)},
+		{"/api/admin/timezone", readWrite, a.requireAdmin(a.handleTimeZone)},
+		{"/api/admin/update/check", read, a.requireAdmin(a.handleUpdateCheck)},
+		{"/api/admin/update/trigger", map[string]string{http.MethodPost: accessSelfUpdate}, a.requireAdmin(a.handleUpdateTrigger)},
+		{"/fastdl/", map[string]string{http.MethodGet: backend.AccessRead, http.MethodHead: backend.AccessRead}, a.handleFastDL},
+	}
+}
+
+func (a *app) agentFirewallAllowed(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !a.policy().AllowFirewall {
+			writeError(w, http.StatusForbidden, "Opening firewall ports is disabled on this node (allow_firewall in agent-policy.json)")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// agentRoutes is the handler an agent serves on its tunnel.
+func (a *app) agentRoutes() http.Handler {
+	mux := http.NewServeMux()
+	for _, route := range a.agentRouteTable() {
+		mux.HandleFunc(route.pattern, func(w http.ResponseWriter, r *http.Request) {
+			class, ok := route.access[r.Method]
+			if !ok {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			switch class {
+			case accessInHandler:
+			case accessSelfUpdate:
+				if !a.policy().AllowSelfUpdate {
+					writeError(w, http.StatusForbidden, "Updates from the dashboard are disabled on this node (allow_self_update in agent-policy.json)")
+					return
+				}
+			default:
+				if !a.agentAllows(w, class) {
+					return
+				}
+			}
+			route.handler(w, r)
+		})
+	}
+	return deadlines(mux)
+}
+
+// GET /agent/v1/hello describes this node to the controller.
+func (a *app) handleAgentHello(w http.ResponseWriter, r *http.Request) {
+	p := a.policy()
+	hostname, _ := os.Hostname()
+	servers := p.Servers
+	if servers == nil {
+		servers = []string{}
+	}
+	writeJSON(w, http.StatusOK, backend.AgentHello{
+		Version:         Version,
+		Protocol:        backend.AgentProtocolVersion,
+		Hostname:        hostname,
+		MachineID:       backend.MachineID(),
+		Capabilities:    a.inst.Capabilities(),
+		Mode:            p.Mode,
+		AllowFirewall:   p.AllowFirewall,
+		AllowSelfUpdate: p.AllowSelfUpdate,
+		Servers:         servers,
+	})
+}
+
+// runAgent is `lgsm-dashboard agent run`: the node's game servers are managed with the same
+// runtime as a dashboard, but served only to the controller through the tunnel.
+func runAgent(configDir string, maxUploadBytes int64) int {
+	if _, err := backend.LoadAgentIdentity(configDir); err != nil {
+		fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
+		return 1
+	}
+	rt, err := backend.SelectRuntime(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
+		return 1
+	}
+	fmt.Printf("[SYS] Runtime: %s\n", rt.Name())
+	caps := rt.Capabilities()
+	audit, err := backend.NewAuditOnlyAuthManager(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
+		return 1
+	}
+	instances := backend.NewInstanceManager(configDir, rt)
+	metrics := backend.NewSystemMetricsCollector()
+	metrics.ProcessStats = instances.ProcessStats
+	var updater *backend.Updater
+	if caps.SelfUpdate {
+		updater = &backend.Updater{Repo: releaseRepo, PublicKey: releasePublicKey, CurrentVersion: Version}
+	}
+	a := &app{
+		auth:           audit,
+		inst:           instances,
+		metrics:        metrics,
+		updater:        updater,
+		configDir:      configDir,
+		maxUploadBytes: maxUploadBytes,
+		agentMode:      true,
+	}
+	load := func() (backend.AgentIdentity, error) {
+		// The policy is re-read for every connection, so `agent mode` applies on reconnect.
+		policy := backend.LoadAgentPolicy(configDir)
+		a.agentPolicy.Store(&policy)
+		return backend.LoadAgentIdentity(configDir)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err = backend.RunAgent(ctx, load, a.agentRoutes(), func(format string, args ...interface{}) {
+		fmt.Printf(format+"\n", args...)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runAgentCommand implements `lgsm-dashboard agent <join|run|status|mode>`.
 func runAgentCommand(args []string) int {
 	usage := func() int {
 		fmt.Fprintln(os.Stderr, "Usage:")
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent join <dashboard-url> --token <token> --ca-fingerprint <sha256:...> --mode read-only|read-write [--insecure-proxy-tls] [--config-dir <dir>]")
+		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent run [--config-dir <dir>] [--max-upload-mb <MiB>]")
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent status [--config-dir <dir>]")
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent mode read-only|read-write [--config-dir <dir>]")
 		return 2
@@ -2038,6 +2289,16 @@ func runAgentCommand(args []string) int {
 		policy := backend.LoadAgentPolicy(*configDir)
 		fmt.Printf("[OK] Paired as node %s (%s), access mode %s.\n", cfg.NodeID, cfg.Name, policy.Mode)
 		return 0
+
+	case "run":
+		maxUploadMB := fset.Int64("max-upload-mb", 4096, "Maximum size of backup and file manager uploads in MiB")
+		if err := fset.Parse(args); err != nil || len(positional)+fset.NArg() > 0 {
+			return usage()
+		}
+		if *maxUploadMB <= 0 {
+			*maxUploadMB = 4096
+		}
+		return runAgent(*configDir, *maxUploadMB<<20)
 
 	case "status":
 		if err := fset.Parse(args); err != nil || len(positional)+fset.NArg() > 0 {

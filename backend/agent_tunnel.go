@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -190,6 +191,9 @@ func ServeAgentTunnel(conn *tls.Conn, h http.Handler, idle time.Duration) error 
 		// No IdleTimeout and ReadTimeout: the HTTP/2 server would close the idle tunnel.
 		ReadHeaderTimeout: 30 * time.Second,
 		MaxHeaderBytes:    1 << 20,
+		// A rejected or dropped tunnel is reported by RunAgent; the server's own messages
+		// ("error reading preface") would only repeat it.
+		ErrorLog: log.New(io.Discard, "", 0),
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			if state == http.StateClosed || state == http.StateHijacked {
 				l.Close()
