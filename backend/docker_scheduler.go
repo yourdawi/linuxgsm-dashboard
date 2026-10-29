@@ -30,7 +30,7 @@ func (d *DockerRuntime) scheduleFile(srv GameServerInstance) (string, error) {
 	if d.scheduleDir == "" {
 		return "", fmt.Errorf("schedules are not available: no configuration directory")
 	}
-	if !IsValidServerID(srv.ID) {
+	if !IsValidLocalServerID(srv.ID) {
 		return "", fmt.Errorf("invalid server id")
 	}
 	return filepath.Join(d.scheduleDir, srv.ID+".cron"), nil
@@ -85,7 +85,7 @@ func dueJobs(scheduleDir string, t time.Time) []scheduledJob {
 	var jobs []scheduledJob
 	for _, file := range files {
 		id := strings.TrimSuffix(filepath.Base(file), ".cron")
-		if !IsValidServerID(id) {
+		if !IsValidLocalServerID(id) {
 			continue
 		}
 		data, err := os.ReadFile(file)

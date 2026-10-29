@@ -4,6 +4,7 @@ package main
 // 1.0.7 self-update with `go build main.go`, which only compiles this file.
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/base64"
@@ -13,9 +14,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -25,6 +28,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -866,6 +870,7 @@ func (a *app) visibleServers(user backend.User) []backend.GameServerInstance {
 			servers = filtered
 		}
 	}
+	servers = append(servers, a.nodeServers()...)
 	if user.IsAdmin() {
 		return servers
 	}
@@ -1002,7 +1007,7 @@ func (a *app) handleBulk(w http.ResponseWriter, r *http.Request, user backend.Us
 			continue
 		}
 		seen[id] = true
-		if err := backend.AuthorizeServerAction(&user, id, perm, a.inst.ServerExists); err != nil {
+		if err := backend.AuthorizeServerAction(&user, id, perm, a.serverExists); err != nil {
 			writeAuthzError(w, err)
 			return
 		}
@@ -1013,7 +1018,7 @@ func (a *app) handleBulk(w http.ResponseWriter, r *http.Request, user backend.Us
 	for _, id := range ids {
 		a.auth.LogAudit(user.Username, ip, "BULK_"+strings.ToUpper(payload.Action), fmt.Sprintf("Executed bulk action %s", payload.Action), id)
 	}
-	writeJSON(w, http.StatusOK, a.inst.RunBulkAction(payload.Action, ids))
+	writeJSON(w, http.StatusOK, a.runBulkAcrossNodes(r, user, payload.Action, ids))
 }
 
 // -------------------------------------------------------------
@@ -1115,6 +1120,18 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 	if a.agentMode && !a.agentAllowsServer(w, serverID) {
 		return
 	}
+	if node, _ := backend.SplitServerID(serverID); node != "" {
+		if a.agentMode {
+			http.NotFound(w, r)
+			return
+		}
+		if err := backend.AuthorizeServerAction(&user, serverID, authPerm, a.serverExists); err != nil {
+			writeAuthzError(w, err)
+			return
+		}
+		a.handleNodeServer(w, r, user, serverID, route, policy)
+		return
+	}
 	if err := backend.AuthorizeServerAction(&user, serverID, authPerm, a.inst.ServerExists); err != nil {
 		writeAuthzError(w, err)
 		return
@@ -1185,6 +1202,336 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// -------------------------------------------------------------
+// Servers on nodes (multi-node)
+// -------------------------------------------------------------
+
+// serverExists knows the servers of this machine and the cached servers of the nodes.
+func (a *app) serverExists(serverID string) bool {
+	if node, _ := backend.SplitServerID(serverID); node == "" {
+		return a.inst.ServerExists(serverID)
+	}
+	if a.agents == nil {
+		return false
+	}
+	_, ok := a.agents.Hub.NodeServer(serverID)
+	return ok
+}
+
+// nodeServers returns the servers of all nodes with the tags the dashboard keeps for them.
+func (a *app) nodeServers() []backend.GameServerInstance {
+	if a.agents == nil || a.agentMode {
+		return nil
+	}
+	servers := a.agents.Hub.NodeServers()
+	if len(servers) == 0 {
+		return servers
+	}
+	tags := a.inst.ServerTags()
+	for i := range servers {
+		servers[i].Tag = tags[servers[i].ID]
+	}
+	return servers
+}
+
+// nodeTunnel returns the tunnel of a node that may receive forwarded requests, or answers the
+// request with the reason why not.
+func (a *app) nodeTunnel(w http.ResponseWriter, nodeID string) (*backend.AgentTunnelClient, backend.NodeStatus, bool) {
+	st := a.agents.Hub.Status(nodeID)
+	client, ok := a.agents.Hub.Tunnel(nodeID)
+	switch {
+	case !ok || !st.Online:
+		writeError(w, http.StatusServiceUnavailable, "The node is offline")
+		return nil, st, false
+	case !st.Compatible:
+		msg := "The node needs an update"
+		if st.Problem != "" {
+			msg = "The node cannot be used: " + st.Problem
+		}
+		writeError(w, http.StatusConflict, msg)
+		return nil, st, false
+	}
+	return client, st, true
+}
+
+// Routes whose request body is an upload (no read deadline, upload size limit).
+var nodeUploadRoutes = map[string]bool{"backups/upload": true, "files/upload": true}
+
+// handleNodeServer handles a server scoped request for a server on a node. The user is already
+// authorized for the route; the action of action requests, the node's access mode and the
+// node's state are checked here before the request is forwarded through the tunnel.
+func (a *app) handleNodeServer(w http.ResponseWriter, r *http.Request, user backend.User, serverID, route string, policy routePolicy) {
+	nodeID, localID := backend.SplitServerID(serverID)
+	ip := a.clientIP(r)
+
+	// Tags are kept by the dashboard, not by the node.
+	if route == "tag" {
+		var payload struct {
+			Tag string `json:"tag"`
+		}
+		if !decodeJSON(w, r, &payload, 16*1024) {
+			return
+		}
+		if err := a.inst.SetNodeServerTag(serverID, payload.Tag); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeOK(w)
+		return
+	}
+
+	client, st, ok := a.nodeTunnel(w, nodeID)
+	if !ok {
+		return
+	}
+
+	limit := int64(maxEditorBody)
+	if nodeUploadRoutes[route] {
+		limit = a.maxUploadBytes
+		backend.DisableReadDeadline(w)
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+
+	access := policy.access
+	if access == backend.AccessByAction {
+		// The action decides permission and access class; the body is read here and forwarded
+		// unchanged.
+		body, err := io.ReadAll(io.LimitReader(r.Body, 16*1024+1))
+		if err != nil || len(body) > 16*1024 {
+			writeError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+		var payload struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal(body, &payload) != nil {
+			writeError(w, http.StatusBadRequest, "Invalid JSON")
+			return
+		}
+		perm, known := backend.ActionPermission(payload.Action)
+		if !known {
+			writeError(w, http.StatusBadRequest, "Invalid action name")
+			return
+		}
+		if err := backend.AuthorizeServerAction(&user, serverID, perm, nil); err != nil {
+			writeAuthzError(w, err)
+			return
+		}
+		access = backend.ActionAccess(payload.Action)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+	}
+	if !backend.AgentModeAllows(st.EffectiveMode, access) {
+		writeError(w, http.StatusForbidden, "This node is read-only (start, stop and restart are allowed)")
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		a.auth.LogAudit(user.Username, ip, "NODE_REQUEST", fmt.Sprintf("%s %s on node %s", r.Method, route, nodeID), serverID)
+	}
+	a.forwardToNode(w, r, client, user, "/api/servers/"+localID+"/"+route)
+
+	switch route {
+	case "delete", "clone":
+		// The node's list changes; when the server is gone, its assignments go as well.
+		_ = a.agents.Hub.RefreshServers(nodeID)
+		if route == "delete" {
+			if _, exists := a.agents.Hub.NodeServer(serverID); !exists {
+				if err := a.auth.RemoveServerFromUsers(serverID); err != nil {
+					fmt.Printf("[WARNING] Failed to remove %s from user permissions: %v\n", serverID, err)
+				}
+				_ = a.inst.SetNodeServerTag(serverID, "")
+			}
+		}
+	}
+}
+
+// forwardToNode sends r to path on the node and streams the answer back. The request is rebuilt
+// from an allowlist of headers, and the response is treated as untrusted content.
+func (a *app) forwardToNode(w http.ResponseWriter, r *http.Request, client *backend.AgentTunnelClient, user backend.User, path string) {
+	// Answers can stream for a long time (console output, downloads, actions).
+	backend.DisableWriteDeadline(w)
+	// Whatever the node sends must never run in the dashboard's origin.
+	w.Header().Set("Content-Security-Policy", sandboxCSP)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	ip := a.clientIP(r)
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			out := pr.Out
+			out.URL = &url.URL{Scheme: "https", Host: "agent", Path: path, RawQuery: pr.In.URL.RawQuery}
+			out.Host = "agent"
+			h := http.Header{}
+			for _, k := range []string{"Content-Type", "Accept", "Accept-Language"} {
+				if v := pr.In.Header.Get(k); v != "" {
+					h.Set(k, v)
+				}
+			}
+			h.Set(backend.AgentActorHeader, user.Username)
+			h.Set(backend.AgentActorIPHeader, ip)
+			out.Header = h
+		},
+		Transport:      tunnelTransport{client},
+		FlushInterval:  -1,
+		ModifyResponse: hardenNodeResponse,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if r.Context().Err() != nil {
+				return // the browser went away
+			}
+			writeError(w, http.StatusBadGateway, "The node did not answer")
+		},
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+// runBulkAcrossNodes runs a bulk action on the servers of this machine and sends the servers of
+// each node to that node in one request. Results are keyed by the IDs the browser sent.
+func (a *app) runBulkAcrossNodes(r *http.Request, user backend.User, action string, ids []string) map[string]string {
+	var local []string
+	byNode := make(map[string][]string)
+	for _, id := range ids {
+		if node, localID := backend.SplitServerID(id); node == "" {
+			local = append(local, id)
+		} else {
+			byNode[node] = append(byNode[node], localID)
+		}
+	}
+	results := make(map[string]string, len(ids))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for node, localIDs := range byNode {
+		wg.Go(func() {
+			res := a.nodeBulk(r, user, node, action, localIDs)
+			mu.Lock()
+			maps.Copy(results, res)
+			mu.Unlock()
+		})
+	}
+	if len(local) > 0 {
+		res := a.inst.RunBulkAction(action, local)
+		mu.Lock()
+		maps.Copy(results, res)
+		mu.Unlock()
+	}
+	wg.Wait()
+	return results
+}
+
+// nodeBulk runs a bulk action on one node. Every requested server gets a result, also when the
+// node cannot be reached.
+func (a *app) nodeBulk(r *http.Request, user backend.User, nodeID, action string, localIDs []string) map[string]string {
+	out := make(map[string]string, len(localIDs))
+	fail := func(msg string) map[string]string {
+		for _, l := range localIDs {
+			out[backend.GlobalServerID(nodeID, l)] = "Error: " + msg
+		}
+		return out
+	}
+	client, online := a.agents.Hub.Tunnel(nodeID)
+	st := a.agents.Hub.Status(nodeID)
+	switch {
+	case !online || !st.Online:
+		return fail("the node is offline")
+	case !st.Compatible:
+		return fail("the node needs an update")
+	case !backend.AgentModeAllows(st.EffectiveMode, backend.ActionAccess(action)):
+		return fail("the node is read-only")
+	}
+	body, _ := json.Marshal(map[string]interface{}{"action": action, "serverIds": localIDs})
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "/api/servers/bulk", bytes.NewReader(body))
+	if err != nil {
+		return fail(err.Error())
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(backend.AgentActorHeader, user.Username)
+	req.Header.Set(backend.AgentActorIPHeader, a.clientIP(r))
+	resp, err := client.Do(req)
+	if err != nil {
+		return fail("the node did not answer")
+	}
+	defer resp.Body.Close()
+	var res map[string]string
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&res) != nil {
+		return fail(fmt.Sprintf("the node refused the request (%d)", resp.StatusCode))
+	}
+	for _, l := range localIDs {
+		msg := res[l]
+		if msg == "" {
+			msg = "Error: no result from the node"
+		}
+		out[backend.GlobalServerID(nodeID, l)] = plainText(msg, 256)
+	}
+	go func() { _ = a.agents.Hub.RefreshServers(nodeID) }()
+	return out
+}
+
+// plainText removes control characters and limits text that came from another machine.
+func plainText(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) > max {
+		s = s[:max]
+	}
+	return strings.ToValidUTF8(s, "")
+}
+
+// tunnelTransport sends proxied requests through an agent tunnel.
+type tunnelTransport struct{ client *backend.AgentTunnelClient }
+
+func (t tunnelTransport) RoundTrip(r *http.Request) (*http.Response, error) { return t.client.Do(r) }
+
+// Media types a node may answer with; anything else is delivered as a download.
+var nodeContentTypes = map[string]bool{
+	"application/json":         true,
+	"text/event-stream":        true,
+	"text/plain":               true,
+	"application/octet-stream": true,
+}
+
+// hardenNodeResponse replaces the node's response headers with a checked minimum. Cookies,
+// security headers, redirects and anything else a compromised node might send are dropped.
+func hardenNodeResponse(resp *http.Response) error {
+	in := resp.Header
+	out := http.Header{}
+
+	mediaType, params, err := mime.ParseMediaType(in.Get("Content-Type"))
+	if err != nil || !nodeContentTypes[mediaType] {
+		mediaType, params = "application/octet-stream", nil
+	}
+	ctParams := map[string]string{}
+	if cs := strings.ToLower(params["charset"]); cs == "utf-8" {
+		ctParams["charset"] = cs
+	}
+	out.Set("Content-Type", mime.FormatMediaType(mediaType, ctParams))
+	if cd := in.Get("Content-Disposition"); cd != "" {
+		if _, p, err := mime.ParseMediaType(cd); err == nil && p["filename"] != "" {
+			out.Set("Content-Disposition", attachmentDisposition(filepath.Base(p["filename"])))
+		}
+	}
+	for _, k := range []string{"Last-Modified", "ETag"} {
+		if v := in.Get(k); v != "" && len(v) < 128 {
+			out.Set(k, v)
+		}
+	}
+	out.Set("Cache-Control", "no-store")
+	resp.Header = out
+	resp.Trailer = nil
+	if mediaType == "application/json" {
+		resp.Body = limitedBody{Reader: io.LimitReader(resp.Body, 64<<20), Closer: resp.Body}
+		resp.ContentLength = -1
+	}
+	return nil
+}
+
+type limitedBody struct {
+	io.Reader
+	io.Closer
 }
 
 func langOf(r *http.Request, bodyLang string) string {
@@ -1808,6 +2155,18 @@ func (a *app) handleGameIcon(w http.ResponseWriter, r *http.Request) {
 // Administration
 // -------------------------------------------------------------
 
+func validNodeList(ids []string) bool {
+	if len(ids) > 200 {
+		return false
+	}
+	for _, id := range ids {
+		if !backend.IsValidNodeID(id) {
+			return false
+		}
+	}
+	return true
+}
+
 func validServerList(ids []string) bool {
 	if len(ids) > 1000 {
 		return false
@@ -1837,6 +2196,8 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request, admin backend.
 			Role        string   `json:"role"`
 			Servers     []string `json:"servers"`
 			Permissions []string `json:"permissions"`
+			// Nodes whose servers the user may access; nil keeps the current assignment.
+			Nodes *[]string `json:"nodes"`
 		}
 		if !decodeJSON(w, r, &payload, 64*1024) {
 			return
@@ -1847,6 +2208,10 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request, admin backend.
 		}
 		if r.Method == http.MethodPost && !isValidUsername(payload.Username) {
 			writeError(w, http.StatusBadRequest, "Invalid username format")
+			return
+		}
+		if payload.Nodes != nil && !validNodeList(*payload.Nodes) {
+			writeError(w, http.StatusBadRequest, "Invalid node list")
 			return
 		}
 		if !validServerList(payload.Servers) {
@@ -1862,6 +2227,12 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request, admin backend.
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if payload.Nodes != nil {
+			if err := a.auth.SetUserNodes(payload.Username, *payload.Nodes); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		action := "USER_CREATE"
 		if r.Method == http.MethodPut {
@@ -2049,6 +2420,13 @@ func (a *app) handleNodeDelete(w http.ResponseWriter, r *http.Request, admin bac
 	if err := a.agents.RemoveNode(payload.ID); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	// A node paired later under the same ID must not inherit assignments or tags.
+	if err := a.auth.RemoveNodeFromUsers(payload.ID); err != nil {
+		fmt.Printf("[WARNING] Failed to remove node %s from users: %v\n", payload.ID, err)
+	}
+	if err := a.inst.RemoveNodeServerTags(payload.ID); err != nil {
+		fmt.Printf("[WARNING] Failed to remove tags of node %s: %v\n", payload.ID, err)
 	}
 	a.auth.LogAudit(admin.Username, a.clientIP(r), "NODE_DELETE", "Removed node "+payload.ID, "")
 	writeOK(w)

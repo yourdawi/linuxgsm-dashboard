@@ -36,6 +36,7 @@ type AgentHub struct {
 	mu      sync.Mutex
 	tunnels map[string]*AgentTunnelClient
 	status  map[string]NodeStatus
+	servers map[string][]GameServerInstance // last known servers per node, global IDs
 }
 
 // NewAgentHub creates an empty hub. logf may be nil.
@@ -49,6 +50,7 @@ func NewAgentHub(nodes *NodeRegistry, controllerVersion string, logf func(format
 		logf:    logf,
 		tunnels: make(map[string]*AgentTunnelClient),
 		status:  make(map[string]NodeStatus),
+		servers: make(map[string][]GameServerInstance),
 	}
 }
 
@@ -69,6 +71,9 @@ func (h *AgentHub) Attach(nodeID string, client *AgentTunnelClient) {
 		if !h.handshake(nodeID, client) {
 			client.Close()
 		} else {
+			if h.Status(nodeID).Compatible {
+				go h.pollServers(nodeID, client)
+			}
 			client.KeepAlive(AgentPingInterval, AgentPingTimeout, AgentPingFailures)
 		}
 	}()
@@ -157,7 +162,7 @@ func fetchAgentHello(client *AgentTunnelClient) (AgentHello, error) {
 	}
 	servers := hello.Servers[:0]
 	for _, id := range hello.Servers {
-		if IsValidServerID(id) {
+		if IsValidLocalServerID(id) {
 			servers = append(servers, id)
 		}
 	}
@@ -180,14 +185,19 @@ func (h *AgentHub) Online(nodeID string) bool {
 	return ok
 }
 
-// Status returns the live state of a node.
+// Status returns the live state of a node. The effective mode follows changes of the node's mode
+// on the controller immediately.
 func (h *AgentHub) Status(nodeID string) NodeStatus {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	st := h.status[nodeID]
 	_, st.Online = h.tunnels[nodeID]
-	if !st.Online && st.Problem == "" {
+	h.mu.Unlock()
+	if !st.Online {
 		st.Compatible = false
+	}
+	if st.Hello != nil {
+		node, _ := h.nodes.Node(nodeID)
+		st.EffectiveMode = LowerAgentMode(node.Mode, st.Hello.Mode)
 	}
 	return st
 }
@@ -198,6 +208,7 @@ func (h *AgentHub) Disconnect(nodeID string) {
 	c := h.tunnels[nodeID]
 	delete(h.tunnels, nodeID)
 	delete(h.status, nodeID)
+	delete(h.servers, nodeID)
 	h.mu.Unlock()
 	if c != nil {
 		c.Close()

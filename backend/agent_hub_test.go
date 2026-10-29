@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -135,5 +136,30 @@ func TestAgentVersionsCompatible(t *testing.T) {
 		if got := AgentVersionsCompatible(c.controller, c.agent); got != c.want {
 			t.Errorf("AgentVersionsCompatible(%q, %q) = %v", c.controller, c.agent, got)
 		}
+	}
+}
+
+func TestSanitizeNodeServer(t *testing.T) {
+	if _, ok := sanitizeNodeServer(GameServerInstance{ID: "x~y"}, "box"); ok {
+		t.Fatal("global ID from a node accepted")
+	}
+	if _, ok := sanitizeNodeServer(GameServerInstance{ID: "<img src=x>"}, "box"); ok {
+		t.Fatal("invalid ID accepted")
+	}
+	in := GameServerInstance{
+		ID: "vhserver", User: "root;rm", Script: "../x", Name: "Valheim\x00\x1b[31m", Port: 70000,
+		CPU: math.NaN(), RAM: -3, Node: "other", NodeName: "fake", Capabilities: &Capabilities{SelfUpdate: true},
+		PIDs: []int{1}, QueryData: QueryInfo{NumPlayers: -5, Players: make([]PlayerInfo, 1000)},
+	}
+	out, ok := sanitizeNodeServer(in, "box")
+	if !ok {
+		t.Fatal("valid server dropped")
+	}
+	if out.ID != "box~vhserver" || out.Node != "box" || out.NodeName != "" || out.Capabilities != nil {
+		t.Fatalf("node fields taken from the node: %+v", out)
+	}
+	if out.User != "" || out.Script != "" || strings.ContainsAny(out.Name, "\x00\x1b") || out.Port != 0 ||
+		out.CPU != 0 || out.RAM != 0 || out.PIDs != nil || out.QueryData.NumPlayers != 0 || len(out.QueryData.Players) != 256 {
+		t.Fatalf("unsafe values kept: %+v", out)
 	}
 }

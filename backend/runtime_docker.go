@@ -131,7 +131,7 @@ func dockerInstances(containers []DockerContainer, dataDir string) []*GameServer
 		id := c.Name()
 		script := c.Labels[dockerLabelGameServer]
 		dir := filepath.ToSlash(filepath.Clean(c.Labels[dockerLabelDir]))
-		if !IsValidServerID(id) || !IsValidScriptName(script) || !IsSafeServerDir(dir) || !IsWithin(dataDir, dir) || dir == dataDir {
+		if !IsValidLocalServerID(id) || !IsValidScriptName(script) || !IsSafeServerDir(dir) || !IsWithin(dataDir, dir) || dir == dataDir {
 			continue
 		}
 		status := "stopped"
@@ -390,7 +390,7 @@ func (d *DockerRuntime) Install(ctx context.Context, req InstallRequest, logf fu
 // therefore match the original until they are changed. Stop srv first for a consistent copy.
 func (d *DockerRuntime) Clone(ctx context.Context, srv GameServerInstance, suffix string) (string, error) {
 	name := srv.ID + "-" + suffix
-	if !IsValidServerID(name) || len(name) > 63 {
+	if !IsValidLocalServerID(name) || len(name) > 63 {
 		return "", fmt.Errorf("invalid instance name")
 	}
 	if err := d.checkNewServer(ctx, name); err != nil {

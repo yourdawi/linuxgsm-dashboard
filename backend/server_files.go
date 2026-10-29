@@ -637,6 +637,31 @@ func (im *InstanceManager) saveServerTags(tags map[string]string) error {
 	return WriteFileAtomic(im.tagsPath(), data, 0600)
 }
 
+// ServerTags returns all stored tags, including those of servers on nodes (global IDs).
+func (im *InstanceManager) ServerTags() map[string]string {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	return im.loadServerTags()
+}
+
+// SetNodeServerTag stores the tag of a server on a node. The dashboard keeps these tags itself,
+// keyed by global ID; an empty tag removes it.
+func (im *InstanceManager) SetNodeServerTag(globalID string, tag string) error {
+	if node, _ := SplitServerID(globalID); node == "" || !IsValidServerID(globalID) {
+		return fmt.Errorf("not a server of a node")
+	}
+	tag = sanitizeDisplayText(tag, 64)
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	tags := im.loadServerTags()
+	if tag == "" {
+		delete(tags, globalID)
+	} else {
+		tags[globalID] = tag
+	}
+	return im.saveServerTags(tags)
+}
+
 func (im *InstanceManager) SetServerTag(serverID string, tag string) error {
 	tag = sanitizeDisplayText(tag, 64)
 
@@ -756,4 +781,22 @@ func (im *InstanceManager) SetCustomServerPaths(paths []string) ([]string, error
 
 	im.ScanInstances()
 	return clean, nil
+}
+
+// RemoveNodeServerTags removes the tags of all servers of a removed node.
+func (im *InstanceManager) RemoveNodeServerTags(nodeID string) error {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	tags := im.loadServerTags()
+	changed := false
+	for id := range tags {
+		if node, _ := SplitServerID(id); node == nodeID {
+			delete(tags, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return im.saveServerTags(tags)
 }

@@ -32,10 +32,16 @@ type GameServerInstance struct {
 	Tag         string      `json:"tag,omitempty"`
 	QueryData   QueryInfo   `json:"query_data"`
 	Disk        *DiskUsage  `json:"disk,omitempty"`
-	UID         int         `json:"-"`
-	GID         int         `json:"-"`
-	BindIP      string      `json:"-"` // "Server IP" reported by LinuxGSM details, used for queries
-	Layout      string      `json:"-"` // LayoutHost or LayoutData (see layout.go)
+	// Servers of another machine (multi-node): node ID and name, whether the node is offline (the
+	// entry is then the last known state) and the capabilities of that node's runtime.
+	Node         string        `json:"node,omitempty"`
+	NodeName     string        `json:"node_name,omitempty"`
+	NodeOffline  bool          `json:"node_offline,omitempty"`
+	Capabilities *Capabilities `json:"capabilities,omitempty"`
+	UID          int           `json:"-"`
+	GID          int           `json:"-"`
+	BindIP       string        `json:"-"` // "Server IP" reported by LinuxGSM details, used for queries
+	Layout       string        `json:"-"` // LayoutHost or LayoutData (see layout.go)
 }
 
 // QueryInfo is the live state reported by the game server itself (see query.go).
@@ -192,7 +198,7 @@ func (im *InstanceManager) ServerExists(serverID string) bool {
 	if _, ok := im.getServer(serverID); ok {
 		return true
 	}
-	if im.static || !IsValidServerID(serverID) {
+	if im.static || !IsValidLocalServerID(serverID) {
 		return false
 	}
 	im.ScanInstances()

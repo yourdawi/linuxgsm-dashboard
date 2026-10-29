@@ -53,7 +53,9 @@ func (u User) IsAdmin() bool {
 	return u.Role == RoleAdmin
 }
 
-// CanAccessServer reports whether the user is assigned to serverID (admins can access all servers).
+// CanAccessServer reports whether the user is assigned to serverID, directly or through the node
+// the server runs on (admins can access all servers). A node assignment also covers servers
+// installed on the node later.
 func (u User) CanAccessServer(serverID string) bool {
 	if u.IsAdmin() {
 		return true
@@ -61,6 +63,13 @@ func (u User) CanAccessServer(serverID string) bool {
 	for _, s := range u.Servers {
 		if s == serverID {
 			return true
+		}
+	}
+	if node, _ := SplitServerID(serverID); node != "" {
+		for _, n := range u.Nodes {
+			if n == node {
+				return true
+			}
 		}
 	}
 	return false
