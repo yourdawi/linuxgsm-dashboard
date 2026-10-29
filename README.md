@@ -41,6 +41,7 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 - [Installation](#installation)
 - [Host mode and Docker mode](#host-mode-and-docker-mode)
 - [Docker mode in detail](#docker-mode-in-detail)
+- [Multiple machines (nodes)](#multiple-machines-nodes)
 - [Configuration](#configuration)
 - [Game servers outside of /home](#game-servers-outside-of-home)
 - [Users and permissions](#users-and-permissions)
@@ -115,6 +116,7 @@ Configuration of the LinuxGSM alert channels Discord, Telegram, e-mail (SMTP), M
 ### Users, monitoring and interface
 
 - Multiple dashboard users with roles and per-server permissions (see [Users and permissions](#users-and-permissions)).
+- Game servers on other machines (nodes) in the same dashboard, connected end-to-end encrypted, read-only or read-write (see [Multiple machines](#multiple-machines-nodes)).
 - Optional two-factor authentication per user with an authenticator app (see [Two-factor authentication](#two-factor-authentication)).
 - Audit log of logins, failed logins, server actions, file and configuration changes and administrative changes (last 1000 entries).
 - Host monitoring: CPU, RAM and disk usage of `/` with a history chart, plus players, CPU, RAM, disk usage and process IDs per server.
@@ -334,6 +336,65 @@ In Docker mode the settings show "PRODUCTION (Docker)". Firewall management, das
 
 Images are built from the signed release binaries and published to `ghcr.io/yourdawi/linuxgsm-dashboard` (tags `latest`, `X.Y` and `X.Y.Z`) by the release workflow once the repository variable `PUBLISH_DOCKER_IMAGE` is set to `true`.
 
+## Multiple machines (nodes)
+
+Game servers on other machines, for example further LXC containers, VMs or a rented server, can be managed in the same dashboard. Such a machine is a **node**: it runs the same binary as **agent**, without its own web interface and without an open port. The agent connects to the dashboard and keeps that connection open; the dashboard sends its requests through it. Users, permissions, 2FA and the audit log stay in the one dashboard.
+
+- **Connection.** The agent dials the dashboard, so nodes behind NAT or a home router need no port forwarding. By default it uses a WebSocket on the normal web port (`/agent/connect`), which also works through a reverse proxy; with `-agent-port` the dashboard additionally accepts direct connections on a separate port.
+- **Encryption.** Inside that connection runs its own TLS 1.3 session with certificates on both sides and the hybrid post-quantum key exchange X25519MLKEM768. The dashboard is its own certificate authority; nothing else is trusted. A reverse proxy or CDN in between only sees ciphertext, so the dashboard does not need HTTPS for this, although HTTPS is still recommended for the browser.
+- **Pairing.** Under Settings > Nodes an administrator creates a pairing command with a name and an access mode. The command contains a one-time token (valid for 15 minutes) and the fingerprint of the dashboard's certificate authority, which the node checks before it sends anything. The node creates its key itself; the key never leaves the node.
+- **Access mode.** *Read only* allows viewing (servers, consoles, logs, configs, files, backup downloads) plus start, stop and restart. *Read and write* allows everything. The mode is chosen when the node is added and when the agent is installed; the node enforces it itself, and the dashboard can only restrict it further, not raise it. Opening firewall ports and updates triggered by the dashboard need a separate opt-in on the node (`allow_firewall`, `allow_self_update` in `agent-policy.json`).
+- **Users** can be assigned to individual servers of a node or to a whole node, which also covers servers installed there later. Servers of nodes have the ID `<node>~<server>`.
+- **Offline nodes** keep their servers in the list with their last known state, marked as offline.
+- Dashboard and nodes must run the same minor version (for example 1.2.x); a node with another version shows "update required" and is not used until it is updated.
+
+### Installing a node
+
+1. In the dashboard, open Settings > Nodes, enter a name, choose the access mode and click *Create pairing command*.
+2. On the node, as root:
+
+   ```bash
+   curl -sSL https://raw.githubusercontent.com/yourdawi/linuxgsm-dashboard/main/install-dashboard.sh | bash -s -- --agent --join '<pairing command>'
+   ```
+
+   Without `--join` the installer asks for the command, and it asks for the access mode (the dashboard's choice is the default; `--mode read-only|read-write` sets it without asking). In the interactive menu this is option 4.
+
+The installer installs the binary, the LinuxGSM dependencies and the service `lgsm-dashboard-agent`, pairs the node and checks that it is connected. Running it again updates the agent and keeps the pairing. A machine is either the dashboard or a node, not both. `install-dashboard.sh uninstall` removes the agent; remove the node in the dashboard as well.
+
+Useful commands on a node:
+
+```bash
+/opt/lgsm-dashboard/lgsm-dashboard agent status --config-dir /opt/lgsm-dashboard/config
+```
+
+```bash
+/opt/lgsm-dashboard/lgsm-dashboard agent mode read-only --config-dir /opt/lgsm-dashboard/config
+```
+
+After `agent mode`, restart the agent (`systemctl restart lgsm-dashboard-agent`).
+
+In Docker mode, [docker-compose.agent.yml](docker-compose.agent.yml) runs the agent; pairing is done once with `docker compose -f docker-compose.agent.yml run --rm agent agent join ...` as described in the file.
+
+### Behind a reverse proxy
+
+The proxy must pass WebSocket upgrades for `/agent/connect` and must not require a login there (for example Cloudflare Access, basic auth or an SSO gateway in front of the dashboard): agents authenticate inside the connection. nginx:
+
+```nginx
+location /agent/connect {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 120s;
+}
+```
+
+Caddy passes WebSockets without extra configuration. If the proxy uses a self-signed certificate, pair the node with `--insecure-proxy-tls` (only the proxy's certificate is skipped; the connection to the dashboard is always verified).
+
+### Not available for nodes yet
+
+Installing new game servers on a node from the dashboard, FastDL for servers of nodes, and host statistics of nodes.
+
 ## Configuration
 
 ### Command line flags
@@ -346,6 +407,7 @@ Images are built from the signed release binaries and published to `ghcr.io/your
 | `-trust-proxy` | `false` | Trust `X-Forwarded-For` and `X-Forwarded-Proto` from a reverse proxy. Used for the client IP in rate limiting and the audit log, and for `Secure` cookies and HSTS behind HTTPS. Only enable this behind a proxy you control. |
 | `-max-upload-mb` | `4096` | Maximum size of backup and file manager uploads in MiB. |
 | `-max-archive-gb` | `1024` | Maximum uncompressed size of a backup archive that may be restored, in GiB. |
+| `-agent-port` | `0` | Additionally accept direct connections of nodes on this port (see [Multiple machines](#multiple-machines-nodes)). `0`: nodes connect only via WebSocket on the web port. |
 | `-version` | | Print the version and exit. |
 
 ### Files in the configuration directory
@@ -361,6 +423,8 @@ The directory is created with mode `0700`; files containing settings are written
 | `server_paths.json` | Additional server directories |
 | `games_cache.json`, `icons/` | Cached game list and icons from linuxgsm.com |
 | `schedules/<server>.cron`, `schedule_settings.json` | Docker mode only: schedules of the game servers and their time zone |
+| `nodes.json`, `agent-ca/` | Paired nodes (name, access mode, allowed key fingerprints) and the certificate authority for node connections (private key `0600`) |
+| `agent.json`, `agent.key`, `agent.crt`, `ca.crt`, `agent-policy.json` | On a node: pairing, node key and certificate, the dashboard's CA and the local access mode |
 
 ### HTTPS
 

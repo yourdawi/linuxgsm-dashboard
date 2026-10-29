@@ -14,6 +14,9 @@
 #   --local        build from the current directory (for developers)
 #
 # Other arguments: install | uninstall | status | --port <port>
+#
+# Node of another dashboard (agent, see Settings > Nodes in the dashboard):
+#   --agent --join '<pairing command>' [--mode read-only|read-write]
 
 # Terminal output colors
 RED='\033[0;31m'
@@ -28,6 +31,8 @@ INSTALL_DIR="/opt/lgsm-dashboard"
 BINARY="$INSTALL_DIR/lgsm-dashboard"
 STATE_FILE="$INSTALL_DIR/.install-state"
 SERVICE_NAME="lgsm-dashboard"
+# A node of another dashboard runs the same binary as agent under its own service.
+AGENT_SERVICE_NAME="lgsm-dashboard-agent"
 REPO="yourdawi/linuxgsm-dashboard"
 REPO_URL="https://github.com/$REPO.git"
 
@@ -199,6 +204,7 @@ configure_firewall() {
 # Installation state (kept across updates)
 # ------------------------------------------------------------------
 
+STATE_ROLE=""
 STATE_GIT_PREEXISTED=""
 STATE_GO_PREEXISTED=""
 STATE_CURL_PREEXISTED=""
@@ -209,9 +215,10 @@ STATE_INSTALL_DATE=""
 
 load_state() {
     [ -f "$STATE_FILE" ] || return 1
-    local GIT_PREEXISTED="" GO_PREEXISTED="" CURL_PREEXISTED="" SUDO_PREEXISTED="" PORT="" INSTALLED_DEPS="" INSTALL_DATE=""
+    local ROLE="" GIT_PREEXISTED="" GO_PREEXISTED="" CURL_PREEXISTED="" SUDO_PREEXISTED="" PORT="" INSTALLED_DEPS="" INSTALL_DATE=""
     # shellcheck disable=SC1090
     source "$STATE_FILE"
+    STATE_ROLE="${ROLE:-dashboard}"
     STATE_GIT_PREEXISTED="$GIT_PREEXISTED"
     STATE_GO_PREEXISTED="$GO_PREEXISTED"
     STATE_CURL_PREEXISTED="$CURL_PREEXISTED"
@@ -236,8 +243,9 @@ track_tool() {
 }
 
 write_state() {
-    local installed_deps="$1" mode="$2" version="$3"
+    local installed_deps="$1" mode="$2" version="$3" role="${4:-dashboard}"
     cat <<EOT > "$STATE_FILE"
+ROLE=$role
 GIT_PREEXISTED=$STATE_GIT_PREEXISTED
 GO_PREEXISTED=$STATE_GO_PREEXISTED
 CURL_PREEXISTED=$STATE_CURL_PREEXISTED
@@ -587,21 +595,10 @@ port_in_use() {
     fi
 }
 
-# $1 = release | main | dev | local
-do_install() {
-    local mode="${1:-release}"
-    local is_update="false"
-    [ -x "$BINARY" ] && is_update="true"
-
-    echo -e "\n${BLUE}==================================================================${NC}"
-    if [ "$is_update" == "true" ]; then
-        echo -e "${MAGENTA}                  Updating installation ($mode)...                ${NC}"
-    else
-        echo -e "${MAGENTA}                  Starting installation ($mode)...                ${NC}"
-    fi
-    echo -e "${BLUE}==================================================================${NC}"
-
-    # 1. Pre-flight checks
+# Architecture, systemd and RAM checks shared by dashboard and agent installations.
+# $1 = "true" for an update (no RAM question).
+preflight_checks() {
+    local is_update=$1
     echo -e "${CYAN}[SYS] Running pre-flight system checks...${NC}"
     local arch
     arch=$(uname -m)
@@ -632,34 +629,15 @@ do_install() {
             fi
         fi
     fi
+}
 
-    load_state
-    mkdir -p "$INSTALL_DIR"
-
-    # 2. Port: keep the port of an existing installation unless --port was given.
-    local current_port
-    current_port=$(installed_service_port)
-    if [ "$PORT_FROM_ARGS" != "true" ]; then
-        PORT="${current_port:-${STATE_PORT:-$PORT}}"
-        if [ "$is_update" != "true" ] && has_tty; then
-            local user_port=""
-            prompt_user "Please enter the port for the dashboard [default: $PORT]: " user_port
-            if [ -n "$user_port" ]; then
-                if ! [[ "$user_port" =~ ^[0-9]+$ ]] || [ "$user_port" -lt 1 ] || [ "$user_port" -gt 65535 ]; then
-                    echo -e "${RED}[ERROR] Invalid port entered. Using $PORT.${NC}"
-                else
-                    PORT="$user_port"
-                fi
-            fi
-        fi
-    fi
-    # The running dashboard itself occupies its own port during an update.
-    if [ "$PORT" != "$current_port" ] && port_in_use "$PORT"; then
-        echo -e "${RED}[ERROR] Port $PORT is already in use on this system. Please choose another port.${NC}"
-        return 1
-    fi
-
-    # 3. Tools
+# Installs the tools, the LinuxGSM game dependencies and the binary (release or build from
+# source). Shared by dashboard and agent installations. $1 = release | main | dev | local.
+# Sets INSTALL_VERSION and INSTALL_PACKAGES (packages installed by this script so far).
+INSTALL_VERSION=""
+INSTALL_PACKAGES=""
+install_tools_and_binary() {
+    local mode=$1
     STATE_CURL_PREEXISTED=$(track_tool curl "$STATE_CURL_PREEXISTED")
     STATE_SUDO_PREEXISTED=$(track_tool sudo "$STATE_SUDO_PREEXISTED")
     # shellcheck disable=SC2206
@@ -688,8 +666,8 @@ do_install() {
     install_lgsm_dependencies new_deps
     local p
     for p in "${new_deps[@]}"; do add_installed "$p"; done
+    INSTALL_PACKAGES="${installed_packages[*]}"
 
-    # 4. Dashboard binary
     local new_binary="$INSTALL_DIR/lgsm-dashboard.download" version
     rm -f "$new_binary"
     if [ "$mode" == "release" ]; then
@@ -705,15 +683,16 @@ do_install() {
     chmod 0755 "$BINARY"
     mkdir -p "$INSTALL_DIR/config"
     chmod 700 "$INSTALL_DIR/config"
+    INSTALL_VERSION="$version"
     echo -e "${GREEN}[OK] Dashboard $version installed to $BINARY.${NC}"
+}
 
-    write_state "${installed_packages[*]}" "$mode" "$version"
-
-    # 5. systemd service (with security sandboxing)
-    echo -e "${CYAN}[SYS] Writing systemd service...${NC}"
-    cat <<EOT > "/etc/systemd/system/$SERVICE_NAME.service"
+# Writes a systemd unit with the sandboxing both the dashboard and the agent use (they run the
+# same LinuxGSM operations). $1 = service name, $2 = description, $3 = ExecStart.
+write_service_unit() {
+    cat <<EOT > "/etc/systemd/system/$1.service"
 [Unit]
-Description=LinuxGSM Web Dashboard
+Description=$2
 After=network-online.target
 Wants=network-online.target
 
@@ -721,7 +700,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$BINARY -port $PORT -config-dir $INSTALL_DIR/config
+ExecStart=$3
 Restart=always
 RestartSec=5
 
@@ -738,6 +717,74 @@ CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SET
 [Install]
 WantedBy=multi-user.target
 EOT
+}
+
+# A machine is either a dashboard or a node (agent) of another dashboard, never both.
+# $1 = the role about to be installed (dashboard | agent).
+check_role_conflict() {
+    if [ "$1" == "agent" ] && [ -f "/etc/systemd/system/$SERVICE_NAME.service" ]; then
+        echo -e "${RED}[ERROR] This machine runs the dashboard. A machine can be either the dashboard or a node of another dashboard; uninstall the dashboard first.${NC}"
+        return 1
+    fi
+    if [ "$1" == "dashboard" ] && [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ]; then
+        echo -e "${RED}[ERROR] This machine is a node of another dashboard (agent). Uninstall the agent first to install the dashboard here.${NC}"
+        return 1
+    fi
+}
+
+# $1 = release | main | dev | local
+do_install() {
+    local mode="${1:-release}"
+    local is_update="false"
+    [ -x "$BINARY" ] && is_update="true"
+
+    check_role_conflict dashboard || return 1
+
+    echo -e "\n${BLUE}==================================================================${NC}"
+    if [ "$is_update" == "true" ]; then
+        echo -e "${MAGENTA}                  Updating installation ($mode)...                ${NC}"
+    else
+        echo -e "${MAGENTA}                  Starting installation ($mode)...                ${NC}"
+    fi
+    echo -e "${BLUE}==================================================================${NC}"
+
+    # 1. Pre-flight checks
+    preflight_checks "$is_update" || return 1
+
+    load_state
+    mkdir -p "$INSTALL_DIR"
+
+    # 2. Port: keep the port of an existing installation unless --port was given.
+    local current_port
+    current_port=$(installed_service_port)
+    if [ "$PORT_FROM_ARGS" != "true" ]; then
+        PORT="${current_port:-${STATE_PORT:-$PORT}}"
+        if [ "$is_update" != "true" ] && has_tty; then
+            local user_port=""
+            prompt_user "Please enter the port for the dashboard [default: $PORT]: " user_port
+            if [ -n "$user_port" ]; then
+                if ! [[ "$user_port" =~ ^[0-9]+$ ]] || [ "$user_port" -lt 1 ] || [ "$user_port" -gt 65535 ]; then
+                    echo -e "${RED}[ERROR] Invalid port entered. Using $PORT.${NC}"
+                else
+                    PORT="$user_port"
+                fi
+            fi
+        fi
+    fi
+    # The running dashboard itself occupies its own port during an update.
+    if [ "$PORT" != "$current_port" ] && port_in_use "$PORT"; then
+        echo -e "${RED}[ERROR] Port $PORT is already in use on this system. Please choose another port.${NC}"
+        return 1
+    fi
+
+    # 3. Tools, game dependencies and binary
+    install_tools_and_binary "$mode" || return 1
+    local version="$INSTALL_VERSION"
+    write_state "$INSTALL_PACKAGES" "$mode" "$version" dashboard
+
+    # 5. systemd service (with security sandboxing)
+    echo -e "${CYAN}[SYS] Writing systemd service...${NC}"
+    write_service_unit "$SERVICE_NAME" "LinuxGSM Web Dashboard" "$BINARY -port $PORT -config-dir $INSTALL_DIR/config"
 
     # 6. Firewall (new installations only)
     if [ "$is_update" != "true" ]; then
@@ -812,6 +859,167 @@ EOT
 }
 
 # ------------------------------------------------------------------
+# Node (agent of another dashboard)
+# ------------------------------------------------------------------
+
+# Values of a pairing command, set by parse_join_command.
+JOIN_URL=""
+JOIN_TOKEN=""
+JOIN_FINGERPRINT=""
+JOIN_MODE=""
+
+# Parses the pairing command the dashboard shows under Settings > Nodes, e.g.
+#   /opt/lgsm-dashboard/lgsm-dashboard agent join https://dash.example --token ABCD-... \
+#     --ca-fingerprint sha256:... --mode read-only
+# Only the values are used; the command itself is never executed. Returns 1 if it is invalid.
+parse_join_command() {
+    local words=() i
+    read -r -a words <<< "$1"
+    JOIN_URL="" JOIN_TOKEN="" JOIN_FINGERPRINT="" JOIN_MODE=""
+    for ((i = 0; i < ${#words[@]}; i++)); do
+        case "${words[$i]}" in
+            join) JOIN_URL="${words[$((i + 1))]:-}" ;;
+            --token) JOIN_TOKEN="${words[$((i + 1))]:-}" ;;
+            --ca-fingerprint) JOIN_FINGERPRINT="${words[$((i + 1))]:-}" ;;
+            --mode) JOIN_MODE="${words[$((i + 1))]:-}" ;;
+        esac
+    done
+    # In a bracket expression "]" must come first to be literal ("[" for IPv6 hosts is plain).
+    local url_re='^(https?|tls)://[][A-Za-z0-9._~:/-]+$'
+    if ! [[ "$JOIN_URL" =~ $url_re ]]; then
+        echo -e "${RED}[ERROR] The pairing command contains no valid dashboard URL.${NC}"
+        return 1
+    fi
+    if ! [[ "$JOIN_TOKEN" =~ ^[A-Za-z2-7-]{16,64}$ ]]; then
+        echo -e "${RED}[ERROR] The pairing command contains no valid token.${NC}"
+        return 1
+    fi
+    if ! [[ "$JOIN_FINGERPRINT" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        echo -e "${RED}[ERROR] The pairing command contains no valid CA fingerprint.${NC}"
+        return 1
+    fi
+    if [ -n "$JOIN_MODE" ] && [ "$JOIN_MODE" != "read-only" ] && [ "$JOIN_MODE" != "read-write" ]; then
+        echo -e "${RED}[ERROR] The pairing command contains an invalid access mode.${NC}"
+        return 1
+    fi
+    JOIN_MODE="${JOIN_MODE:-read-only}"
+}
+
+# Asks for the access mode of this node. The dashboard's choice is the default; this machine
+# can only restrict it further. Sets JOIN_MODE.
+choose_agent_mode() {
+    if [ -n "$AGENT_MODE_ARG" ]; then
+        JOIN_MODE="$AGENT_MODE_ARG"
+        return
+    fi
+    has_tty || return
+    local default=1 answer=""
+    [ "$JOIN_MODE" == "read-write" ] && default=2
+    echo -e "${CYAN}Access the dashboard gets on this machine:${NC}"
+    echo -e "  1) Read only: view servers, consoles, logs and files; start, stop and restart"
+    echo -e "  2) Read and write: everything, including configs, files, backups and installing servers"
+    prompt_user "Choose [1-2, default: $default]: " answer
+    case "${answer:-$default}" in
+        1) JOIN_MODE="read-only" ;;
+        2) JOIN_MODE="read-write" ;;
+        *) echo -e "${YELLOW}[INFO] Invalid choice, keeping $JOIN_MODE.${NC}" ;;
+    esac
+}
+
+# Installs or updates this machine as node of another dashboard. $1 = release | main | dev | local.
+# A new installation needs the pairing command (--join or interactive); an update keeps the
+# existing pairing unless --join is given again.
+do_install_agent() {
+    local mode="${1:-release}"
+    local is_update="false"
+    [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ] && [ -x "$BINARY" ] && is_update="true"
+    local config_dir="$INSTALL_DIR/config"
+
+    check_role_conflict agent || return 1
+
+    echo -e "\n${BLUE}==================================================================${NC}"
+    if [ "$is_update" == "true" ]; then
+        echo -e "${MAGENTA}              Updating node agent ($mode)...                      ${NC}"
+    else
+        echo -e "${MAGENTA}              Installing node agent ($mode)...                    ${NC}"
+    fi
+    echo -e "${BLUE}==================================================================${NC}"
+
+    # The pairing command is checked before anything is installed.
+    local join_cmd="$AGENT_JOIN_ARG" paired="false"
+    [ -f "$config_dir/agent.json" ] && paired="true"
+    if [ -z "$join_cmd" ] && [ "$paired" != "true" ]; then
+        if ! has_tty; then
+            echo -e "${RED}[ERROR] Pass the pairing command from the dashboard (Settings > Nodes) with --join '<command>'.${NC}"
+            return 1
+        fi
+        echo -e "${CYAN}Create a pairing command in the dashboard under Settings > Nodes and paste it here.${NC}"
+        prompt_user "Pairing command: " join_cmd
+    fi
+    if [ -n "$join_cmd" ]; then
+        parse_join_command "$join_cmd" || return 1
+        choose_agent_mode
+    fi
+
+    preflight_checks "$is_update" || return 1
+    load_state
+    mkdir -p "$INSTALL_DIR"
+    install_tools_and_binary "$mode" || return 1
+    local version="$INSTALL_VERSION"
+    PORT=""
+    write_state "$INSTALL_PACKAGES" "$mode" "$version" agent
+
+    if [ -n "$join_cmd" ]; then
+        echo -e "${CYAN}[SYS] Pairing with $JOIN_URL ($JOIN_MODE)...${NC}"
+        if ! "$BINARY" agent join "$JOIN_URL" --token "$JOIN_TOKEN" --ca-fingerprint "$JOIN_FINGERPRINT" \
+            --mode "$JOIN_MODE" --config-dir "$config_dir"; then
+            echo -e "${RED}[ERROR] Pairing failed. Create a new pairing command in the dashboard and run this script again.${NC}"
+            return 1
+        fi
+    fi
+
+    echo -e "${CYAN}[SYS] Writing systemd service...${NC}"
+    write_service_unit "$AGENT_SERVICE_NAME" "LinuxGSM Dashboard node agent" "$BINARY agent run --config-dir $config_dir"
+    systemctl daemon-reload
+    systemctl enable "$AGENT_SERVICE_NAME" > /dev/null 2>&1
+    systemctl restart "$AGENT_SERVICE_NAME"
+
+    # The agent logs "Connected to" once the dashboard has used the connection.
+    local i connected="false"
+    for i in $(seq 1 15); do
+        if journalctl -u "$AGENT_SERVICE_NAME" --since "-30s" --no-pager 2>/dev/null | grep -q "Connected to"; then
+            connected="true"
+            break
+        fi
+        systemctl is-active --quiet "$AGENT_SERVICE_NAME" || break
+        sleep 1
+    done
+
+    echo -e "\n${BLUE}==================================================================${NC}"
+    if ! systemctl is-active --quiet "$AGENT_SERVICE_NAME"; then
+        echo -e "${RED}[ERROR] The agent did not start. Check: journalctl -u $AGENT_SERVICE_NAME -n 50${NC}"
+        echo -e "${BLUE}==================================================================${NC}"
+        return 1
+    fi
+    if [ "$is_update" == "true" ]; then
+        echo -e "${GREEN}      Node agent updated to $version${NC}"
+    else
+        echo -e "${GREEN}      Node agent installed ($version)${NC}"
+    fi
+    echo -e "${BLUE}==================================================================${NC}"
+    "$BINARY" agent status --config-dir "$config_dir" 2>&1 | sed 's/^/  /'
+    if [ "$connected" == "true" ]; then
+        echo -e "  ${GREEN}Connected to the dashboard.${NC}"
+    else
+        echo -e "  ${YELLOW}Not connected yet. Check: journalctl -u $AGENT_SERVICE_NAME -n 50${NC}"
+    fi
+    echo -e "  No port is opened on this machine; the agent connects to the dashboard."
+    echo -e "  Change the access mode later with: $BINARY agent mode read-only|read-write --config-dir $config_dir"
+    echo -e "  (then: systemctl restart $AGENT_SERVICE_NAME)"
+    echo -e "${BLUE}==================================================================${NC}"
+}
+
+# ------------------------------------------------------------------
 # Uninstall
 # ------------------------------------------------------------------
 
@@ -840,15 +1048,22 @@ do_uninstall() {
     PORT="$(installed_service_port)"
     PORT="${PORT:-${STATE_PORT:-8080}}"
 
-    # 1. Stop and remove systemd service
+    # 1. Stop and remove the systemd services (dashboard or node agent)
+    local is_agent="false"
+    if [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ] || [ "$STATE_ROLE" == "agent" ]; then
+        is_agent="true"
+    fi
     echo -e "${CYAN}[SYS] Stopping and removing systemd service...${NC}"
-    systemctl stop "$SERVICE_NAME" > /dev/null 2>&1
-    systemctl disable "$SERVICE_NAME" > /dev/null 2>&1
-    rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+    local svc
+    for svc in "$SERVICE_NAME" "$AGENT_SERVICE_NAME"; do
+        systemctl stop "$svc" > /dev/null 2>&1
+        systemctl disable "$svc" > /dev/null 2>&1
+        rm -f "/etc/systemd/system/$svc.service"
+    done
     systemctl daemon-reload
 
-    # 2. Remove firewall rules
-    configure_firewall "remove"
+    # 2. Remove firewall rules (a node agent opens no port)
+    [ "$is_agent" != "true" ] && configure_firewall "remove"
 
     # 3. Clean up system packages if requested
     local remove_packages="false"
@@ -879,6 +1094,9 @@ do_uninstall() {
 
     echo -e "\n${GREEN}[OK] LinuxGSM Web Dashboard has been completely removed.${NC}"
     echo -e "${YELLOW}[INFO] Game server users and their files were not touched.${NC}"
+    if [ "$is_agent" == "true" ]; then
+        echo -e "${YELLOW}[INFO] Remove the node in the dashboard as well (Settings > Nodes).${NC}"
+    fi
 }
 
 # Status and diagnosis information
@@ -887,17 +1105,27 @@ show_status() {
     echo -e "${CYAN}                  Status & System Information                     ${NC}"
     echo -e "${BLUE}==================================================================${NC}"
 
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-        echo -e "Service Status:    ${GREEN}ACTIVE (Running)${NC}"
-    else
-        echo -e "Service Status:    ${RED}INACTIVE (Stopped / Not installed)${NC}"
-    fi
+    local svc label
+    for svc in "$SERVICE_NAME" "$AGENT_SERVICE_NAME"; do
+        [ "$svc" == "$AGENT_SERVICE_NAME" ] && [ ! -f "/etc/systemd/system/$svc.service" ] && continue
+        label="Service Status:   "
+        [ "$svc" == "$AGENT_SERVICE_NAME" ] && label="Agent Status:     "
+        if systemctl is-active --quiet "$svc"; then
+            echo -e "$label ${GREEN}ACTIVE (Running)${NC}"
+        else
+            echo -e "$label ${RED}INACTIVE (Stopped / Not installed)${NC}"
+        fi
+    done
 
     if [ -x "$BINARY" ]; then
         echo -e "Installation Path: ${GREEN}$INSTALL_DIR${NC}"
         echo -e "Version:           ${GREEN}$("$BINARY" -version 2>/dev/null)${NC}"
     else
         echo -e "Installation Path: ${RED}Not installed${NC}"
+    fi
+    if [ -f "$INSTALL_DIR/config/agent.json" ] && [ -x "$BINARY" ]; then
+        echo -e "\n${YELLOW}Node agent:${NC}"
+        "$BINARY" agent status --config-dir "$INSTALL_DIR/config" 2>&1 | sed 's/^/  /'
     fi
 
     echo -e "\n${YELLOW}System Load:${NC}"
@@ -920,6 +1148,9 @@ ACTION=""
 PORT="8080"
 PORT_FROM_ARGS="false"
 MODE="release"
+ROLE_ARG=""
+AGENT_JOIN_ARG=""
+AGENT_MODE_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -947,6 +1178,19 @@ while [[ $# -gt 0 ]]; do
             MODE="local"
             shift
             ;;
+        agent|--agent)
+            ROLE_ARG="agent"
+            shift
+            ;;
+        --join)
+            ROLE_ARG="agent"
+            AGENT_JOIN_ARG="${2:-}"
+            shift 2
+            ;;
+        --mode)
+            AGENT_MODE_ARG="${2:-}"
+            shift 2
+            ;;
         --port)
             PORT="$2"
             PORT_FROM_ARGS="true"
@@ -961,16 +1205,33 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ -n "$AGENT_MODE_ARG" ] && [ "$AGENT_MODE_ARG" != "read-only" ] && [ "$AGENT_MODE_ARG" != "read-write" ]; then
+    echo -e "${RED}[ERROR] Invalid access mode: $AGENT_MODE_ARG (read-only or read-write).${NC}"
+    exit 1
+fi
+
+# An installation request on an existing node updates the agent, also without --agent. That
+# covers "install", the source build flags and runs without a terminal; interactive runs without
+# arguments still show the menu.
+if [ -z "$ROLE_ARG" ] && [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ] &&
+   { [ "${ACTION:-}" == "install" ] || [ "$MODE" != "release" ] || { [ -z "$ACTION" ] && ! has_tty; }; }; then
+    ROLE_ARG="agent"
+fi
+
 # Validate port format
 if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
     echo -e "${RED}[ERROR] Invalid port: $PORT. Must be a number between 1 and 65535.${NC}"
     exit 1
 fi
 
-if [ -n "$ACTION" ] || [ "$MODE" != "release" ]; then
+if [ -n "$ACTION" ] || [ "$MODE" != "release" ] || [ "$ROLE_ARG" == "agent" ]; then
     case ${ACTION:-install} in
         install)
-            do_install "$MODE"
+            if [ "$ROLE_ARG" == "agent" ]; then
+                do_install_agent "$MODE"
+            else
+                do_install "$MODE"
+            fi
             exit $?
             ;;
         uninstall)
@@ -983,7 +1244,7 @@ if [ -n "$ACTION" ] || [ "$MODE" != "release" ]; then
             ;;
         *)
             echo -e "${RED}[ERROR] Unknown argument: $ACTION${NC}"
-            echo -e "Usage: $0 [install|uninstall|status] [--port <port>] [--source|--dev|--local]"
+            echo -e "Usage: $0 [install|uninstall|status] [--port <port>] [--source|--dev|--local] [--agent [--join '<pairing command>'] [--mode read-only|read-write]]"
             exit 1
             ;;
     esac
@@ -1005,11 +1266,12 @@ while true; do
     echo -e "  1) Install / update (latest release)"
     echo -e "  2) Install / update from source: main branch (development build)"
     echo -e "  3) Install / update from source: dev branch (development build)"
-    echo -e "  4) Completely uninstall dashboard"
-    echo -e "  5) Show status & system info"
-    echo -e "  6) Exit"
+    echo -e "  4) Install / update as node of another dashboard (agent)"
+    echo -e "  5) Completely uninstall dashboard or agent"
+    echo -e "  6) Show status & system info"
+    echo -e "  7) Exit"
     echo -e "${BLUE}==================================================================${NC}"
-    if ! prompt_user "Please choose an option [1-6]: " choice; then
+    if ! prompt_user "Please choose an option [1-7]: " choice; then
         echo -e "${RED}[ERROR] Input stream closed. Exiting...${NC}"
         exit 1
     fi
@@ -1018,14 +1280,15 @@ while true; do
         1) do_install release ;;
         2) do_install main ;;
         3) do_install dev ;;
-        4) do_uninstall ;;
-        5) show_status ;;
-        6)
+        4) do_install_agent release ;;
+        5) do_uninstall ;;
+        6) show_status ;;
+        7)
             echo -e "${GREEN}Goodbye!${NC}"
             exit 0
             ;;
         *)
-            echo -e "${RED}[ERROR] Invalid option. Please choose 1-6.${NC}"
+            echo -e "${RED}[ERROR] Invalid option. Please choose 1-7.${NC}"
             ;;
     esac
 done
