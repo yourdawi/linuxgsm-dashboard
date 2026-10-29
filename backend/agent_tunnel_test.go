@@ -610,4 +610,11 @@ func TestAgentTunnelRejectsUntrustedPeers(t *testing.T) {
 			t.Fatal("tunnel accepted without HTTP/2")
 		}
 	})
+	t.Run("classic key exchange only", func(t *testing.T) {
+		agentCfg := AgentTunnelClientTLSConfig(pki.pool, pki.nodeCert)
+		agentCfg.CurvePreferences = []tls.CurveID{tls.X25519}
+		if _, cErr := handshake(agentCfg, serverCfg(nil)); cErr == nil {
+			t.Fatal("controller accepted a handshake without the post-quantum key exchange")
+		}
+	})
 }

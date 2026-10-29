@@ -52,7 +52,10 @@ var ErrAgentTunnelClosed = errors.New("agent tunnel closed")
 func agentTunnelTLSBase() *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13,
-		NextProtos: []string{agentTunnelALPN},
+		// Both ends are this binary, so the post-quantum hybrid key exchange can be required:
+		// recorded tunnel traffic stays protected against a future quantum computer.
+		CurvePreferences: []tls.CurveID{tls.X25519MLKEM768},
+		NextProtos:       []string{agentTunnelALPN},
 	}
 }
 

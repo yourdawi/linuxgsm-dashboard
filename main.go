@@ -95,8 +95,14 @@ func migrateSystemdService() {
 }
 
 func main() {
+	// `lgsm-dashboard agent ...` runs the agent of a node instead of the dashboard.
+	if len(os.Args) > 1 && os.Args[1] == "agent" {
+		os.Exit(runAgentCommand(os.Args[2:]))
+	}
+
 	// CLI Flags
 	portFlag := flag.Int("port", 0, "Port to run the dashboard on (overrides config)")
+	agentPortFlag := flag.Int("agent-port", 0, "Port for direct agent connections (0: agents connect via WebSocket on the web port only)")
 	configDirFlag := flag.String("config-dir", "./config", "Directory to store configuration files")
 	secureCookiesFlag := flag.Bool("secure-cookies", false, "Always set the Secure flag on cookies (enable when the dashboard is only reachable via HTTPS)")
 	trustProxyFlag := flag.Bool("trust-proxy", false, "Trust X-Forwarded-For/X-Forwarded-Proto headers from a reverse proxy")
@@ -171,7 +177,30 @@ func main() {
 	metrics := backend.NewSystemMetricsCollector()
 	metrics.ProcessStats = instances.ProcessStats
 
+	agents, err := backend.NewAgentController(*configDirFlag, func(format string, args ...interface{}) {
+		fmt.Printf(format+"\n", args...)
+	})
+	if err != nil {
+		fmt.Printf("[FATAL] Failed to load nodes: %v\n", err)
+		os.Exit(1)
+	}
+	if *agentPortFlag > 0 {
+		l, err := net.Listen("tcp", fmt.Sprintf(":%d", *agentPortFlag))
+		if err != nil {
+			fmt.Printf("[FATAL] Agent port: %v\n", err)
+			os.Exit(1)
+		}
+		go func() {
+			if err := agents.ServeDirect(l); err != nil {
+				fmt.Printf("[AGENT] Direct agent port stopped: %v\n", err)
+			}
+		}()
+		fmt.Printf("[SYS] Accepting direct agent connections on port %d\n", *agentPortFlag)
+	}
+
 	application := &app{
+		agents:         agents,
+		agentPort:      *agentPortFlag,
 		auth:           authMgr,
 		inst:           instances,
 		metrics:        metrics,
@@ -222,6 +251,9 @@ type app struct {
 	updater   *backend.Updater
 	configDir string
 	uiFS      fs.FS
+
+	agents    *backend.AgentController // nodes (multi-node)
+	agentPort int                      // direct agent port, 0 when disabled
 
 	secureCookies  bool  // always set the Secure flag on cookies
 	trustProxy     bool  // honour X-Forwarded-For / X-Forwarded-Proto from a reverse proxy
@@ -528,6 +560,12 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/timezone", a.requireAdmin(a.handleTimeZone))
 	mux.HandleFunc("/api/admin/update/check", methodOnly(http.MethodGet, a.requireAdmin(a.handleUpdateCheck)))
 	mux.HandleFunc("/api/admin/update/trigger", methodOnly(http.MethodPost, a.requireAdmin(a.handleUpdateTrigger)))
+
+	mux.HandleFunc("/api/admin/nodes", a.requireAdmin(a.handleNodes))
+	mux.HandleFunc("/api/admin/nodes/update", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeUpdate)))
+	mux.HandleFunc("/api/admin/nodes/delete", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeDelete)))
+	// Agents authenticate inside the connection (mutual TLS), not with a session.
+	mux.HandleFunc(backend.AgentConnectPath, methodOnly(http.MethodGet, a.handleAgentConnect))
 
 	mux.HandleFunc("/fastdl/", a.handleFastDL)
 
@@ -1815,6 +1853,227 @@ func (a *app) handleTimeZone(w http.ResponseWriter, r *http.Request, admin backe
 		writeJSON(w, http.StatusOK, info)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// -------------------------------------------------------------
+// Nodes (multi-node)
+// -------------------------------------------------------------
+
+// GET /agent/connect: WebSocket carrier of agent tunnels. 404 until the first node is added.
+func (a *app) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
+	gw, err := a.agents.Gateway(false)
+	if err != nil || gw == nil {
+		http.NotFound(w, r)
+		return
+	}
+	gw.HandleWebSocket(w, r, a.clientIP(r))
+}
+
+type nodeView struct {
+	backend.Node
+	Online bool `json:"online"`
+}
+
+// GET /api/admin/nodes lists the nodes; POST creates a pairing command for a new node (name,
+// mode) or for re-pairing an existing one (repair_id).
+func (a *app) handleNodes(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	switch r.Method {
+	case http.MethodGet:
+		nodes := a.agents.Nodes.Nodes()
+		views := make([]nodeView, 0, len(nodes))
+		for _, n := range nodes {
+			n.Keys, n.MachineID = nil, ""
+			views = append(views, nodeView{Node: n, Online: a.agents.Hub.Online(n.ID)})
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": views, "agent_port": a.agentPort})
+
+	case http.MethodPost:
+		var payload struct {
+			Name     string `json:"name"`
+			Mode     string `json:"mode"`
+			RepairID string `json:"repair_id"`
+		}
+		if !decodeJSON(w, r, &payload, 4*1024) {
+			return
+		}
+		if payload.RepairID != "" && !backend.IsValidNodeID(payload.RepairID) {
+			writeError(w, http.StatusBadRequest, "Invalid node")
+			return
+		}
+		gw, err := a.agents.Gateway(true)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to set up the agent CA")
+			return
+		}
+		ticket, err := a.agents.Nodes.CreatePairing(payload.Name, payload.Mode, payload.RepairID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		action, details := "NODE_PAIRING", fmt.Sprintf("Created pairing command for node %s (%s)", ticket.NodeID, ticket.Mode)
+		if payload.RepairID != "" {
+			action, details = "NODE_REPAIR", fmt.Sprintf("Created re-pairing command for node %s (%s)", ticket.NodeID, ticket.Mode)
+		}
+		a.auth.LogAudit(admin.Username, a.clientIP(r), action, details, "")
+
+		fingerprint := gw.CA.Fingerprint()
+		scheme := "http"
+		if a.isHTTPS(r) {
+			scheme = "https"
+		}
+		command := func(url string) string {
+			return fmt.Sprintf("/opt/lgsm-dashboard/lgsm-dashboard agent join %s --token %s --ca-fingerprint %s --mode %s",
+				url, ticket.Token, fingerprint, ticket.Mode)
+		}
+		resp := map[string]interface{}{
+			"ticket":         ticket,
+			"ca_fingerprint": fingerprint,
+			"command":        command(scheme + "://" + r.Host),
+		}
+		if host, _, err := net.SplitHostPort(r.Host); a.agentPort > 0 {
+			if err != nil {
+				host = r.Host
+			}
+			resp["command_direct"] = command(fmt.Sprintf("tls://%s", net.JoinHostPort(host, strconv.Itoa(a.agentPort))))
+		}
+		writeJSON(w, http.StatusOK, resp)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// POST /api/admin/nodes/update changes name and access mode of a node.
+func (a *app) handleNodeUpdate(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	var payload struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Mode string `json:"mode"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	if !backend.IsValidNodeID(payload.ID) {
+		writeError(w, http.StatusBadRequest, "Invalid node")
+		return
+	}
+	if err := a.agents.Nodes.UpdateNode(payload.ID, payload.Name, payload.Mode); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.LogAudit(admin.Username, a.clientIP(r), "NODE_UPDATE", fmt.Sprintf("Updated node %s (%s)", payload.ID, payload.Mode), "")
+	writeOK(w)
+}
+
+// POST /api/admin/nodes/delete removes a node; its tunnel is closed and its key stops working.
+func (a *app) handleNodeDelete(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	if !backend.IsValidNodeID(payload.ID) {
+		writeError(w, http.StatusBadRequest, "Invalid node")
+		return
+	}
+	if err := a.agents.RemoveNode(payload.ID); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	a.auth.LogAudit(admin.Username, a.clientIP(r), "NODE_DELETE", "Removed node "+payload.ID, "")
+	writeOK(w)
+}
+
+// runAgentCommand implements `lgsm-dashboard agent <join|status|mode>`.
+func runAgentCommand(args []string) int {
+	usage := func() int {
+		fmt.Fprintln(os.Stderr, "Usage:")
+		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent join <dashboard-url> --token <token> --ca-fingerprint <sha256:...> --mode read-only|read-write [--insecure-proxy-tls] [--config-dir <dir>]")
+		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent status [--config-dir <dir>]")
+		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent mode read-only|read-write [--config-dir <dir>]")
+		return 2
+	}
+	if len(args) == 0 {
+		return usage()
+	}
+	cmd, args := args[0], args[1:]
+	// Positional arguments may come before the flags (`agent join <url> --token ...`).
+	var positional []string
+	for len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		positional = append(positional, args[0])
+		args = args[1:]
+	}
+	fset := flag.NewFlagSet("agent "+cmd, flag.ContinueOnError)
+	configDir := fset.String("config-dir", "./config", "Directory of the agent configuration")
+
+	switch cmd {
+	case "join":
+		token := fset.String("token", "", "Pairing token from the dashboard")
+		fingerprint := fset.String("ca-fingerprint", "", "CA fingerprint from the dashboard")
+		mode := fset.String("mode", "", "Access mode: read-only or read-write")
+		insecure := fset.Bool("insecure-proxy-tls", false, "Do not verify the certificate of a reverse proxy in front of the dashboard (the connection to the dashboard itself is always verified)")
+		if err := fset.Parse(args); err != nil {
+			return 2
+		}
+		positional = append(positional, fset.Args()...)
+		if len(positional) != 1 || *token == "" || *fingerprint == "" || *mode == "" {
+			return usage()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		cfg, err := backend.AgentJoin(ctx, *configDir, backend.AgentJoinOptions{
+			ControllerURL:    positional[0],
+			Token:            *token,
+			CAFingerprint:    *fingerprint,
+			Mode:             *mode,
+			Version:          Version,
+			InsecureProxyTLS: *insecure,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] Pairing failed: %v\n", err)
+			return 1
+		}
+		policy := backend.LoadAgentPolicy(*configDir)
+		fmt.Printf("[OK] Paired as node %s (%s), access mode %s.\n", cfg.NodeID, cfg.Name, policy.Mode)
+		return 0
+
+	case "status":
+		if err := fset.Parse(args); err != nil || len(positional)+fset.NArg() > 0 {
+			return usage()
+		}
+		id, err := backend.LoadAgentIdentity(*configDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
+			return 1
+		}
+		policy := backend.LoadAgentPolicy(*configDir)
+		fmt.Printf("Node:         %s (%s)\n", id.Config.NodeID, id.Config.Name)
+		fmt.Printf("Dashboard:    %s\n", id.Config.ControllerURL)
+		fmt.Printf("Access mode:  %s\n", policy.Mode)
+		fmt.Printf("Certificate:  valid until %s\n", id.Leaf.NotAfter.Local().Format("2006-01-02 15:04"))
+		return 0
+
+	case "mode":
+		if err := fset.Parse(args); err != nil {
+			return 2
+		}
+		positional = append(positional, fset.Args()...)
+		if len(positional) != 1 || !backend.IsValidAgentMode(positional[0]) {
+			return usage()
+		}
+		policy := backend.LoadAgentPolicy(*configDir)
+		policy.Mode = positional[0]
+		if err := backend.SaveAgentPolicy(*configDir, policy); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
+			return 1
+		}
+		fmt.Printf("[OK] Access mode set to %s. It applies from the next connection; the dashboard may restrict it further.\n", policy.Mode)
+		return 0
+
+	default:
+		return usage()
 	}
 }
 
