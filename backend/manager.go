@@ -37,6 +37,7 @@ type GameServerInstance struct {
 	Node         string        `json:"node,omitempty"`
 	NodeName     string        `json:"node_name,omitempty"`
 	NodeOffline  bool          `json:"node_offline,omitempty"`
+	NodeMode     string        `json:"node_mode,omitempty"` // effective access mode of the node
 	Capabilities *Capabilities `json:"capabilities,omitempty"`
 	UID          int           `json:"-"`
 	GID          int           `json:"-"`

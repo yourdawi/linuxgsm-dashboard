@@ -173,8 +173,10 @@ func sanitizeNodeServer(s GameServerInstance, nodeID string) (GameServerInstance
 // node's capabilities. Nodes that are not compatible contribute nothing.
 func (h *AgentHub) NodeServers() []GameServerInstance {
 	names := make(map[string]string)
+	modes := make(map[string]string)
 	for _, n := range h.nodes.Nodes() {
 		names[n.ID] = n.Name
+		modes[n.ID] = n.Mode
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -186,14 +188,17 @@ func (h *AgentHub) NodeServers() []GameServerInstance {
 		}
 		_, online := h.tunnels[nodeID]
 		var caps *Capabilities
+		mode := AgentModeReadOnly
 		if st := h.status[nodeID]; st.Hello != nil {
 			c := st.Hello.Capabilities
 			caps = &c
+			mode = LowerAgentMode(modes[nodeID], st.Hello.Mode)
 		}
 		for _, s := range list {
 			s.NodeName = name
 			s.NodeOffline = !online
 			s.Capabilities = caps
+			s.NodeMode = mode
 			if !online {
 				s.CPU, s.RAM = 0, 0
 				s.QueryData.Online = false

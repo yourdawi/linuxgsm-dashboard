@@ -550,6 +550,9 @@
                     <button class="settings-subtab-btn" id="settings-tab-btn-security" data-subtab="security">
                         <span data-i18n="settings-subtab-security">Firewall & Sicherheit</span>
                     </button>
+                    <button class="settings-subtab-btn" id="settings-tab-btn-nodes" data-subtab="nodes">
+                        <span data-i18n="settings-subtab-nodes">Nodes</span>
+                    </button>
                 </div>
 
                 <!-- Shared Server Selection Bar (visible when on server, cron, or alerts tab) -->
@@ -1035,6 +1038,51 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Nodes: game servers on other machines (administrators only) -->
+                <div id="settings-subtab-panel-nodes" class="settings-subtab-panel hidden">
+                    <div class="settings-card glass-panel mb-4">
+                        <h3 style="margin-top:0;" data-i18n="nodes-add-title">Node hinzufügen</h3>
+                        <p class="text-muted" style="font-size:0.85rem;" data-i18n="nodes-add-desc">Ein Node ist ein weiterer Server (z. B. ein LXC oder VPS), dessen Gameserver hier mit verwaltet werden. Die Verbindung geht vom Node aus und ist Ende-zu-Ende verschlüsselt.</p>
+                        <form id="nodes-add-form" class="nodes-add-form">
+                            <div class="form-group">
+                                <label for="nodes-add-name" data-i18n="nodes-add-name">Name</label>
+                                <input type="text" id="nodes-add-name" class="form-control" maxlength="64" required placeholder="LXC 101">
+                            </div>
+                            <div class="form-group">
+                                <label for="nodes-add-mode" data-i18n="nodes-add-mode">Zugriff</label>
+                                <select id="nodes-add-mode" class="form-control">
+                                    <option value="read-only" data-i18n="nodes-mode-read-only">Nur lesen (Start/Stop erlaubt)</option>
+                                    <option value="read-write" data-i18n="nodes-mode-read-write">Lesen und schreiben</option>
+                                </select>
+                            </div>
+                            <button type="submit" class="btn btn-primary" data-i18n="nodes-add-btn">Pairing-Befehl erstellen</button>
+                        </form>
+                        <div id="nodes-command-box" class="nodes-command-box hidden">
+                            <p id="nodes-command-intro" class="mb-3"></p>
+                            <div class="nodes-command-row">
+                                <code id="nodes-command" class="nodes-command"></code>
+                                <button type="button" class="btn btn-secondary btn-sm" id="nodes-command-copy" data-i18n="nodes-copy">Kopieren</button>
+                            </div>
+                            <div id="nodes-command-direct-row" class="hidden">
+                                <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;" data-i18n="nodes-command-direct">Alternativ über den direkten Agent-Port:</p>
+                                <div class="nodes-command-row">
+                                    <code id="nodes-command-direct" class="nodes-command"></code>
+                                    <button type="button" class="btn btn-secondary btn-sm" id="nodes-command-direct-copy" data-i18n="nodes-copy">Kopieren</button>
+                                </div>
+                            </div>
+                            <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;" id="nodes-command-hint"></p>
+                        </div>
+                    </div>
+
+                    <div class="settings-card glass-panel">
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem;">
+                            <h3 style="margin:0;" data-i18n="nodes-list-title">Nodes</h3>
+                            <button type="button" class="btn btn-secondary btn-sm" id="nodes-refresh" data-i18n="nodes-refresh">Aktualisieren</button>
+                        </div>
+                        <div id="nodes-list" class="nodes-list mt-3"></div>
+                    </div>
+                </div>
             </section>
 
             <!-- View: Backups -->
@@ -1494,6 +1542,10 @@
                             <!-- Dynamically populated -->
                         </div>
                         <small class="text-muted" data-i18n="user-servers-help" style="font-size: 0.75rem; display: block; margin-top: 0.25rem;">Admins haben automatisch Zugriff auf alle Server.</small>
+                        <div id="user-nodes-section" class="hidden mt-3">
+                            <label data-i18n="users-nodes-label" style="font-weight: 600; display: block; margin-bottom: 0.5rem;">Nodes (alle Server des Nodes, auch neue)</label>
+                            <div id="user-nodes-list" class="checkbox-group-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); padding: 0.75rem; border-radius: 8px; max-height: 120px; overflow-y: auto;"></div>
+                        </div>
                     </div>
                     
                     <!-- Permissions Scope Section -->

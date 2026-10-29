@@ -567,14 +567,15 @@ function initApp() {
     el.settingsToolsBtnCron.addEventListener('click', installCronjobs);
     
     // Settings sub-tab navigation
-    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security'];
+    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes'];
     settingsSubtabs.forEach(tab => {
         const btn = document.getElementById(`settings-tab-btn-${tab}`);
         if (btn) {
             btn.addEventListener('click', () => switchSettingsSubtab(tab));
         }
     });
-    
+    initNodesPanel();
+
     // Backups listeners
     el.backupsServerSelect.addEventListener('change', handleBackupsServerChange);
     el.backupsBtnCreate.addEventListener('click', handleBackupsBtnCreateClick);
@@ -1382,6 +1383,22 @@ function hasUserPermission(permission) {
     return state.currentUser.permissions && state.currentUser.permissions.includes(permission);
 }
 
+function fastdlUrl(server) {
+    return `${window.location.protocol}//${window.location.host}/fastdl/${encodeURIComponent(server.id)}/`;
+}
+
+// isReadOnlyNodeServer reports whether a server runs on a node that only allows reading plus
+// start, stop and restart.
+function isReadOnlyNodeServer(server) {
+    return !!(server && server.node && server.node_mode !== 'read-write');
+}
+
+// serverLabel names a server in dropdowns; servers of nodes carry the node name.
+function serverLabel(server) {
+    const base = `${server.name} (${server.user})`;
+    return server.node ? `${base} · ${server.node_name || server.node}` : base;
+}
+
 function serverStatusInfo(server) {
     if (server.status === 'running') return { cls: 'is-running', dot: 'status-online', text: t('status-online'), busy: false };
     if (server.status === 'installing') return { cls: 'is-busy', dot: 'status-busy', text: t('status-installing'), busy: true };
@@ -1447,11 +1464,14 @@ function createServerCard(server) {
     const status = serverStatusInfo(server);
     const card = document.createElement('article');
     card.id = `server-card-${server.id}`;
-    card.className = `server-card ${status.cls}`;
+    card.className = `server-card ${status.cls}${server.node_offline ? ' is-node-offline' : ''}`;
     card.dataset.status = server.status;
 
     const id = jsArg(server.id);
-    const dis = status.busy ? 'disabled' : '';
+    // Servers of an offline node show their last known state; nothing can be run on them.
+    const dis = status.busy || server.node_offline ? 'disabled' : '';
+    // A read-only node allows reading plus start, stop and restart; it refuses everything else.
+    const readOnlyNode = isReadOnlyNodeServer(server);
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
     const canStart = hasUserPermission('start');
     const canStop = hasUserPermission('stop');
@@ -1479,20 +1499,24 @@ function createServerCard(server) {
     const menuItems = [];
     if (canConfig) menuItems.push(`<button class="btn-server-action" onclick="openConfigEditor(${id})" ${dis}>${t('btn-configs')}</button>`);
     if (canBackup) {
-        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'backup')" ${dis}>${t('btn-backup')}</button>`);
+        if (!readOnlyNode) menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'backup')" ${dis}>${t('btn-backup')}</button>`);
         menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'details')" ${dis}>${t('btn-details')}</button>`);
     }
     if (isAdmin) {
         menuItems.push('<hr>');
-        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'update')" ${dis}>${t('btn-update')}</button>`);
-        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'validate')" ${dis}>${t('btn-validate')}</button>`);
-        menuItems.push(`<button onclick="checkServerPorts(${id})">${t('btn-portcheck')}</button>`);
-        if (isRust) {
+        if (!readOnlyNode) {
+            menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'update')" ${dis}>${t('btn-update')}</button>`);
+            menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'validate')" ${dis}>${t('btn-validate')}</button>`);
+        }
+        menuItems.push(`<button onclick="checkServerPorts(${id})" ${server.node_offline ? 'disabled' : ''}>${t('btn-portcheck')}</button>`);
+        if (isRust && !readOnlyNode) {
             menuItems.push(`<button class="btn-server-action" onclick="openRustWipeModal(state.servers.find(s => s.id === ${id}))" ${dis}>${t('btn-wipe-server')}</button>`);
         }
         menuItems.push(`<button onclick="editServerTag(${id}, ${jsArg(server.tag || '')})">${t('card-edit-tag')}</button>`);
-        menuItems.push('<hr>');
-        menuItems.push(`<button class="is-danger btn-server-action" onclick="openDeleteServerModal(${id})" ${dis}>${t('btn-delete-server')}</button>`);
+        if (!readOnlyNode) {
+            menuItems.push('<hr>');
+            menuItems.push(`<button class="is-danger btn-server-action" onclick="openDeleteServerModal(${id})" ${dis}>${t('btn-delete-server')}</button>`);
+        }
     }
     const menu = menuItems.length ? `
         <details class="sc-menu">
@@ -1501,6 +1525,10 @@ function createServerCard(server) {
         </details>` : '';
 
     const tag = server.tag ? `<span class="tag-chip">${escapeHtml(server.tag)}</span>` : '';
+    const nodeTitle = readOnlyNode ? ` title="${escapeHtml(t('card-node-read-only'))}"` : '';
+    const nodeChip = server.node ? `<span class="node-chip${readOnlyNode ? ' is-read-only' : ''}"${nodeTitle}>${escapeHtml(server.node_name || server.node)}</span>` : '';
+    const statusDot = server.node_offline ? 'status-offline' : status.dot;
+    const statusText = server.node_offline ? t('card-node-offline') : status.text;
     const dirTitle = server.dir ? ` title="${escapeHtml(server.dir)}"` : '';
 
     card.innerHTML = `
@@ -1512,10 +1540,11 @@ function createServerCard(server) {
                     <span class="mono">${escapeHtml(server.script)}</span>
                     <span>${escapeHtml(server.user)}</span>
                     ${server.port ? `<span class="mono">:${escapeHtml(server.port)}</span>` : ''}
+                    ${nodeChip}
                     ${tag}
                 </div>
             </div>
-            <span class="status-pill"><span class="status-dot ${status.dot}"></span>${status.text}</span>
+            <span class="status-pill"><span class="status-dot ${statusDot}"></span>${statusText}</span>
         </header>
         <dl class="sc-stats">
             <div><dt>${t('card-players')}</dt><dd><button type="button" class="link-btn" data-field="players" onclick="openPlayersModal(${id})">-</button></dd></div>
@@ -1565,7 +1594,7 @@ function populateConsoleDropdown() {
     state.servers.forEach(server => {
         const opt = document.createElement('option');
         opt.value = server.id;
-        opt.textContent = `${server.name} (${server.user})`;
+        opt.textContent = serverLabel(server);
         el.consoleServerSelect.appendChild(opt);
     });
     
@@ -1689,8 +1718,31 @@ function updateConsoleViewButtons() {
         el.consoleStatusDot.className = 'status-dot status-offline';
         el.consoleStatusText.textContent = t('status-offline');
     }
-    
-    renderConsoleGameActions(server);
+
+    // Servers on nodes: nothing works while the node is offline, and a read-only node only
+    // allows start, stop and restart (the node refuses everything else anyway).
+    if (server.node_offline || isReadOnlyNodeServer(server)) {
+        const writes = [el.consoleBtnBackup, el.consoleBtnValidate, el.consoleBtnCheckUpdate, el.consoleBtnUpdateLgsm,
+            el.consoleBtnForceUpdate, el.consoleBtnModsInstall, el.consoleBtnModsUpdate, el.consoleBtnFastdl,
+            el.consoleBtnPostdetails, el.consoleBtnTestAlert, el.consoleInputField, el.consoleInputSubmit];
+        writes.forEach(b => { if (b) b.disabled = true; });
+        if (server.node_offline) {
+            [el.consoleBtnStart, el.consoleBtnStop, el.consoleBtnRestart, el.consoleBtnConfig, el.consoleBtnDetails]
+                .forEach(b => { if (b) b.disabled = true; });
+            el.consoleStatusDot.className = 'status-dot status-offline';
+            el.consoleStatusText.textContent = t('card-node-offline');
+        } else {
+            if (el.consoleInputField.dataset.defaultPlaceholder === undefined) {
+                el.consoleInputField.dataset.defaultPlaceholder = el.consoleInputField.placeholder;
+            }
+            el.consoleInputField.placeholder = t('card-node-read-only');
+        }
+    } else if (el.consoleInputField.dataset.defaultPlaceholder !== undefined) {
+        el.consoleInputField.placeholder = el.consoleInputField.dataset.defaultPlaceholder;
+        delete el.consoleInputField.dataset.defaultPlaceholder;
+    }
+
+    renderConsoleGameActions(isReadOnlyNodeServer(server) || server.node_offline ? null : server);
 }
 
 function startConsolePolling() {
@@ -2010,10 +2062,11 @@ function setI18n(node, key) {
 // Autostart and schedule tools: in Docker mode the container restart policy replaces systemd,
 // and the dashboard runs the schedules itself (no crontab lines to copy).
 function applyToolsMode() {
+    const srv = state.servers.find(s => s.id === el.settingsServerSelect.value);
     const systemdCard = el.templateSystemd ? el.templateSystemd.closest('.tool-subcard') : null;
-    if (systemdCard) systemdCard.classList.toggle('hidden', !capable('autostart'));
+    if (systemdCard) systemdCard.classList.toggle('hidden', !capable('autostart', srv));
     if (!el.templateCron) return;
-    const dashboardScheduler = !capable('linux_users') && capable('cron');
+    const dashboardScheduler = !capable('linux_users', srv) && capable('cron', srv);
     el.templateCron.classList.toggle('hidden', dashboardScheduler);
     const card = el.templateCron.closest('.tool-subcard');
     if (!card) return;
@@ -2452,7 +2505,12 @@ async function saveServerPaths() {
 
 // Optional features of the server runtime (host or Docker), reported by /api/system/info.
 // Unknown features count as available, which matches the host runtime.
-function capable(feature) {
+// capable reports whether a runtime feature exists. With a server of a node, the node's runtime
+// decides (a Docker node under a host dashboard has no Linux users, for example).
+function capable(feature, server) {
+    if (server && server.node) {
+        return !server.capabilities || server.capabilities[feature] !== false;
+    }
     const caps = state.lastSettingsData && state.lastSettingsData.capabilities;
     return !caps || caps[feature] !== false;
 }
@@ -2467,6 +2525,7 @@ function allowedSettingsSubtabs() {
         cron: hasPerm('schedule') && capable('cron'),
         alerts: hasPerm('alerts'),
         security: isAdmin && capable('firewall'),
+        nodes: isAdmin,
     };
 }
 
@@ -2492,7 +2551,7 @@ function applySettingsPermissions() {
 function switchSettingsSubtab(subtabName) {
     if (!allowedSettingsSubtabs()[subtabName]) subtabName = 'general';
     state.settingsSubtab = subtabName;
-    const subtabs = ['general', 'server', 'cron', 'alerts', 'security'];
+    const subtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes'];
     subtabs.forEach(tab => {
         const btn = document.getElementById(`settings-tab-btn-${tab}`);
         const panel = document.getElementById(`settings-subtab-panel-${tab}`);
@@ -2504,6 +2563,214 @@ function switchSettingsSubtab(subtabName) {
         const isServerTab = ['server', 'cron', 'alerts'].includes(subtabName);
         el.settingsServerSelectBar.classList.toggle('hidden', !isServerTab);
     }
+
+    // The node list refreshes itself while it is visible.
+    clearInterval(state.nodesInterval);
+    state.nodesInterval = null;
+    if (subtabName === 'nodes') {
+        loadNodes();
+        state.nodesInterval = setInterval(() => {
+            if (state.lastActiveView === 'settings' && state.settingsSubtab === 'nodes') loadNodes();
+        }, 5000);
+    }
+}
+
+// -------------------------------------------------------------
+// Nodes (game servers on other machines)
+// -------------------------------------------------------------
+
+function initNodesPanel() {
+    const form = document.getElementById('nodes-add-form');
+    if (!form) return;
+    form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const name = document.getElementById('nodes-add-name').value.trim();
+        const mode = document.getElementById('nodes-add-mode').value;
+        if (!name) return;
+        if (await createNodePairing({ name, mode })) form.reset();
+    });
+    document.getElementById('nodes-refresh').addEventListener('click', loadNodes);
+    const copy = (btnId, codeId) => {
+        document.getElementById(btnId).addEventListener('click', async () => {
+            const text = document.getElementById(codeId).textContent;
+            try {
+                await navigator.clipboard.writeText(text);
+                const btn = document.getElementById(btnId);
+                btn.textContent = t('nodes-copied');
+                setTimeout(() => { btn.textContent = t('nodes-copy'); }, 1500);
+            } catch (e) {
+                // Clipboard access needs HTTPS; the command is selectable as fallback.
+                window.getSelection().selectAllChildren(document.getElementById(codeId));
+            }
+        });
+    };
+    copy('nodes-command-copy', 'nodes-command');
+    copy('nodes-command-direct-copy', 'nodes-command-direct');
+}
+
+// createNodePairing asks for a pairing command (new node or re-pairing) and shows it.
+async function createNodePairing(payload) {
+    try {
+        const res = await apiFetch('/api/admin/nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+            return false;
+        }
+        const ticket = data.ticket || {};
+        const minutes = Math.max(1, Math.round((new Date(ticket.expires) - Date.now()) / 60000));
+        document.getElementById('nodes-command-intro').textContent = t('nodes-command-intro')
+            .replace('{name}', ticket.name || ticket.node_id || '')
+            .replace('{minutes}', minutes);
+        document.getElementById('nodes-command').textContent = data.command || '';
+        const directRow = document.getElementById('nodes-command-direct-row');
+        directRow.classList.toggle('hidden', !data.command_direct);
+        document.getElementById('nodes-command-direct').textContent = data.command_direct || '';
+        document.getElementById('nodes-command-hint').textContent = t('nodes-command-hint');
+        const box = document.getElementById('nodes-command-box');
+        box.classList.remove('hidden');
+        box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        loadNodes();
+        return true;
+    } catch (e) {
+        alert(t('connection-error'));
+        return false;
+    }
+}
+
+function nodeStatusBadge(node) {
+    if (node.online && node.compatible) return `<span class="badge badge-success">${t('nodes-status-online')}</span>`;
+    if (node.online) return `<span class="badge badge-warning">${t('nodes-status-update')}</span>`;
+    if (node.problem) return `<span class="badge badge-danger">${t('nodes-status-problem')}</span>`;
+    return `<span class="badge badge-secondary">${t('nodes-status-offline')}</span>`;
+}
+
+function formatNodeTime(value) {
+    if (!value || String(value).startsWith('0001-')) return '-';
+    const d = new Date(value);
+    return isNaN(d) ? '-' : d.toLocaleString(state.language === 'de' ? 'de-DE' : 'en-GB');
+}
+
+async function loadNodes() {
+    const list = document.getElementById('nodes-list');
+    if (!list) return;
+    let data;
+    try {
+        const res = await apiFetch('/api/admin/nodes');
+        if (!res.ok) return;
+        data = await res.json();
+    } catch (e) {
+        return;
+    }
+    state.nodes = data.nodes || [];
+    // Do not rebuild the table while a mode select is open.
+    if (list.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return;
+    if (state.nodes.length === 0) {
+        list.innerHTML = `<p class="text-muted mb-0">${t('nodes-empty')}</p>`;
+        return;
+    }
+    const modeOption = (value, current) =>
+        `<option value="${value}" ${value === current ? 'selected' : ''}>${t('nodes-mode-' + value)}</option>`;
+    const rows = state.nodes.map(node => {
+        const id = jsArg(node.id);
+        const hello = node.hello || {};
+        const effective = node.effective_mode && node.effective_mode !== node.mode
+            ? `<div class="node-sub">${escapeHtml(t('nodes-effective').replace('{mode}', t('nodes-mode-' + node.effective_mode)))}</div>` : '';
+        const problem = node.problem ? `<div class="node-problem">${escapeHtml(node.problem)}</div>` : '';
+        return `
+            <tr>
+                <td><strong>${escapeHtml(node.name)}</strong><div class="node-sub mono">${escapeHtml(node.id)}</div></td>
+                <td>${nodeStatusBadge(node)}${problem}</td>
+                <td>
+                    <select class="form-control form-control-sm" onchange="updateNodeMode(${id}, this.value)" aria-label="${t('nodes-col-mode')}">
+                        ${modeOption('read-only', node.mode)}${modeOption('read-write', node.mode)}
+                    </select>
+                    ${effective}
+                </td>
+                <td>${escapeHtml(node.version || '-')}<div class="node-sub">${escapeHtml(hello.capabilities ? hello.capabilities.runtime : '')}</div></td>
+                <td>${escapeHtml(node.hostname || '-')}<div class="node-sub">${escapeHtml(formatNodeTime(node.last_seen))}</div></td>
+                <td>
+                    <div class="node-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="renameNode(${id})">${t('nodes-rename')}</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="repairNode(${id})">${t('nodes-repair')}</button>
+                        <button type="button" class="btn btn-danger btn-sm" onclick="removeNode(${id})">${t('nodes-remove')}</button>
+                    </div>
+                </td>
+            </tr>`;
+    }).join('');
+    list.innerHTML = `
+        <div class="nodes-list-scroll">
+            <table>
+                <thead><tr>
+                    <th>${t('nodes-col-node')}</th><th>${t('nodes-col-status')}</th><th>${t('nodes-col-mode')}</th>
+                    <th>${t('nodes-col-version')}</th><th>${t('nodes-col-host')}</th><th></th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>`;
+}
+
+function findNode(nodeId) {
+    return (state.nodes || []).find(n => n.id === nodeId);
+}
+
+async function updateNode(nodeId, name, mode) {
+    try {
+        const res = await apiFetch('/api/admin/nodes/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: nodeId, name, mode }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    loadNodes();
+}
+
+function updateNodeMode(nodeId, mode) {
+    const node = findNode(nodeId);
+    if (node) updateNode(nodeId, node.name, mode);
+}
+
+function renameNode(nodeId) {
+    const node = findNode(nodeId);
+    if (!node) return;
+    const name = prompt(t('nodes-rename-prompt'), node.name);
+    if (name && name.trim() && name.trim() !== node.name) updateNode(nodeId, name.trim(), node.mode);
+}
+
+function repairNode(nodeId) {
+    const node = findNode(nodeId);
+    if (!node) return;
+    if (!confirm(t('nodes-repair-confirm').replace('{name}', node.name))) return;
+    createNodePairing({ repair_id: nodeId, mode: node.mode });
+}
+
+async function removeNode(nodeId) {
+    const node = findNode(nodeId);
+    if (!node || !confirm(t('nodes-remove-confirm').replace('{name}', node.name))) return;
+    try {
+        const res = await apiFetch('/api/admin/nodes/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: nodeId }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    loadNodes();
 }
 
 async function loadFirewallStatus() {
@@ -2623,7 +2890,7 @@ function populateSettingsServerSelect() {
     state.servers.forEach(server => {
         const opt = document.createElement('option');
         opt.value = server.id;
-        opt.textContent = `${server.name} (${server.user})`;
+        opt.textContent = serverLabel(server);
         el.settingsServerSelect.appendChild(opt);
     });
     
@@ -3531,6 +3798,42 @@ const i18n = {
         "settings-subtab-cron": "Crontab & Scheduler",
         "settings-subtab-alerts": "Alerts",
         "settings-subtab-security": "Firewall & Security",
+        "settings-subtab-nodes": "Nodes",
+        "nodes-add-title": "Add node",
+        "nodes-add-desc": "A node is another machine (for example an LXC container or a VPS) whose game servers are managed here as well. The node connects to this dashboard; the connection is encrypted end to end.",
+        "nodes-add-name": "Name",
+        "nodes-add-mode": "Access",
+        "nodes-mode-read-only": "Read only (start/stop allowed)",
+        "nodes-mode-read-write": "Read and write",
+        "nodes-add-btn": "Create pairing command",
+        "nodes-command-intro": "Run this command as root on the node \"{name}\". It is valid once, for {minutes} minutes.",
+        "nodes-command-direct": "Alternatively via the direct agent port:",
+        "nodes-command-hint": "Afterwards start the agent on the node with \"/opt/lgsm-dashboard/lgsm-dashboard agent run\". The node appears below as soon as it is connected.",
+        "nodes-copy": "Copy",
+        "nodes-copied": "Copied",
+        "nodes-list-title": "Nodes",
+        "nodes-refresh": "Refresh",
+        "nodes-empty": "No nodes yet.",
+        "nodes-col-node": "Node",
+        "nodes-col-status": "Status",
+        "nodes-col-mode": "Access",
+        "nodes-col-version": "Version",
+        "nodes-col-host": "Host / last seen",
+        "nodes-status-online": "Online",
+        "nodes-status-offline": "Offline",
+        "nodes-status-update": "Update required",
+        "nodes-status-problem": "Problem",
+        "nodes-effective": "Effective: {mode} (restricted on the node)",
+        "nodes-rename": "Rename",
+        "nodes-rename-prompt": "New name of the node:",
+        "nodes-repair": "Pair again",
+        "nodes-repair-confirm": "Create a new pairing command for \"{name}\"? Once it is used, the current installation of the node can no longer connect. Assignments and tags are kept.",
+        "nodes-remove": "Remove",
+        "nodes-remove-confirm": "Remove the node \"{name}\"? It is disconnected at once, and its user assignments and tags are deleted. The game servers on the node are not touched.",
+        "nodes-error": "Error",
+        "card-node-offline": "Node offline",
+        "card-node-read-only": "Read-only node: start, stop and restart only",
+        "users-nodes-label": "Nodes (all servers of the node, including new ones)",
         "settings-server-select-hint": "Settings apply to the selected server instance.",
         "settings-select-server-prompt": "Please select a server above to view server tools and instance settings.",
         "settings-select-server-prompt-cron": "Please select a server above to manage scheduled maintenance tasks.",
@@ -4031,6 +4334,42 @@ const i18n = {
         "settings-subtab-cron": "Crontab & Scheduler",
         "settings-subtab-alerts": "Benachrichtigungen",
         "settings-subtab-security": "Firewall & Sicherheit",
+        "settings-subtab-nodes": "Nodes",
+        "nodes-add-title": "Node hinzufügen",
+        "nodes-add-desc": "Ein Node ist ein weiterer Rechner (z. B. ein LXC-Container oder ein VPS), dessen Gameserver hier mit verwaltet werden. Der Node verbindet sich mit diesem Dashboard; die Verbindung ist Ende-zu-Ende verschlüsselt.",
+        "nodes-add-name": "Name",
+        "nodes-add-mode": "Zugriff",
+        "nodes-mode-read-only": "Nur lesen (Start/Stop erlaubt)",
+        "nodes-mode-read-write": "Lesen und schreiben",
+        "nodes-add-btn": "Pairing-Befehl erstellen",
+        "nodes-command-intro": "Führe diesen Befehl als root auf dem Node \"{name}\" aus. Er gilt einmal und {minutes} Minuten lang.",
+        "nodes-command-direct": "Alternativ über den direkten Agent-Port:",
+        "nodes-command-hint": "Danach den Agent auf dem Node mit \"/opt/lgsm-dashboard/lgsm-dashboard agent run\" starten. Der Node erscheint unten, sobald er verbunden ist.",
+        "nodes-copy": "Kopieren",
+        "nodes-copied": "Kopiert",
+        "nodes-list-title": "Nodes",
+        "nodes-refresh": "Aktualisieren",
+        "nodes-empty": "Noch keine Nodes.",
+        "nodes-col-node": "Node",
+        "nodes-col-status": "Status",
+        "nodes-col-mode": "Zugriff",
+        "nodes-col-version": "Version",
+        "nodes-col-host": "Host / zuletzt gesehen",
+        "nodes-status-online": "Online",
+        "nodes-status-offline": "Offline",
+        "nodes-status-update": "Update nötig",
+        "nodes-status-problem": "Problem",
+        "nodes-effective": "Effektiv: {mode} (auf dem Node eingeschränkt)",
+        "nodes-rename": "Umbenennen",
+        "nodes-rename-prompt": "Neuer Name des Nodes:",
+        "nodes-repair": "Neu koppeln",
+        "nodes-repair-confirm": "Neuen Pairing-Befehl für \"{name}\" erstellen? Sobald er benutzt wird, kann sich die bisherige Installation des Nodes nicht mehr verbinden. Zuweisungen und Tags bleiben erhalten.",
+        "nodes-remove": "Entfernen",
+        "nodes-remove-confirm": "Node \"{name}\" entfernen? Er wird sofort getrennt, seine Benutzerzuweisungen und Tags werden gelöscht. Die Gameserver auf dem Node bleiben unberührt.",
+        "nodes-error": "Fehler",
+        "card-node-offline": "Node offline",
+        "card-node-read-only": "Read-only-Node: nur Start, Stop und Restart",
+        "users-nodes-label": "Nodes (alle Server des Nodes, auch neue)",
         "settings-server-select-hint": "Einstellungen gelten für die ausgewählte Server-Instanz.",
         "settings-select-server-prompt": "Bitte wähle oben einen Server aus, um Server-Tools und Instanz-Einstellungen anzuzeigen.",
         "settings-select-server-prompt-cron": "Bitte wähle oben einen Server aus, um geplante Wartungsaufgaben zu verwalten.",
@@ -4520,12 +4859,16 @@ async function loadUsersList() {
                 '<span class="badge badge-success" style="font-size: 0.75rem;">Admin</span>' : 
                 '<span class="badge badge-secondary" style="font-size: 0.75rem;">User</span>';
                 
-            const servers = user.role === 'admin' ? 
+            let servers = user.role === 'admin' ? 
                 `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Alle Server' : 'All Servers'}</span>` : 
                 (user.servers && user.servers.length > 0 ? 
                     user.servers.map(s => `<code style="font-size: 0.8rem;">${escapeHtml(s)}</code>`).join(', ') : 
                     `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Keine' : 'None'}</span>`);
                     
+            if (user.role !== 'admin' && user.nodes && user.nodes.length > 0) {
+                const chips = user.nodes.map(n => `<span class="node-chip">${escapeHtml(n)}</span>`).join(' ');
+                servers = user.servers && user.servers.length > 0 ? `${servers} ${chips}` : chips;
+            }
             const perms = user.role === 'admin' ? 
                 `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Voller Zugriff' : 'Full Access'}</span>` : 
                 (user.permissions && user.permissions.length > 0 ? 
@@ -4594,9 +4937,10 @@ async function populateUserServerCheckboxes() {
                 label.style.cursor = 'pointer';
                 label.style.fontSize = '0.85rem';
                 
+                const node = srv.node ? ` · ${escapeHtml(srv.node_name || srv.node)}` : '';
                 label.innerHTML = `
                     <input type="checkbox" name="user-assigned-servers" value="${escapeHtml(srv.id)}">
-                    <span>${escapeHtml(srv.name)} (<code>${escapeHtml(srv.user)}</code>)</span>
+                    <span>${escapeHtml(srv.name)} (<code>${escapeHtml(srv.user)}</code>)${node}</span>
                 `;
                 listDiv.appendChild(label);
             });
@@ -4604,6 +4948,33 @@ async function populateUserServerCheckboxes() {
     } catch (e) {
         console.error('Failed to load servers for user form:', e);
     }
+    await populateUserNodeCheckboxes();
+}
+
+// populateUserNodeCheckboxes lists the nodes a user can be assigned to as a whole.
+async function populateUserNodeCheckboxes() {
+    const section = document.getElementById('user-nodes-section');
+    const list = document.getElementById('user-nodes-list');
+    if (!section || !list) return;
+    list.innerHTML = '';
+    let nodes = [];
+    try {
+        const res = await apiFetch('/api/admin/nodes');
+        if (res.ok) nodes = (await res.json()).nodes || [];
+    } catch (e) {
+        nodes = [];
+    }
+    section.classList.toggle('hidden', nodes.length === 0);
+    nodes.forEach(node => {
+        const label = document.createElement('label');
+        label.className = 'checkbox-label';
+        label.style.cssText = 'display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.85rem;';
+        label.innerHTML = `
+            <input type="checkbox" name="user-assigned-nodes" value="${escapeHtml(node.id)}">
+            <span>${escapeHtml(node.name)} (<code>${escapeHtml(node.id)}</code>)</span>
+        `;
+        list.appendChild(label);
+    });
 }
 
 async function openCreateUserModal() {
@@ -4668,6 +5039,9 @@ async function openEditUserModal(username) {
             serverCheckboxes.forEach(cb => {
                 cb.checked = user.servers && user.servers.includes(cb.value);
             });
+            document.querySelectorAll('input[name="user-assigned-nodes"]').forEach(cb => {
+                cb.checked = !!(user.nodes && user.nodes.includes(cb.value));
+            });
             
             const permCheckboxes = document.querySelectorAll('#user-permissions-list input[type="checkbox"]');
             permCheckboxes.forEach(cb => {
@@ -4724,6 +5098,10 @@ async function saveUserForm() {
         const checkedServers = document.querySelectorAll('input[name="user-assigned-servers"]:checked');
         checkedServers.forEach(cb => servers.push(cb.value));
     }
+    const nodes = [];
+    if (role === 'user') {
+        document.querySelectorAll('input[name="user-assigned-nodes"]:checked').forEach(cb => nodes.push(cb.value));
+    }
     
     let permissions = [];
     if (role === 'user') {
@@ -4747,6 +5125,7 @@ async function saveUserForm() {
                     password: password || undefined,
                     role,
                     servers,
+                    nodes,
                     permissions
                 })
             });
@@ -4759,6 +5138,7 @@ async function saveUserForm() {
                     password,
                     role,
                     servers,
+                    nodes,
                     permissions
                 })
             });
@@ -4816,7 +5196,7 @@ function populateBackupsDropdown() {
     state.servers.forEach(server => {
         const opt = document.createElement('option');
         opt.value = server.id;
-        opt.textContent = `${server.name} (${server.user})`;
+        opt.textContent = serverLabel(server);
         el.backupsServerSelect.appendChild(opt);
     });
     
@@ -5514,14 +5894,16 @@ function renderConsoleGameActions(server) {
             <button id="game-act-fastdl" class="btn btn-primary btn-sm" ${disabledAttr}>
                 <span>${isDe ? 'FastDL erzeugen (bzip2)' : 'Build FastDL (bzip2)'}</span>
             </button>
+            ${server.node ? '' : `
             <div style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;">
                 <span style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.35rem;">
-                    <strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${window.location.protocol}//${window.location.host}/fastdl/${server.id}/</code>
+                    <strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${escapeHtml(fastdlUrl(server))}</code>
                 </span>
-                <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText('${window.location.protocol}//${window.location.host}/fastdl/${server.id}/'); alert(state.language === 'de' ? 'FastDL URL in die Zwischenablage kopiert!' : 'FastDL URL copied to clipboard!');">
+                <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText(${jsArg(fastdlUrl(server))}); alert(state.language === 'de' ? 'FastDL URL in die Zwischenablage kopiert!' : 'FastDL URL copied to clipboard!');">
                     ${isDe ? 'Kopieren' : 'Copy'}
                 </button>
             </div>
+            `}
         `;
         clickHandlers.push({ id: 'game-act-fastdl', action: 'fastdl' });
 
@@ -5660,7 +6042,7 @@ function openPlayersModal(serverId) {
 
     el.modalPlayersTbody.innerHTML = '';
     const players = query.players || [];
-    const canKick = hasUserPermission('console');
+    const canKick = hasUserPermission('console') && !isReadOnlyNodeServer(server) && !server.node_offline;
 
     if (players.length === 0) {
         const msg = query.num_players > 0
@@ -5812,7 +6194,7 @@ function openModsModal(server) {
     el.modalMods.classList.remove('hidden');
     el.modalModsList.innerHTML = `<div class="text-center text-muted py-3">${t('mods-loading')}</div>`;
 
-    fetch(`/api/servers/${server.id}/mods`)
+    fetch(`/api/servers/${encodeURIComponent(server.id)}/mods`)
         .then(r => r.json())
         .then(data => {
             const installed = data.installed || [];
