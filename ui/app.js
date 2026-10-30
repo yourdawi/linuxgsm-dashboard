@@ -1872,6 +1872,7 @@ async function openConfigEditor(serverId, selectPath) {
             if (file.layer === 'default') layerBadge = `<span class="badge badge-secondary" style="font-size:0.65rem; margin-left:auto;">Default</span>`;
             else if (file.layer === 'common') layerBadge = `<span class="badge badge-info" style="font-size:0.65rem; margin-left:auto;">Common</span>`;
             else if (file.layer === 'secrets') layerBadge = `<span class="badge badge-warning" style="font-size:0.65rem; margin-left:auto;">Secrets</span>`;
+            else if (file.layer === 'game') layerBadge = `<span class="badge badge-success" style="font-size:0.65rem; margin-left:auto;" title="${escapeHtml(t('config-game-badge-title'))}">${escapeHtml(t('config-game-badge'))}</span>`;
             else layerBadge = `<span class="badge badge-primary" style="font-size:0.65rem; margin-left:auto;">Instance</span>`;
 
             li.style.display = 'flex';
@@ -3616,6 +3617,8 @@ const i18n = {
         "btn-mods-install": "Install Mods",
         "btn-mods-update": "Update Mods",
         "btn-mods-remove": "Remove Mods",
+        "config-game-badge": "Game",
+        "config-game-badge-title": "The config file LinuxGSM starts the game with (servercfgfullpath)",
         "delete-force-confirm": "The server is still running after the stop command (for example players are online and LinuxGSM only stops empty servers). End its session and delete it anyway?",
         "delete-installing": "The server is still being installed. Delete it when the installation has finished.",
         "btn-change-password": "Set ServerAdmin password",
@@ -4187,6 +4190,8 @@ const i18n = {
         "btn-mods-install": "Mods Installieren",
         "btn-mods-update": "Mods Updaten",
         "btn-mods-remove": "Mods entfernen",
+        "config-game-badge": "Spiel",
+        "config-game-badge-title": "Die Konfigurationsdatei, mit der LinuxGSM das Spiel startet (servercfgfullpath)",
         "delete-force-confirm": "Der Server läuft nach dem Stopp-Befehl noch (zum Beispiel sind Spieler online und LinuxGSM stoppt nur leere Server). Sitzung beenden und trotzdem löschen?",
         "delete-installing": "Der Server wird noch installiert. Lösche ihn, wenn die Installation abgeschlossen ist.",
         "btn-change-password": "ServerAdmin-Passwort setzen",

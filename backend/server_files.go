@@ -153,10 +153,22 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 		}
 	}
 
-	// 2. Scan gameserver files directory recursively: <dir>/serverfiles/
+	// 2. The game config LinuxGSM itself uses (servercfgfullpath), wherever the game keeps it.
+	for _, p := range linuxGSMConfigPaths(srv) {
+		if _, ok := isLinuxGSMConfigFile(srv, p); !ok {
+			continue
+		}
+		name := filepath.Base(p)
+		if rel, err := filepath.Rel(srv.Dir, p); err == nil && !strings.HasPrefix(rel, "..") {
+			name = filepath.ToSlash(rel)
+		}
+		addConfig(name, p, "game")
+	}
+
+	// 3. Other configs below serverfiles.
 	serverfilesDir := filepath.Join(srv.Dir, "serverfiles")
 	if _, err := ServerSubRoot(srv.Dir, "serverfiles", srv.UID); err == nil {
-		found := findConfigsInDir(srv.Dir, serverfilesDir, 0)
+		found := findConfigs(srv.Dir, serverfilesDir)
 		for _, cfg := range found {
 			addConfig(cfg.Name, cfg.Path, "instance")
 		}
@@ -167,6 +179,10 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 
 // resolveConfigPath validates an absolute path from the config file list.
 func resolveConfigPath(srv GameServerInstance, path string) (string, error) {
+	// The game config LinuxGSM uses is allowed whatever its extension and location.
+	if resolved, ok := isLinuxGSMConfigFile(srv, path); ok {
+		return resolved, nil
+	}
 	if !IsEditableConfigFile(path) {
 		return "", fmt.Errorf("access denied: file type not editable in config editor")
 	}

@@ -1,7 +1,9 @@
 package backend
 
 import (
+	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -38,11 +40,33 @@ func gameServerName(script string) string {
 	return strings.Split(script, "-")[0]
 }
 
+var reGameServerName = regexp.MustCompile(`(?m)^gameservername="([a-z0-9]+)"`)
+
+// gameServerNameOf returns the gameservername the LinuxGSM script in dir declares; a renamed
+// script (rust-eu, mc_survival) keeps the name of its game there. Without a readable script the
+// name is derived from the script name.
+func gameServerNameOf(dir, script string) string {
+	if resolved, err := ResolveInRoot(dir, script); err == nil {
+		if f, err := OpenInRootForRead(resolved); err == nil {
+			buf := make([]byte, 8192)
+			n, _ := io.ReadFull(f, buf)
+			f.Close()
+			if m := reGameServerName.FindSubmatch(buf[:n]); m != nil && IsValidScriptName(string(m[1])) {
+				return string(m[1])
+			}
+		}
+	}
+	return gameServerName(script)
+}
+
 // lgsmConfigRel is the directory LinuxGSM loads the configs of this instance from
 // (configdirserver = config-lgsm/<gameservername>): _default.cfg, common.cfg,
 // secrets-common.cfg, <script>.cfg and secrets-<script>.cfg.
 func (srv GameServerInstance) lgsmConfigRel() string {
-	return srv.configRel(gameServerName(srv.Script))
+	if srv.Layout == LayoutData {
+		return srv.configRel(gameServerName(srv.Script)) // the script lives in the image
+	}
+	return srv.configRel(gameServerNameOf(srv.Dir, srv.Script))
 }
 
 // lgsmDataRel is the LinuxGSM data directory (serverlist, uid files).
