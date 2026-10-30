@@ -6255,16 +6255,10 @@ function renderConsoleGameActions(server) {
             { id: 'game-act-mods-update', action: 'mods-update' }
         );
     } 
-    // 2. TeamSpeak 3
-    else if (game === 'ts3') {
-        buttonsHtml += `
-            <button id="game-act-ts3-pw" class="btn btn-warning btn-sm" ${disabledAttr}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                <span>${isDe ? 'Query-Admin-Passwort zurücksetzen' : 'Reset query admin password'}</span>
-            </button>
-        `;
-        clickHandlers.push({ id: 'game-act-ts3-pw', open: () => openTs3PasswordModal(server) });
-    }
+    // 2. TeamSpeak 3: no button for now. LinuxGSM's change-password reports success but never
+    // passes the password to ts3server (its parms/ts3serverpass variables are no longer read).
+    // openTs3PasswordModal is ready for when LinuxGSM fixes it:
+    //   clickHandlers.push({ id: 'game-act-ts3-pw', open: () => openTs3PasswordModal(server) });
     // 3. Source Engine & FastDL Supported Games (CS2, CS:GO, TF2, CSS, GMod, CoD4, Sven Co-op, Xonotic, etc.)
     else if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih', 'cod4', 'sven', 'xon'].includes(game)) {
         buttonsHtml += `
