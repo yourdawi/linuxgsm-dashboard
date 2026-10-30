@@ -1083,7 +1083,10 @@
                     <div class="settings-card glass-panel">
                         <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem;">
                             <h3 style="margin:0;" data-i18n="nodes-list-title">Nodes</h3>
-                            <button type="button" class="btn btn-secondary btn-sm" id="nodes-refresh" data-i18n="nodes-refresh">Aktualisieren</button>
+                            <div style="display:flex; gap:0.5rem;">
+                                <button type="button" class="btn btn-primary btn-sm hidden" id="nodes-upgrade-all" data-i18n="nodes-upgrade-all">Alle Nodes aktualisieren</button>
+                                <button type="button" class="btn btn-secondary btn-sm" id="nodes-refresh" data-i18n="nodes-refresh">Aktualisieren</button>
+                            </div>
                         </div>
                         <div id="nodes-list" class="nodes-list mt-3"></div>
                     </div>

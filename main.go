@@ -592,6 +592,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/nodes", a.requireAdmin(a.handleNodes))
 	mux.HandleFunc("/api/admin/nodes/update", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeUpdate)))
 	mux.HandleFunc("/api/admin/nodes/delete", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeDelete)))
+	mux.HandleFunc("/api/admin/nodes/upgrade", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeUpgrade)))
 	// Agents authenticate inside the connection (mutual TLS), not with a session.
 	mux.HandleFunc(backend.AgentConnectPath, methodOnly(http.MethodGet, a.handleAgentConnect))
 
@@ -2383,6 +2384,7 @@ func (a *app) handleAgentConnect(w http.ResponseWriter, r *http.Request) {
 type nodeView struct {
 	backend.Node
 	backend.NodeStatus
+	Update backend.NodeUpdate `json:"update"`
 }
 
 // GET /api/admin/nodes lists the nodes; POST creates a pairing command for a new node (name,
@@ -2400,7 +2402,7 @@ func (a *app) handleNodes(w http.ResponseWriter, r *http.Request, admin backend.
 				hello.MachineID = ""
 				st.Hello = &hello
 			}
-			views = append(views, nodeView{Node: n, NodeStatus: st})
+			views = append(views, nodeView{Node: n, NodeStatus: st, Update: backend.NodeUpdateInfo(Version, a.agents.Hub.Status(n.ID))})
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": views, "agent_port": a.agentPort})
 
@@ -2480,6 +2482,59 @@ func (a *app) handleNodeUpdate(w http.ResponseWriter, r *http.Request, admin bac
 	}
 	a.auth.LogAudit(admin.Username, a.clientIP(r), "NODE_UPDATE", fmt.Sprintf("Updated node %s (%s)", payload.ID, payload.Mode), "")
 	writeOK(w)
+}
+
+// POST /api/admin/nodes/upgrade updates a node to the dashboard's release. The node downloads and
+// verifies the release itself (same signature check as a dashboard update) and restarts.
+func (a *app) handleNodeUpgrade(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) {
+		return
+	}
+	if !backend.IsValidNodeID(payload.ID) {
+		writeError(w, http.StatusBadRequest, "Invalid node")
+		return
+	}
+	info := backend.NodeUpdateInfo(Version, a.agents.Hub.Status(payload.ID))
+	client, ok := a.agents.Hub.Tunnel(payload.ID)
+	if !info.Possible || !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "The node cannot be updated from the dashboard", "reason": info.Reason})
+		return
+	}
+	backend.DisableWriteDeadline(w)
+	body, _ := json.Marshal(map[string]string{"tag_name": info.Target})
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/api/admin/update/trigger", bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(backend.AgentActorHeader, admin.Username)
+	req.Header.Set(backend.AgentActorIPHeader, a.clientIP(r))
+	a.auth.LogAudit(admin.Username, a.clientIP(r), "NODE_UPGRADE", fmt.Sprintf("Updating node %s to %s", payload.ID, info.Target), "")
+	resp, err := client.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "The node did not answer")
+		return
+	}
+	defer resp.Body.Close()
+	var answer struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&answer)
+	if resp.StatusCode != http.StatusOK {
+		msg := plainText(answer.Error, 300)
+		if msg == "" {
+			msg = resp.Status
+		}
+		writeError(w, http.StatusBadGateway, "The node could not update: "+msg)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "target": info.Target})
 }
 
 // POST /api/admin/nodes/delete removes a node; its tunnel is closed and its key stops working.

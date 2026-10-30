@@ -347,7 +347,7 @@ Game servers on other machines, for example further LXC containers, VMs or a ren
 - **Users** can be assigned to individual servers of a node or to a whole node, which also covers servers installed there later. Servers of nodes have the ID `<node>~<server>`.
 - **Offline nodes** keep their servers in the list with their last known state, marked as offline.
 - **Certificates** of nodes are valid for 30 days and renewed automatically through the connection about 10 days before they expire; the new key is created on the node. A node that was offline for more than 30 days has to be paired again (Settings > Nodes > *Pair again*, which keeps its assignments).
-- Dashboard and nodes must run the same minor version (for example 1.2.x); a node with another version shows "update required" and is not used until it is updated.
+- Dashboard and nodes must run the same minor version (for example 1.2.x); a node with another version shows "update required" and is not used until it is updated. Settings > Nodes offers *Update to <version>* per node and *Update all nodes* (one after the other) once the dashboard runs a release: the node downloads that release itself, checks its signature like a dashboard update and restarts its agent. Docker nodes are updated with `docker compose pull` and `docker compose up -d`; `allow_self_update: false` in `agent-policy.json` turns updates from the dashboard off.
 
 ### Installing a node
 

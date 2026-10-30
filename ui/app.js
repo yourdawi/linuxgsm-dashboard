@@ -2692,6 +2692,7 @@ function initNodesPanel() {
         if (await createNodePairing({ name, mode })) form.reset();
     });
     document.getElementById('nodes-refresh').addEventListener('click', loadNodes);
+    document.getElementById('nodes-upgrade-all').addEventListener('click', upgradeAllNodes);
     const copy = (btnId, codeId) => {
         document.getElementById(btnId).addEventListener('click', async () => {
             const text = document.getElementById(codeId).textContent;
@@ -2779,6 +2780,8 @@ async function loadNodes() {
         return;
     }
     state.nodes = data.nodes || [];
+    const upgradeAll = document.getElementById('nodes-upgrade-all');
+    if (upgradeAll) upgradeAll.classList.toggle('hidden', !state.nodes.some(n => n.update && n.update.possible));
     // Do not rebuild the table while a mode select is open.
     if (list.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return;
     if (state.nodes.length === 0) {
@@ -2803,7 +2806,7 @@ async function loadNodes() {
                     </select>
                     ${effective}
                 </td>
-                <td>${escapeHtml(node.version || '-')}<div class="node-sub">${escapeHtml(hello.capabilities ? hello.capabilities.runtime : '')}</div></td>
+                <td>${escapeHtml(node.version || '-')}<div class="node-sub">${escapeHtml(hello.capabilities ? hello.capabilities.runtime : '')}</div>${nodeUpdateCell(node)}</td>
                 <td>${escapeHtml(node.hostname || '-')}<div class="node-sub">${escapeHtml(formatNodeTime(node.last_seen))}</div></td>
                 <td class="node-load">${nodeLoad(node)}</td>
                 <td>
@@ -2865,6 +2868,57 @@ function repairNode(nodeId) {
     if (!node) return;
     if (!confirm(t('nodes-repair-confirm').replace('{name}', node.name))) return;
     createNodePairing({ repair_id: nodeId, mode: node.mode });
+}
+
+// nodeUpdateCell shows whether a node runs the dashboard's version and offers the update.
+function nodeUpdateCell(node) {
+    const u = node.update || {};
+    if (u.possible) {
+        return `<button type="button" class="btn btn-primary btn-xs mt-1" onclick="upgradeNode(${jsArg(node.id)})">${escapeHtml(t('nodes-upgrade-btn').replace('{version}', u.target))}</button>`;
+    }
+    if (!u.reason || u.reason === 'offline' || u.reason === 'current' || u.reason === 'dashboard-dev') return '';
+    return `<div class="node-sub">${escapeHtml(t('nodes-upgrade-' + u.reason))}</div>`;
+}
+
+// upgradeNode asks the node to install the dashboard's release; the node verifies the release
+// itself and restarts, so it is briefly offline.
+async function upgradeNode(nodeId, quiet) {
+    const node = findNode(nodeId);
+    if (!node) return false;
+    if (!quiet && !confirm(t('nodes-upgrade-confirm').replace('{name}', node.name).replace('{version}', (node.update || {}).target || ''))) return false;
+    try {
+        const res = await apiFetch('/api/admin/nodes/upgrade', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: nodeId }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${node.name}: ${data.error || res.status}`);
+            return false;
+        }
+        return true;
+    } catch (e) {
+        alert(t('connection-error'));
+        return false;
+    } finally {
+        setTimeout(loadNodes, 3000);
+    }
+}
+
+async function upgradeAllNodes() {
+    const nodes = (state.nodes || []).filter(n => n.update && n.update.possible);
+    if (nodes.length === 0) return;
+    const target = nodes[0].update.target;
+    if (!confirm(t('nodes-upgrade-all-confirm').replace('{count}', nodes.length).replace('{version}', target))) return;
+    const btn = document.getElementById('nodes-upgrade-all');
+    if (btn) btn.disabled = true;
+    // One after the other, so a broken release does not take every node down at once.
+    for (const n of nodes) {
+        if (!(await upgradeNode(n.id, true))) break;
+    }
+    if (btn) btn.disabled = false;
+    loadNodes();
 }
 
 async function removeNode(nodeId) {
@@ -3933,6 +3987,14 @@ const i18n = {
         "nodes-col-version": "Version",
         "nodes-col-host": "Host / last seen",
         "nodes-col-load": "Load",
+        "nodes-upgrade-all": "Update all nodes",
+        "nodes-upgrade-btn": "Update to {version}",
+        "nodes-upgrade-confirm": "Update the node \"{name}\" to {version}? It downloads and verifies the release itself and restarts the agent.",
+        "nodes-upgrade-all-confirm": "Update {count} node(s) to {version}, one after the other? Each agent restarts briefly.",
+        "nodes-upgrade-node-newer": "Newer than the dashboard: update the dashboard",
+        "nodes-upgrade-no-self-update": "Docker: update with docker compose pull && docker compose up -d",
+        "nodes-upgrade-disabled": "Updates from the dashboard are disabled on the node (allow_self_update)",
+        "nodes-upgrade-unknown": "Build from source: update on the node",
         "nodes-status-online": "Online",
         "nodes-status-offline": "Offline",
         "nodes-status-update": "Update required",
@@ -4480,6 +4542,14 @@ const i18n = {
         "nodes-col-version": "Version",
         "nodes-col-host": "Host / zuletzt gesehen",
         "nodes-col-load": "Auslastung",
+        "nodes-upgrade-all": "Alle Nodes aktualisieren",
+        "nodes-upgrade-btn": "Auf {version} aktualisieren",
+        "nodes-upgrade-confirm": "Node \"{name}\" auf {version} aktualisieren? Er lädt und prüft das Release selbst und startet den Agent neu.",
+        "nodes-upgrade-all-confirm": "{count} Node(s) nacheinander auf {version} aktualisieren? Jeder Agent startet kurz neu.",
+        "nodes-upgrade-node-newer": "Neuer als das Dashboard: Dashboard aktualisieren",
+        "nodes-upgrade-no-self-update": "Docker: mit docker compose pull && docker compose up -d aktualisieren",
+        "nodes-upgrade-disabled": "Updates vom Dashboard sind auf dem Node aus (allow_self_update)",
+        "nodes-upgrade-unknown": "Build aus dem Quellcode: auf dem Node aktualisieren",
         "nodes-status-online": "Online",
         "nodes-status-offline": "Offline",
         "nodes-status-update": "Update nötig",

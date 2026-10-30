@@ -381,3 +381,31 @@ func TestInstallOnNode(t *testing.T) {
 	// Host statistics of the node reach the node list.
 	m.waitFor(t, func() bool { return m.app.agents.Hub.Status("node-a").Host != nil })
 }
+
+func TestNodeUpgradeEndpoint(t *testing.T) {
+	m := newMultiNodeEnv(t, backend.AgentModeReadWrite)
+	admin := m.login("admin2")
+
+	// The test binary is a build from source ("dev"), and the node runs the same version: the
+	// dashboard offers no update and refuses to trigger one.
+	var list struct {
+		Nodes []struct {
+			ID     string             `json:"id"`
+			Update backend.NodeUpdate `json:"update"`
+		} `json:"nodes"`
+	}
+	_ = json.Unmarshal(m.do(&admin, http.MethodGet, "/api/admin/nodes", nil).Body.Bytes(), &list)
+	if len(list.Nodes) != 1 || list.Nodes[0].Update.Possible || list.Nodes[0].Update.Reason == "" {
+		t.Fatalf("update info: %+v", list.Nodes)
+	}
+	rec := m.do(&admin, http.MethodPost, "/api/admin/nodes/upgrade", map[string]string{"id": "node-a"})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "reason") {
+		t.Fatalf("upgrade without a release: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Administrators only.
+	full := m.login("full")
+	if rec := m.do(&full, http.MethodPost, "/api/admin/nodes/upgrade", map[string]string{"id": "node-a"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin: %d", rec.Code)
+	}
+}
