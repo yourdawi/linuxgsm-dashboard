@@ -52,6 +52,7 @@ func newMultiNodeEnv(t *testing.T, controllerMode string) *multiNodeEnv {
 	}
 
 	ae := newAgentEnv(t, backend.AgentPolicy{Mode: backend.AgentModeReadWrite})
+	ae.app.metrics = backend.NewSystemMetricsCollector()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -279,4 +280,104 @@ func TestHardenNodeResponse(t *testing.T) {
 	if resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Errorf("SSE content type %q", resp.Header.Get("Content-Type"))
 	}
+}
+
+func TestNodeFastDLModes(t *testing.T) {
+	m := newMultiNodeEnv(t, backend.AgentModeReadWrite)
+	admin := m.login("admin2")
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		m.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+	const file = "/fastdl/node-a~srv1/maps/de_test.bsp"
+
+	// Default: the dashboard serves the node's FastDL publicly through the tunnel.
+	rec := get(file)
+	if rec.Code != http.StatusOK || rec.Body.String() != "MAPDATA" {
+		t.Fatalf("FastDL via dashboard: %d %q", rec.Code, rec.Body.String())
+	}
+	if csp := rec.Header().Get("Content-Security-Policy"); csp != sandboxCSP {
+		t.Fatalf("CSP %q", csp)
+	}
+	if rec := get("/fastdl/node-a~srv1/../srv2/x"); rec.Code == http.StatusOK {
+		t.Fatal("traversal served")
+	}
+
+	// "node" exists only for node servers; local servers refuse it.
+	if rec := m.do(&admin, http.MethodPost, "/api/servers/srv1/fastdl", map[string]string{"mode": "node"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("node mode on a local server: %d", rec.Code)
+	}
+	if rec := m.do(&admin, http.MethodPost, "/api/servers/node-a~srv1/fastdl", map[string]string{"mode": "node"}); rec.Code != http.StatusOK {
+		t.Fatalf("node mode: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := get(file); rec.Code != http.StatusNotFound {
+		t.Fatalf("dashboard still serves a server in mode node: %d", rec.Code)
+	}
+	// The node's own FastDL port serves it now, and nothing else.
+	nodeGet := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		m.agent.app.serveNodeFastDL(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+	if rec := nodeGet("/fastdl/srv1/maps/de_test.bsp"); rec.Code != http.StatusOK || rec.Body.String() != "MAPDATA" {
+		t.Fatalf("node FastDL port: %d %q", rec.Code, rec.Body.String())
+	}
+	for _, p := range []string{"/fastdl/srv2/maps/de_test.bsp", "/api/servers", "/agent/v1/hello", "/fastdl/srv1/"} {
+		if rec := nodeGet(p); rec.Code != http.StatusNotFound {
+			t.Errorf("node FastDL port served %s: %d", p, rec.Code)
+		}
+	}
+
+	// "off" stops both.
+	if rec := m.do(&admin, http.MethodPost, "/api/servers/node-a~srv1/fastdl", map[string]string{"mode": "off"}); rec.Code != http.StatusOK {
+		t.Fatalf("off: %d", rec.Code)
+	}
+	if rec := nodeGet("/fastdl/srv1/maps/de_test.bsp"); rec.Code != http.StatusNotFound {
+		t.Fatalf("node port serves a server in mode off: %d", rec.Code)
+	}
+	var info map[string]string
+	_ = json.Unmarshal(m.do(&admin, http.MethodGet, "/api/servers/node-a~srv1/fastdl", nil).Body.Bytes(), &info)
+	if info["mode"] != "off" {
+		t.Fatalf("mode %v", info)
+	}
+
+	// Changing the mode needs an administrator.
+	full := m.login("full")
+	if err := m.app.auth.SetUserNodes("full", []string{"node-a"}); err != nil {
+		t.Fatal(err)
+	}
+	full = m.login("full")
+	if rec := m.do(&full, http.MethodPost, "/api/servers/node-a~srv1/fastdl", map[string]string{"mode": "dashboard"}); !isPermissionDenied(rec) {
+		t.Fatalf("non-admin changed the FastDL mode: %d", rec.Code)
+	}
+}
+
+func TestInstallOnNode(t *testing.T) {
+	m := newMultiNodeEnv(t, backend.AgentModeReadWrite)
+	admin := m.login("admin2")
+
+	// The request reaches the node, which validates it for its own runtime.
+	rec := m.do(&admin, http.MethodPost, "/api/games/install", map[string]string{"game": "vhserver", "user": "vhtest", "install_dir": "/etc", "node": "node-a"})
+	if rec.Code != http.StatusBadRequest || rec.Header().Get("Content-Security-Policy") != sandboxCSP {
+		t.Fatalf("install via node: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := m.do(&admin, http.MethodPost, "/api/games/install", map[string]string{"game": "vhserver", "user": "vhtest", "node": "nope"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown node: %d", rec.Code)
+	}
+	if rec := m.do(&admin, http.MethodPost, "/api/games/install", map[string]string{"game": "vh server", "user": "vhtest", "node": "node-a"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid game accepted for a node: %d", rec.Code)
+	}
+
+	// Read-only nodes refuse installations on the dashboard already.
+	if err := m.app.agents.Nodes.UpdateNode("node-a", "Node A", backend.AgentModeReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	rec = m.do(&admin, http.MethodPost, "/api/games/install", map[string]string{"game": "vhserver", "user": "vhtest", "node": "node-a"})
+	if !isReadOnlyDenial(rec) {
+		t.Fatalf("install on read-only node: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Host statistics of the node reach the node list.
+	m.waitFor(t, func() bool { return m.app.agents.Hub.Status("node-a").Host != nil })
 }

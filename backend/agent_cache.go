@@ -27,9 +27,19 @@ const (
 func (h *AgentHub) pollServers(nodeID string, client *AgentTunnelClient) {
 	tick := time.NewTicker(AgentServerPollInterval)
 	defer tick.Stop()
-	for {
+	for n := 0; ; n++ {
 		if err := h.refreshServers(nodeID, client); err != nil {
 			h.logf("[AGENT] Node %s: server list failed: %v", nodeID, err)
+		}
+		// Host statistics change slowly; every second round is enough.
+		if n%2 == 0 {
+			if host, err := fetchNodeHost(client); err == nil {
+				h.mu.Lock()
+				if h.tunnels[nodeID] == client {
+					h.hosts[nodeID] = host
+				}
+				h.mu.Unlock()
+			}
 		}
 		select {
 		case <-client.Done():
@@ -93,6 +103,44 @@ func fetchNodeServers(client *AgentTunnelClient, nodeID string) ([]GameServerIns
 		}
 	}
 	return list, nil
+}
+
+// fetchNodeHost asks a node for its host statistics (CPU, RAM, disk of "/").
+func fetchNodeHost(client *AgentTunnelClient) (HostStats, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), agentListTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "/api/system/stats", nil)
+	if err != nil {
+		return HostStats{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return HostStats{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return HostStats{}, fmt.Errorf("status %s", resp.Status)
+	}
+	var stats SystemStats
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAgentListBytes)).Decode(&stats); err != nil {
+		return HostStats{}, err
+	}
+	num := func(v float64) float64 {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return 0
+		}
+		return v
+	}
+	s := stats.Host
+	cores := s.CPUCores
+	if cores < 0 || cores > 4096 {
+		cores = 0
+	}
+	return HostStats{
+		CPU: num(s.CPU), CPUCores: cores, CPUModel: sanitizeDisplayText(s.CPUModel, 128),
+		RAMUsed: num(s.RAMUsed), RAMTotal: num(s.RAMTotal), RAMPercent: num(s.RAMPercent),
+		DiskFree: num(s.DiskFree), DiskTotal: num(s.DiskTotal), DiskPercent: num(s.DiskPercent),
+	}, nil
 }
 
 // sanitizeNodeServer rebuilds a server entry received from a node. Nothing is passed through

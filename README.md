@@ -87,7 +87,7 @@ Shown in the console view depending on the game:
 | Unreal Tournament (99, 2004, 3) | Map compressor for redirect downloads |
 | Arma 3, Minecraft, 7 Days to Die, Factorio, ARK, Killing Floor 2, Don't Starve Together, Insurgency: Sandstorm, Valheim, TrackMania | Install and update mods/plugins through LinuxGSM, list of installed mods |
 
-The dashboard also serves FastDL content directly under `/fastdl/<server>/`, so the URL can be used for `sv_downloadurl` without a separate web server.
+The dashboard also serves FastDL content directly under `/fastdl/<server>/`, so the URL can be used for `sv_downloadurl` without a separate web server. For servers of nodes, see [Game servers on nodes](#game-servers-on-nodes).
 
 ### Configuration and files
 
@@ -391,9 +391,11 @@ location /agent/connect {
 
 Caddy passes WebSockets without extra configuration. If the proxy uses a self-signed certificate, pair the node with `--insecure-proxy-tls` (only the proxy's certificate is skipped; the connection to the dashboard is always verified).
 
-### Not available for nodes yet
+### Game servers on nodes
 
-Installing new game servers on a node from the dashboard, FastDL for servers of nodes, and host statistics of nodes.
+- **Installing:** the game installer offers every connected read-write node as target ("Install on"); the form follows the node's runtime (Linux user or Docker container). Read-only nodes are not offered.
+- **FastDL** is chosen per server in its console view (administrators): served by *this dashboard* (default; for a server of a node the dashboard passes the downloads through the node's connection, so the node needs no public address), by *the node itself*, or *off*. For the node to serve it, install or update the agent with `--fastdl-port <port> --fastdl-url http://<public address>:<port>/fastdl/` (the installer keeps both for later updates; `--fastdl-port 0` turns it off); that port serves nothing but the FastDL files of servers set to *the node itself*. A node owner with an own web server for `public_html/fastdl` sets only `--fastdl-url`. The URL shown in the dashboard follows the choice.
+- **Host statistics** (CPU, RAM, free disk space) of every connected node are shown under Settings > Nodes.
 
 ## Configuration
 
@@ -421,6 +423,7 @@ The directory is created with mode `0700`; files containing settings are written
 | `server_tags.json` | Server tags |
 | `server_ids.json` | Host mode: the ID of every server (keyed by its script path), so IDs and the permissions that refer to them never move to another server. Deleting a server in the dashboard releases its ID and removes it from all users |
 | `server_paths.json` | Additional server directories |
+| `fastdl_settings.json` | Who serves the FastDL files of each server (dashboard, node or off; only deviations from the default) |
 | `games_cache.json`, `icons/` | Cached game list and icons from linuxgsm.com |
 | `schedules/<server>.cron`, `schedule_settings.json` | Docker mode only: schedules of the game servers and their time zone |
 | `nodes.json`, `agent-ca/` | Paired nodes (name, access mode, allowed key fingerprints) and the certificate authority for node connections (private key `0600`) |

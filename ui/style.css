@@ -1284,3 +1284,4 @@ body.light-theme .terminal-card { border-color: #2b3036; }
 }
 .server-card.is-node-offline { opacity: 0.6; }
 .node-chip.is-read-only { background: transparent; border: 1px dashed var(--info); }
+.nodes-list td.node-load { white-space: nowrap; }

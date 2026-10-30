@@ -1387,6 +1387,60 @@ function fastdlUrl(server) {
     return `${window.location.protocol}//${window.location.host}/fastdl/${encodeURIComponent(server.id)}/`;
 }
 
+// loadFastDLInfo fills the FastDL panel: who serves the files (dashboard, the node itself or
+// nobody), the resulting URL, and for administrators the choice.
+async function loadFastDLInfo(server) {
+    const box = document.getElementById('game-fastdl-info');
+    if (!box || box.dataset.server !== server.id) return;
+    let info = { mode: 'dashboard' };
+    try {
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(server.id)}/fastdl`);
+        if (res.ok) info = await res.json();
+    } catch (e) {
+        // keep the default
+    }
+    if (box.dataset.server !== server.id) return;
+    let url = '';
+    let note = '';
+    if (info.mode === 'dashboard') url = fastdlUrl(server);
+    else if (info.mode === 'node') {
+        url = info.node_url || '';
+        if (!url) note = t('fastdl-node-no-url');
+    } else note = t('fastdl-off');
+
+    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+    const writable = !isReadOnlyNodeServer(server) && !server.node_offline;
+    const opt = (value) => `<option value="${value}" ${info.mode === value ? 'selected' : ''}>${t('fastdl-mode-' + value)}</option>`;
+    const select = isAdmin && writable
+        ? `<select class="form-control form-control-sm" style="max-width: 16rem;" onchange="setFastDLMode(${jsArg(server.id)}, this.value)" aria-label="${t('fastdl-mode-label')}">
+               ${opt('dashboard')}${server.node ? opt('node') : ''}${opt('off')}
+           </select>`
+        : `<span class="text-muted" style="font-size: 0.8rem;">${t('fastdl-mode-' + (info.mode || 'dashboard'))}</span>`;
+    const urlPart = url
+        ? `<span style="font-size: 0.8rem; color: var(--text-secondary);"><strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${escapeHtml(url)}</code></span>
+           <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText(${jsArg(url)}); alert(t('fastdl-copied'));">${t('nodes-copy')}</button>`
+        : `<span class="text-muted" style="font-size: 0.8rem;">${escapeHtml(note)}</span>`;
+    box.innerHTML = `<span style="font-size: 0.8rem; color: var(--text-secondary);">${t('fastdl-mode-label')}:</span> ${select} ${urlPart}`;
+}
+
+async function setFastDLMode(serverId, mode) {
+    try {
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/fastdl`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    const server = state.servers.find(s => s.id === serverId);
+    if (server) loadFastDLInfo(server);
+}
+
 // isReadOnlyNodeServer reports whether a server runs on a node that only allows reading plus
 // start, stop and restart.
 function isReadOnlyNodeServer(server) {
@@ -2043,7 +2097,8 @@ function selectGameForInstall(game, cardElement) {
     el.installUsername.value = `${game.id}server`.replace(/[^a-z0-9_]/g, '');
     el.installPassword.value = '';
     applyInstallerMode();
-    
+    populateInstallTargets();
+
     el.installFormContainer.classList.remove('hidden');
     
     // Smooth scroll down to form on mobile
@@ -2074,10 +2129,57 @@ function applyToolsMode() {
     setI18n(card.querySelector('#settings-tools-btn-cron span'), dashboardScheduler ? 'settings-tools-btn-cron-docker' : 'settings-tools-btn-cron');
 }
 
+// installTarget returns the node selected in the installer ("" for this machine) and its
+// capabilities, so the form matches the runtime of the target.
+function installTarget() {
+    const select = document.getElementById('install-target');
+    const nodeId = select ? select.value : '';
+    const node = nodeId ? (state.installNodes || []).find(n => n.id === nodeId) : null;
+    return { nodeId: node ? node.id : '', server: node ? { node: node.id, capabilities: node.hello && node.hello.capabilities } : null };
+}
+
+// populateInstallTargets offers this machine and every connected read-write node (administrators
+// only; the installer is an administrator feature).
+async function populateInstallTargets() {
+    const group = document.getElementById('install-target-group');
+    const select = document.getElementById('install-target');
+    if (!group || !select) return;
+    let nodes = [];
+    if (state.currentUser && state.currentUser.role === 'admin') {
+        try {
+            const res = await apiFetch('/api/admin/nodes');
+            if (res.ok) nodes = (await res.json()).nodes || [];
+        } catch (e) {
+            nodes = [];
+        }
+    }
+    state.installNodes = nodes.filter(n => n.online && n.compatible && n.effective_mode === 'read-write');
+    const previous = select.value;
+    select.innerHTML = '';
+    const here = document.createElement('option');
+    here.value = '';
+    here.textContent = t('inst-target-here');
+    select.appendChild(here);
+    state.installNodes.forEach(n => {
+        const opt = document.createElement('option');
+        opt.value = n.id;
+        opt.textContent = `${n.name} (${n.id})`;
+        select.appendChild(opt);
+    });
+    if (state.installNodes.some(n => n.id === previous)) select.value = previous;
+    group.classList.toggle('hidden', nodes.length === 0);
+    if (!select.dataset.bound) {
+        select.addEventListener('change', applyInstallerMode);
+        select.dataset.bound = '1';
+    }
+    applyInstallerMode();
+}
+
 // In Docker mode the installer creates a container: the name field names the server and its
-// container, a Linux password and a custom directory do not exist there.
+// container, a Linux password and a custom directory do not exist there. With a node selected,
+// the node's runtime decides.
 function applyInstallerMode() {
-    const docker = !capable('linux_users');
+    const docker = !capable('linux_users', installTarget().server);
     const label = document.querySelector('label[for="install-username"]');
     const help = label ? label.parentElement.querySelector('small') : null;
     setI18n(label, docker ? 'inst-name-label' : 'inst-user-label');
@@ -2108,7 +2210,7 @@ function handleGameInstall(e) {
         title: t('modal-stream-title-install').replace('{game}', game.name),
         runningText: t('status-installing-action'),
         url: '/api/games/install',
-        body: { game: game.cmd, user: username, password, install_dir: installDir, lang: state.language },
+        body: { game: game.cmd, user: username, password, install_dir: installDir, lang: state.language, node: installTarget().nodeId },
         errorText: t('modal-stream-err-install')
     });
 }
@@ -2649,6 +2751,16 @@ function nodeStatusBadge(node) {
     return `<span class="badge badge-secondary">${t('nodes-status-offline')}</span>`;
 }
 
+// nodeLoad shows CPU, RAM and free disk space of a connected node.
+function nodeLoad(node) {
+    const h = node.host;
+    if (!h) return '-';
+    const num = v => Number(v) || 0;
+    const ram = `RAM ${num(h.ramUsed).toFixed(1)} / ${num(h.ramTotal).toFixed(1)} GB`;
+    const disk = `${t('overview-free')}: ${num(h.diskFree).toFixed(0)} / ${num(h.diskTotal).toFixed(0)} GB`;
+    return `CPU ${num(h.cpu).toFixed(0)} %<div class="node-sub">${escapeHtml(ram)}</div><div class="node-sub">${escapeHtml(disk)}</div>`;
+}
+
 function formatNodeTime(value) {
     if (!value || String(value).startsWith('0001-')) return '-';
     const d = new Date(value);
@@ -2693,6 +2805,7 @@ async function loadNodes() {
                 </td>
                 <td>${escapeHtml(node.version || '-')}<div class="node-sub">${escapeHtml(hello.capabilities ? hello.capabilities.runtime : '')}</div></td>
                 <td>${escapeHtml(node.hostname || '-')}<div class="node-sub">${escapeHtml(formatNodeTime(node.last_seen))}</div></td>
+                <td class="node-load">${nodeLoad(node)}</td>
                 <td>
                     <div class="node-actions">
                         <button type="button" class="btn btn-secondary btn-sm" onclick="renameNode(${id})">${t('nodes-rename')}</button>
@@ -2707,7 +2820,7 @@ async function loadNodes() {
             <table>
                 <thead><tr>
                     <th>${t('nodes-col-node')}</th><th>${t('nodes-col-status')}</th><th>${t('nodes-col-mode')}</th>
-                    <th>${t('nodes-col-version')}</th><th>${t('nodes-col-host')}</th><th></th>
+                    <th>${t('nodes-col-version')}</th><th>${t('nodes-col-host')}</th><th>${t('nodes-col-load')}</th><th></th>
                 </tr></thead>
                 <tbody>${rows}</tbody>
             </table>
@@ -3819,6 +3932,7 @@ const i18n = {
         "nodes-col-mode": "Access",
         "nodes-col-version": "Version",
         "nodes-col-host": "Host / last seen",
+        "nodes-col-load": "Load",
         "nodes-status-online": "Online",
         "nodes-status-offline": "Offline",
         "nodes-status-update": "Update required",
@@ -3834,6 +3948,16 @@ const i18n = {
         "card-node-offline": "Node offline",
         "card-node-read-only": "Read-only node: start, stop and restart only",
         "users-nodes-label": "Nodes (all servers of the node, including new ones)",
+        "inst-target-label": "Install on",
+        "inst-target-help": "Read-only nodes and nodes that are not connected are not offered.",
+        "inst-target-here": "This machine (dashboard)",
+        "fastdl-mode-label": "FastDL served by",
+        "fastdl-mode-dashboard": "This dashboard",
+        "fastdl-mode-node": "The node itself",
+        "fastdl-mode-off": "Off",
+        "fastdl-off": "FastDL is off for this server.",
+        "fastdl-node-no-url": "The node serves no FastDL yet: start its agent with --fastdl-port and --fastdl-url, or serve public_html/fastdl with your own web server and set --fastdl-url.",
+        "fastdl-copied": "FastDL URL copied to clipboard!",
         "settings-server-select-hint": "Settings apply to the selected server instance.",
         "settings-select-server-prompt": "Please select a server above to view server tools and instance settings.",
         "settings-select-server-prompt-cron": "Please select a server above to manage scheduled maintenance tasks.",
@@ -4355,6 +4479,7 @@ const i18n = {
         "nodes-col-mode": "Zugriff",
         "nodes-col-version": "Version",
         "nodes-col-host": "Host / zuletzt gesehen",
+        "nodes-col-load": "Auslastung",
         "nodes-status-online": "Online",
         "nodes-status-offline": "Offline",
         "nodes-status-update": "Update nötig",
@@ -4370,6 +4495,16 @@ const i18n = {
         "card-node-offline": "Node offline",
         "card-node-read-only": "Read-only-Node: nur Start, Stop und Restart",
         "users-nodes-label": "Nodes (alle Server des Nodes, auch neue)",
+        "inst-target-label": "Installieren auf",
+        "inst-target-help": "Read-only-Nodes und Nodes ohne Verbindung stehen nicht zur Auswahl.",
+        "inst-target-here": "Dieser Rechner (Dashboard)",
+        "fastdl-mode-label": "FastDL ausgeliefert von",
+        "fastdl-mode-dashboard": "Diesem Dashboard",
+        "fastdl-mode-node": "Dem Node selbst",
+        "fastdl-mode-off": "Aus",
+        "fastdl-off": "FastDL ist für diesen Server aus.",
+        "fastdl-node-no-url": "Der Node liefert noch kein FastDL aus: Agent mit --fastdl-port und --fastdl-url starten, oder public_html/fastdl mit einem eigenen Webserver ausliefern und --fastdl-url setzen.",
+        "fastdl-copied": "FastDL-URL in die Zwischenablage kopiert!",
         "settings-server-select-hint": "Einstellungen gelten für die ausgewählte Server-Instanz.",
         "settings-select-server-prompt": "Bitte wähle oben einen Server aus, um Server-Tools und Instanz-Einstellungen anzuzeigen.",
         "settings-select-server-prompt-cron": "Bitte wähle oben einen Server aus, um geplante Wartungsaufgaben zu verwalten.",
@@ -5894,18 +6029,11 @@ function renderConsoleGameActions(server) {
             <button id="game-act-fastdl" class="btn btn-primary btn-sm" ${disabledAttr}>
                 <span>${isDe ? 'FastDL erzeugen (bzip2)' : 'Build FastDL (bzip2)'}</span>
             </button>
-            ${server.node ? '' : `
-            <div style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;">
-                <span style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.35rem;">
-                    <strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${escapeHtml(fastdlUrl(server))}</code>
-                </span>
-                <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText(${jsArg(fastdlUrl(server))}); alert(state.language === 'de' ? 'FastDL URL in die Zwischenablage kopiert!' : 'FastDL URL copied to clipboard!');">
-                    ${isDe ? 'Kopieren' : 'Copy'}
-                </button>
-            </div>
-            `}
+            <div id="game-fastdl-info" data-server="${escapeHtml(server.id)}" style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;"></div>
         `;
         clickHandlers.push({ id: 'game-act-fastdl', action: 'fastdl' });
+        // Filled once the panel is in the DOM.
+        setTimeout(() => loadFastDLInfo(server), 0);
 
         if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih'].includes(game)) {
             buttonsHtml += `

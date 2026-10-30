@@ -17,6 +17,7 @@
 #
 # Node of another dashboard (agent, see Settings > Nodes in the dashboard):
 #   --agent --join '<pairing command>' [--mode read-only|read-write]
+#     [--fastdl-port <port> --fastdl-url <url>]   (FastDL served by the node itself)
 
 # Terminal output colors
 RED='\033[0;31m'
@@ -212,10 +213,12 @@ STATE_SUDO_PREEXISTED=""
 STATE_PORT=""
 STATE_INSTALLED_DEPS=""
 STATE_INSTALL_DATE=""
+STATE_FASTDL_PORT=""
+STATE_FASTDL_URL=""
 
 load_state() {
     [ -f "$STATE_FILE" ] || return 1
-    local ROLE="" GIT_PREEXISTED="" GO_PREEXISTED="" CURL_PREEXISTED="" SUDO_PREEXISTED="" PORT="" INSTALLED_DEPS="" INSTALL_DATE=""
+    local ROLE="" GIT_PREEXISTED="" GO_PREEXISTED="" CURL_PREEXISTED="" SUDO_PREEXISTED="" PORT="" INSTALLED_DEPS="" INSTALL_DATE="" FASTDL_PORT="" FASTDL_URL=""
     # shellcheck disable=SC1090
     source "$STATE_FILE"
     STATE_ROLE="${ROLE:-dashboard}"
@@ -226,6 +229,8 @@ load_state() {
     STATE_PORT="$PORT"
     STATE_INSTALLED_DEPS="$INSTALLED_DEPS"
     STATE_INSTALL_DATE="$INSTALL_DATE"
+    STATE_FASTDL_PORT="$FASTDL_PORT"
+    STATE_FASTDL_URL="$FASTDL_URL"
     return 0
 }
 
@@ -256,6 +261,8 @@ INSTALL_DATE="${STATE_INSTALL_DATE:-$(date '+%Y-%m-%d %H:%M:%S')}"
 LAST_UPDATE="$(date '+%Y-%m-%d %H:%M:%S')"
 INSTALL_MODE="$mode"
 INSTALLED_VERSION="$version"
+FASTDL_PORT="$STATE_FASTDL_PORT"
+FASTDL_URL="$STATE_FASTDL_URL"
 EOT
     chmod 600 "$STATE_FILE"
 }
@@ -967,6 +974,10 @@ do_install_agent() {
     install_tools_and_binary "$mode" || return 1
     local version="$INSTALL_VERSION"
     PORT=""
+    # FastDL served by the node itself (optional); kept across updates.
+    [ -n "$AGENT_FASTDL_PORT_ARG" ] && STATE_FASTDL_PORT="$AGENT_FASTDL_PORT_ARG"
+    [ -n "$AGENT_FASTDL_URL_ARG" ] && STATE_FASTDL_URL="$AGENT_FASTDL_URL_ARG"
+    [ "$STATE_FASTDL_PORT" == "0" ] && STATE_FASTDL_PORT=""
     write_state "$INSTALL_PACKAGES" "$mode" "$version" agent
 
     if [ -n "$join_cmd" ]; then
@@ -979,7 +990,10 @@ do_install_agent() {
     fi
 
     echo -e "${CYAN}[SYS] Writing systemd service...${NC}"
-    write_service_unit "$AGENT_SERVICE_NAME" "LinuxGSM Dashboard node agent" "$BINARY agent run --config-dir $config_dir"
+    local exec_start="$BINARY agent run --config-dir $config_dir"
+    [ -n "$STATE_FASTDL_PORT" ] && exec_start+=" --fastdl-port $STATE_FASTDL_PORT"
+    [ -n "$STATE_FASTDL_URL" ] && exec_start+=" --fastdl-url $STATE_FASTDL_URL"
+    write_service_unit "$AGENT_SERVICE_NAME" "LinuxGSM Dashboard node agent" "$exec_start"
     systemctl daemon-reload
     systemctl enable "$AGENT_SERVICE_NAME" > /dev/null 2>&1
     systemctl restart "$AGENT_SERVICE_NAME"
@@ -1013,7 +1027,12 @@ do_install_agent() {
     else
         echo -e "  ${YELLOW}Not connected yet. Check: journalctl -u $AGENT_SERVICE_NAME -n 50${NC}"
     fi
-    echo -e "  No port is opened on this machine; the agent connects to the dashboard."
+    if [ -n "$STATE_FASTDL_PORT" ]; then
+        echo -e "  FastDL of servers set to \"the node itself\" is served on port $STATE_FASTDL_PORT (${STATE_FASTDL_URL:-no --fastdl-url set})."
+        echo -e "  Open that port in the firewall if game clients should download from it."
+    else
+        echo -e "  No port is opened on this machine; the agent connects to the dashboard."
+    fi
     echo -e "  Change the access mode later with: $BINARY agent mode read-only|read-write --config-dir $config_dir"
     echo -e "  (then: systemctl restart $AGENT_SERVICE_NAME)"
     echo -e "${BLUE}==================================================================${NC}"
@@ -1151,6 +1170,8 @@ MODE="release"
 ROLE_ARG=""
 AGENT_JOIN_ARG=""
 AGENT_MODE_ARG=""
+AGENT_FASTDL_PORT_ARG=""
+AGENT_FASTDL_URL_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -1187,6 +1208,14 @@ while [[ $# -gt 0 ]]; do
             AGENT_JOIN_ARG="${2:-}"
             shift 2
             ;;
+        --fastdl-port)
+            AGENT_FASTDL_PORT_ARG="${2:-}"
+            shift 2
+            ;;
+        --fastdl-url)
+            AGENT_FASTDL_URL_ARG="${2:-}"
+            shift 2
+            ;;
         --mode)
             AGENT_MODE_ARG="${2:-}"
             shift 2
@@ -1207,6 +1236,16 @@ done
 
 if [ -n "$AGENT_MODE_ARG" ] && [ "$AGENT_MODE_ARG" != "read-only" ] && [ "$AGENT_MODE_ARG" != "read-write" ]; then
     echo -e "${RED}[ERROR] Invalid access mode: $AGENT_MODE_ARG (read-only or read-write).${NC}"
+    exit 1
+fi
+# Both values end up in the systemd unit and in the state file, which is sourced.
+if [ -n "$AGENT_FASTDL_PORT_ARG" ] && { ! [[ "$AGENT_FASTDL_PORT_ARG" =~ ^[0-9]+$ ]] || [ "$AGENT_FASTDL_PORT_ARG" -gt 65535 ]; }; then
+    echo -e "${RED}[ERROR] Invalid FastDL port: $AGENT_FASTDL_PORT_ARG (0 turns it off).${NC}"
+    exit 1
+fi
+fastdl_url_re='^https?://[][A-Za-z0-9._~:/-]+$'
+if [ -n "$AGENT_FASTDL_URL_ARG" ] && ! [[ "$AGENT_FASTDL_URL_ARG" =~ $fastdl_url_re ]]; then
+    echo -e "${RED}[ERROR] Invalid FastDL URL: $AGENT_FASTDL_URL_ARG (e.g. http://203.0.113.5:8090/fastdl/).${NC}"
     exit 1
 fi
 
@@ -1244,7 +1283,7 @@ if [ -n "$ACTION" ] || [ "$MODE" != "release" ] || [ "$ROLE_ARG" == "agent" ]; t
             ;;
         *)
             echo -e "${RED}[ERROR] Unknown argument: $ACTION${NC}"
-            echo -e "Usage: $0 [install|uninstall|status] [--port <port>] [--source|--dev|--local] [--agent [--join '<pairing command>'] [--mode read-only|read-write]]"
+            echo -e "Usage: $0 [install|uninstall|status] [--port <port>] [--source|--dev|--local] [--agent [--join '<pairing command>'] [--mode read-only|read-write] [--fastdl-port <port>] [--fastdl-url <url>]]"
             exit 1
             ;;
     esac

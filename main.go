@@ -266,6 +266,7 @@ type app struct {
 	// Agent mode: the app serves a controller through the tunnel instead of users.
 	agentMode   bool
 	agentPolicy atomic.Pointer[backend.AgentPolicy]
+	fastdlURL   string // agent: base URL of the node's own FastDL (agent run --fastdl-url)
 
 	secureCookies  bool  // always set the Secure flag on cookies
 	trustProxy     bool  // honour X-Forwarded-For / X-Forwarded-Proto from a reverse proxy
@@ -1074,6 +1075,8 @@ var serverRoutes = map[string]routePolicy{
 	"cloudbackup/settings GET":  {backend.PermBackup, backend.AccessRead},
 	"cloudbackup/settings POST": {backend.PermAdmin, backend.AccessWrite},
 	"cloudbackup/sync POST":     {backend.PermBackup, backend.AccessWrite},
+	"fastdl GET":                {backend.PermView, backend.AccessRead},
+	"fastdl POST":               {backend.PermAdmin, backend.AccessWrite},
 }
 
 // serverRoutePermission looks up the policy. status is 404 for unknown routes and 405 when the
@@ -1199,9 +1202,40 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 	case "cloudbackup/sync":
 		a.auth.LogAudit(user.Username, ctx.ip, "CLOUDBACKUP_SYNC", "Triggered cloud backup sync", serverID)
 		a.inst.SyncCloudBackup(w, r, serverID, langOf(r, ""))
+	case "fastdl":
+		ctx.fastdlSettings()
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// fastdlSettings reads or sets who serves the server's FastDL files. On a node, node_url is the
+// address under which the node serves them itself (empty when it does not).
+func (c serverCtx) fastdlSettings() {
+	if c.r.Method == http.MethodGet {
+		resp := map[string]string{"mode": c.app.inst.FastDLMode(c.serverID)}
+		if c.app.agentMode && c.app.fastdlURL != "" {
+			resp["node_url"] = strings.TrimRight(c.app.fastdlURL, "/") + "/" + url.PathEscape(c.serverID) + "/"
+		}
+		writeJSON(c.w, http.StatusOK, resp)
+		return
+	}
+	var payload struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeJSON(c.w, c.r, &payload, 4*1024) {
+		return
+	}
+	if payload.Mode == backend.FastDLNode && !c.app.agentMode {
+		writeError(c.w, http.StatusBadRequest, "Only servers of nodes can be served by the node")
+		return
+	}
+	if err := c.app.inst.SetFastDLMode(c.serverID, payload.Mode); err != nil {
+		writeError(c.w, http.StatusBadRequest, err.Error())
+		return
+	}
+	c.audit("FASTDL_MODE", "FastDL served by "+payload.Mode)
+	writeOK(c.w)
 }
 
 // -------------------------------------------------------------
@@ -1254,6 +1288,40 @@ func (a *app) nodeTunnel(w http.ResponseWriter, nodeID string) (*backend.AgentTu
 		return nil, st, false
 	}
 	return client, st, true
+}
+
+// installOnNode forwards a game installation to a node. The payload was validated like a local
+// installation; the node validates it again for its own runtime. The output streams back, and
+// the node keeps installing if the browser goes away.
+func (a *app) installOnNode(w http.ResponseWriter, r *http.Request, user backend.User, nodeID string, payload map[string]string) {
+	if a.agents == nil || !backend.IsValidNodeID(nodeID) {
+		writeError(w, http.StatusBadRequest, "Invalid node")
+		return
+	}
+	if _, ok := a.agents.Nodes.Node(nodeID); !ok {
+		writeError(w, http.StatusNotFound, "Node not found")
+		return
+	}
+	client, st, ok := a.nodeTunnel(w, nodeID)
+	if !ok {
+		return
+	}
+	if !backend.AgentModeAllows(st.EffectiveMode, backend.AccessWrite) {
+		writeError(w, http.StatusForbidden, "This node is read-only (start, stop and restart are allowed)")
+		return
+	}
+	body, _ := json.Marshal(payload)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.Header.Set("Content-Type", "application/json")
+
+	details := fmt.Sprintf("Installed %s as user %s on node %s", payload["game"], payload["user"], nodeID)
+	if payload["install_dir"] != "" {
+		details += " in " + payload["install_dir"]
+	}
+	a.auth.LogAudit(user.Username, a.clientIP(r), "SERVER_INSTALL", details, "")
+	a.forwardToNode(w, r, client, user, "/api/games/install")
+	_ = a.agents.Hub.RefreshServers(nodeID)
 }
 
 // Routes whose request body is an upload (no read deadline, upload size limit).
@@ -2066,6 +2134,8 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		Password   string `json:"password"`
 		InstallDir string `json:"install_dir"`
 		Lang       string `json:"lang"`
+		// Node to install on (multi-node); empty installs on this machine.
+		Node string `json:"node"`
 	}
 	if !decodeJSON(w, r, &payload, 16*1024) {
 		return
@@ -2085,6 +2155,13 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 	installDir := strings.TrimSpace(payload.InstallDir)
 	if len(installDir) > 1 {
 		installDir = strings.TrimRight(installDir, "/")
+	}
+	if payload.Node != "" && !a.agentMode {
+		a.installOnNode(w, r, user, payload.Node, map[string]string{
+			"game": payload.Game, "user": payload.User, "password": payload.Password,
+			"install_dir": installDir, "lang": payload.Lang,
+		})
+		return
 	}
 	if err := a.inst.ValidateInstall(payload.Game, payload.User, installDir); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -2556,13 +2633,16 @@ func (a *app) handleAgentHello(w http.ResponseWriter, r *http.Request) {
 		Mode:            p.Mode,
 		AllowFirewall:   p.AllowFirewall,
 		AllowSelfUpdate: p.AllowSelfUpdate,
+		FastDLURL:       a.fastdlURL,
 		Servers:         servers,
 	})
 }
 
 // runAgent is `lgsm-dashboard agent run`: the node's game servers are managed with the same
 // runtime as a dashboard, but served only to the controller through the tunnel.
-func runAgent(configDir string, maxUploadBytes int64) int {
+// fastdlPort > 0 also serves FastDL of servers in mode "node" on that port; fastdlURL is the
+// public base URL of that FastDL (or of a web server the node owner runs for it).
+func runAgent(configDir string, maxUploadBytes int64, fastdlPort int, fastdlURL string) int {
 	if _, err := backend.LoadAgentIdentity(configDir); err != nil {
 		fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
 		return 1
@@ -2594,12 +2674,32 @@ func runAgent(configDir string, maxUploadBytes int64) int {
 		configDir:      configDir,
 		maxUploadBytes: maxUploadBytes,
 		agentMode:      true,
+		fastdlURL:      strings.TrimSpace(fastdlURL),
 	}
 	load := func() (backend.AgentIdentity, error) {
 		// The policy is re-read for every connection, so `agent mode` applies on reconnect.
 		policy := backend.LoadAgentPolicy(configDir)
 		a.agentPolicy.Store(&policy)
 		return backend.LoadAgentIdentity(configDir)
+	}
+
+	if fastdlPort > 0 {
+		fastdl := &http.Server{
+			Addr:              fmt.Sprintf(":%d", fastdlPort),
+			Handler:           http.HandlerFunc(a.serveNodeFastDL),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    64 << 10,
+		}
+		go func() {
+			if err := fastdl.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				fmt.Fprintf(os.Stderr, "[ERROR] FastDL port: %v\n", err)
+			}
+		}()
+		fmt.Printf("[SYS] Serving FastDL of servers in mode \"node\" on port %d\n", fastdlPort)
+		if a.fastdlURL == "" {
+			fmt.Println("[SYS] Set --fastdl-url to the public address of that port, so the dashboard can show it")
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -2619,7 +2719,7 @@ func runAgentCommand(args []string) int {
 	usage := func() int {
 		fmt.Fprintln(os.Stderr, "Usage:")
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent join <dashboard-url> --token <token> --ca-fingerprint <sha256:...> --mode read-only|read-write [--insecure-proxy-tls] [--config-dir <dir>]")
-		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent run [--config-dir <dir>] [--max-upload-mb <MiB>]")
+		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent run [--config-dir <dir>] [--max-upload-mb <MiB>] [--fastdl-port <port>] [--fastdl-url <url>]")
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent status [--config-dir <dir>]")
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent mode read-only|read-write [--config-dir <dir>]")
 		return 2
@@ -2670,13 +2770,18 @@ func runAgentCommand(args []string) int {
 
 	case "run":
 		maxUploadMB := fset.Int64("max-upload-mb", 4096, "Maximum size of backup and file manager uploads in MiB")
+		fastdlPort := fset.Int("fastdl-port", 0, "Serve FastDL of servers in mode node on this port (0: off)")
+		fastdlURL := fset.String("fastdl-url", "", "Public base URL of the node's FastDL, e.g. http://203.0.113.5:8090/fastdl/")
 		if err := fset.Parse(args); err != nil || len(positional)+fset.NArg() > 0 {
 			return usage()
 		}
 		if *maxUploadMB <= 0 {
 			*maxUploadMB = 4096
 		}
-		return runAgent(*configDir, *maxUploadMB<<20)
+		if *fastdlPort < 0 || *fastdlPort > 65535 {
+			return usage()
+		}
+		return runAgent(*configDir, *maxUploadMB<<20, *fastdlPort, *fastdlURL)
 
 	case "status":
 		if err := fset.Parse(args); err != nil || len(positional)+fset.NArg() > 0 {
@@ -2811,7 +2916,67 @@ func (a *app) handleFastDL(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	target, err := a.inst.ResolveFastDLFile(parts[0], parts[1])
+	if node, local := backend.SplitServerID(parts[0]); node != "" {
+		if a.agentMode {
+			http.NotFound(w, r)
+			return
+		}
+		a.forwardFastDL(w, r, node, local, parts[1])
+		return
+	}
+	// Through the dashboard (or a node's tunnel) only in mode "dashboard"; a node's own FastDL
+	// port serves the servers in mode "node" (serveNodeFastDL).
+	if a.inst.FastDLMode(parts[0]) != backend.FastDLDashboard || a.agentMode && !a.policyAllowsServer(parts[0]) {
+		http.NotFound(w, r)
+		return
+	}
+	a.serveFastDLFile(w, r, parts[0], parts[1])
+}
+
+// forwardFastDL serves the FastDL files of a node's server through its tunnel. FastDL is public;
+// the node itself only answers for servers in mode "dashboard".
+func (a *app) forwardFastDL(w http.ResponseWriter, r *http.Request, nodeID, localID, rel string) {
+	if a.agents == nil || !backend.IsValidNodeID(nodeID) {
+		http.NotFound(w, r)
+		return
+	}
+	client, ok := a.agents.Hub.Tunnel(nodeID)
+	st := a.agents.Hub.Status(nodeID)
+	if !ok || !st.Online || !st.Compatible {
+		http.NotFound(w, r)
+		return
+	}
+	a.forwardToNode(w, r, client, backend.User{Username: "fastdl"}, "/fastdl/"+localID+"/"+rel)
+}
+
+// serveNodeFastDL is the handler of an agent's own FastDL port (agent run --fastdl-port): only
+// static files of servers in mode "node", nothing else of the agent API.
+func (a *app) serveNodeFastDL(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Security-Policy", sandboxCSP)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/fastdl/"), "/", 2)
+	if !strings.HasPrefix(r.URL.Path, "/fastdl/") || len(parts) < 2 || parts[1] == "" ||
+		!backend.IsValidLocalServerID(parts[0]) || !a.policyAllowsServer(parts[0]) ||
+		a.inst.FastDLMode(parts[0]) != backend.FastDLNode {
+		http.NotFound(w, r)
+		return
+	}
+	a.serveFastDLFile(w, r, parts[0], parts[1])
+}
+
+// policyAllowsServer applies the node's server list (all servers when it lists none).
+func (a *app) policyAllowsServer(serverID string) bool {
+	allowed := a.policy().Servers
+	return len(allowed) == 0 || slices.Contains(allowed, serverID)
+}
+
+// serveFastDLFile sends one file below public_html/fastdl of a server of this machine.
+func (a *app) serveFastDLFile(w http.ResponseWriter, r *http.Request, serverID, rel string) {
+	target, err := a.inst.ResolveFastDLFile(serverID, rel)
 	if err != nil {
 		http.NotFound(w, r)
 		return

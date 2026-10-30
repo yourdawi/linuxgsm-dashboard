@@ -800,3 +800,70 @@ func (im *InstanceManager) RemoveNodeServerTags(nodeID string) error {
 	}
 	return im.saveServerTags(tags)
 }
+
+// -------------------------------------------------------------
+// FastDL modes
+// -------------------------------------------------------------
+
+// FastDL modes of a server: who serves its public_html/fastdl directory.
+const (
+	// FastDLDashboard: the dashboard the users log in to (for a server of a node, the dashboard
+	// forwards the downloads through the node's tunnel). Default.
+	FastDLDashboard = "dashboard"
+	// FastDLNode: a node serves the files itself (agent --fastdl-port, or its own web server).
+	FastDLNode = "node"
+	// FastDLOff: not served.
+	FastDLOff = "off"
+)
+
+const fastdlSettingsFileName = "fastdl_settings.json"
+
+// IsValidFastDLMode validates FastDL modes.
+func IsValidFastDLMode(mode string) bool {
+	return mode == FastDLDashboard || mode == FastDLNode || mode == FastDLOff
+}
+
+func (im *InstanceManager) loadFastDLModesLocked() map[string]string {
+	modes := make(map[string]string)
+	data, err := os.ReadFile(filepath.Join(im.configDir, fastdlSettingsFileName))
+	if err == nil {
+		_ = json.Unmarshal(data, &modes)
+	}
+	return modes
+}
+
+// FastDLMode returns the FastDL mode of a server of this machine.
+func (im *InstanceManager) FastDLMode(serverID string) string {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if mode := im.loadFastDLModesLocked()[serverID]; IsValidFastDLMode(mode) {
+		return mode
+	}
+	return FastDLDashboard
+}
+
+// SetFastDLMode stores the FastDL mode of a server of this machine.
+func (im *InstanceManager) SetFastDLMode(serverID, mode string) error {
+	if !IsValidFastDLMode(mode) {
+		return fmt.Errorf("invalid FastDL mode")
+	}
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if _, ok := im.instances[serverID]; !ok {
+		return ErrServerNotFound
+	}
+	modes := im.loadFastDLModesLocked()
+	if mode == FastDLDashboard {
+		delete(modes, serverID)
+	} else {
+		modes[serverID] = mode
+	}
+	data, err := json.MarshalIndent(modes, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(im.configDir, 0700); err != nil {
+		return err
+	}
+	return WriteFileAtomic(filepath.Join(im.configDir, fastdlSettingsFileName), data, 0600)
+}

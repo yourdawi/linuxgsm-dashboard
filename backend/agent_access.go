@@ -49,6 +49,8 @@ type AgentHello struct {
 	AllowFirewall   bool         `json:"allow_firewall"`
 	AllowSelfUpdate bool         `json:"allow_self_update"`
 	Servers         []string     `json:"servers"`
+	// FastDLURL is the base URL under which the node serves FastDL itself (empty: it does not).
+	FastDLURL string `json:"fastdl_url,omitempty"`
 }
 
 // AgentVersionsCompatible reports whether a controller and an agent can work together. The

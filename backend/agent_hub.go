@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -23,6 +24,8 @@ type NodeStatus struct {
 	Compatible bool `json:"compatible"`
 	// EffectiveMode is the lower of the controller's and the node's access mode.
 	EffectiveMode string `json:"effective_mode,omitempty"`
+	// Host holds CPU, RAM and disk of the node while it is online.
+	Host *HostStats `json:"host,omitempty"`
 	// Problem explains why a node is not usable ("" when it is).
 	Problem string `json:"problem,omitempty"`
 }
@@ -37,6 +40,7 @@ type AgentHub struct {
 	tunnels map[string]*AgentTunnelClient
 	status  map[string]NodeStatus
 	servers map[string][]GameServerInstance // last known servers per node, global IDs
+	hosts   map[string]HostStats            // last host statistics per node
 }
 
 // NewAgentHub creates an empty hub. logf may be nil.
@@ -51,6 +55,7 @@ func NewAgentHub(nodes *NodeRegistry, controllerVersion string, logf func(format
 		tunnels: make(map[string]*AgentTunnelClient),
 		status:  make(map[string]NodeStatus),
 		servers: make(map[string][]GameServerInstance),
+		hosts:   make(map[string]HostStats),
 	}
 }
 
@@ -168,6 +173,9 @@ func fetchAgentHello(client *AgentTunnelClient) (AgentHello, error) {
 	}
 	hello.Servers = servers
 	hello.Capabilities.Runtime = sanitizeDisplayText(hello.Capabilities.Runtime, 32)
+	if u, err := url.Parse(hello.FastDLURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || len(hello.FastDLURL) > 256 {
+		hello.FastDLURL = ""
+	}
 	return hello, nil
 }
 
@@ -191,6 +199,9 @@ func (h *AgentHub) Status(nodeID string) NodeStatus {
 	h.mu.Lock()
 	st := h.status[nodeID]
 	_, st.Online = h.tunnels[nodeID]
+	if host, ok := h.hosts[nodeID]; ok && st.Online {
+		st.Host = &host
+	}
 	h.mu.Unlock()
 	if !st.Online {
 		st.Compatible = false
@@ -209,6 +220,7 @@ func (h *AgentHub) Disconnect(nodeID string) {
 	delete(h.tunnels, nodeID)
 	delete(h.status, nodeID)
 	delete(h.servers, nodeID)
+	delete(h.hosts, nodeID)
 	h.mu.Unlock()
 	if c != nil {
 		c.Close()
