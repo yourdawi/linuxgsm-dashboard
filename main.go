@@ -2543,8 +2543,9 @@ func (a *app) agentAllowsServer(w http.ResponseWriter, serverID string) bool {
 
 // Access classes of agent routes that are not decided per method.
 const (
-	accessInHandler  = "in-handler"  // server routes and bulk: decided per route or action
-	accessSelfUpdate = "self-update" // allowed by allow_self_update in every access mode
+	accessInHandler   = "in-handler"  // server routes and bulk: decided per route or action
+	accessSelfUpdate  = "self-update" // allowed by allow_self_update in every access mode
+	accessMaintenance = "maintenance" // keeping the tunnel working (certificate renewal), every mode
 )
 
 // agentRoute is one endpoint of the agent API. access maps each allowed method to its access
@@ -2562,6 +2563,8 @@ func (a *app) agentRouteTable() []agentRoute {
 	readWrite := map[string]string{http.MethodGet: backend.AccessRead, http.MethodPut: backend.AccessWrite, http.MethodPost: backend.AccessWrite}
 	return []agentRoute{
 		{backend.AgentHelloPath, read, a.handleAgentHello},
+		{backend.AgentCSRPath, map[string]string{http.MethodPost: accessMaintenance}, a.handleAgentCSR},
+		{backend.AgentCertPath, map[string]string{http.MethodPost: accessMaintenance}, a.handleAgentCert},
 		{"/api/servers", read, a.requireAuth(a.handleListServers)},
 		{"/api/servers/bulk", map[string]string{http.MethodPost: accessInHandler}, a.requireAuth(a.handleBulk)},
 		{"/api/servers/", map[string]string{http.MethodGet: accessInHandler, http.MethodPost: accessInHandler}, a.requireAuth(a.handleServer)},
@@ -2599,7 +2602,7 @@ func (a *app) agentRoutes() http.Handler {
 				return
 			}
 			switch class {
-			case accessInHandler:
+			case accessInHandler, accessMaintenance:
 			case accessSelfUpdate:
 				if !a.policy().AllowSelfUpdate {
 					writeError(w, http.StatusForbidden, "Updates from the dashboard are disabled on this node (allow_self_update in agent-policy.json)")
@@ -2614,6 +2617,32 @@ func (a *app) agentRoutes() http.Handler {
 		})
 	}
 	return deadlines(mux)
+}
+
+// POST /agent/v1/csr prepares a new node key and answers with a certificate request for it.
+func (a *app) handleAgentCSR(w http.ResponseWriter, r *http.Request) {
+	csr, err := backend.AgentPrepareRenewal(a.configDir)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]byte{"csr": csr})
+}
+
+// POST /agent/v1/cert installs the renewed certificate; it is used from the next connection on.
+func (a *app) handleAgentCert(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Cert []byte `json:"cert"`
+	}
+	if !decodeJSON(w, r, &payload, 64*1024) {
+		return
+	}
+	if err := backend.AgentInstallRenewal(a.configDir, payload.Cert); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	fmt.Println("[AGENT] Node certificate renewed")
+	writeOK(w)
 }
 
 // GET /agent/v1/hello describes this node to the controller.

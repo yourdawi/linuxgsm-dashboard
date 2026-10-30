@@ -3,6 +3,7 @@ package backend
 import (
 	"net"
 	"sync"
+	"time"
 )
 
 // AgentController bundles the controller side of multi-node support. The CA is created on first
@@ -50,6 +51,15 @@ func (c *AgentController) Gateway(create bool) (*AgentGateway, error) {
 	gw.Limiter = NewLoginLimiter()
 	gw.Logf = c.logf
 	gw.OnTunnel = c.Hub.Attach
+	c.Hub.SetCertificateSigner(ca.SignNodeCSR)
+	// The controller's own tunnel certificate is renewed while the dashboard keeps running.
+	go func() {
+		for range time.Tick(24 * time.Hour) {
+			if err := ca.RenewIfDue(); err != nil && c.logf != nil {
+				c.logf("[AGENT] Renewing the tunnel certificate failed: %v", err)
+			}
+		}
+	}()
 	c.gateway = gw
 	return gw, nil
 }

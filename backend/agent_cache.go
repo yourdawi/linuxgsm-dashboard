@@ -41,6 +41,10 @@ func (h *AgentHub) pollServers(nodeID string, client *AgentTunnelClient) {
 				h.mu.Unlock()
 			}
 		}
+		// Long-lived tunnels are checked for a due certificate renewal every hour.
+		if n > 0 && n%int(time.Hour/AgentServerPollInterval) == 0 && h.renewIfDue(nodeID, client, agentRenewNow()) {
+			return
+		}
 		select {
 		case <-client.Done():
 			return

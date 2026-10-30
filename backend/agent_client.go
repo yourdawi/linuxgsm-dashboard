@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math"
@@ -277,9 +278,15 @@ func LoadAgentIdentity(configDir string) (AgentIdentity, error) {
 		}
 		return AgentIdentity{}, err
 	}
-	leaf, key, err := loadCertAndKey(filepath.Join(configDir, agentCertFile), filepath.Join(configDir, agentKeyFile))
+	certPath := filepath.Join(configDir, agentCertFile)
+	leaf, key, err := loadCertAndKey(certPath, filepath.Join(configDir, agentKeyFile))
 	if err != nil {
-		return AgentIdentity{}, err
+		// A renewal interrupted between replacing the key and the certificate leaves the new key
+		// next to the old certificate; the old key is kept for exactly that case.
+		var errOld error
+		if leaf, key, errOld = loadCertAndKey(certPath, filepath.Join(configDir, agentKeyFile+".old")); errOld != nil {
+			return AgentIdentity{}, err
+		}
 	}
 	ca, err := loadCertPEM(filepath.Join(configDir, agentCAFile))
 	if err != nil {
@@ -395,4 +402,102 @@ func agentBackoff(n int) time.Duration {
 		d = float64(agentBackoffMax)
 	}
 	return time.Duration(d * (0.8 + 0.4*mrand.Float64()))
+}
+
+// -------------------------------------------------------------
+// Certificate renewal (driven by the controller through the tunnel)
+// -------------------------------------------------------------
+
+const agentNextKeyFile = agentKeyFile + ".next"
+
+// AgentPrepareRenewal creates a new node key, keeps it as agent.key.next and returns a
+// certificate request for it. The current key stays in use until the renewed certificate is
+// installed.
+func AgentPrepareRenewal(configDir string) ([]byte, error) {
+	cfg, err := LoadAgentConfig(configDir)
+	if err != nil {
+		return nil, err
+	}
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if err := WriteFileAtomic(filepath.Join(configDir, agentNextKeyFile), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
+		return nil, err
+	}
+	return x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: cfg.NodeID}}, key)
+}
+
+// AgentInstallRenewal installs a renewed certificate for the key prepared by
+// AgentPrepareRenewal. The certificate must come from the controller CA, be a client
+// certificate for this node and belong to the prepared key. The new identity is used from the
+// next connection on.
+func AgentInstallRenewal(configDir string, certDER []byte) error {
+	cfg, err := LoadAgentConfig(configDir)
+	if err != nil {
+		return err
+	}
+	ca, err := loadCertPEM(filepath.Join(configDir, agentCAFile))
+	if err != nil {
+		return err
+	}
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return fmt.Errorf("invalid certificate: %w", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	if _, err := cert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		return fmt.Errorf("invalid certificate: %w", err)
+	}
+	if cert.Subject.CommonName != cfg.NodeID {
+		return errors.New("the certificate is for another node")
+	}
+	nextPath := filepath.Join(configDir, agentNextKeyFile)
+	nextPEM, err := os.ReadFile(nextPath)
+	if err != nil {
+		return errors.New("no renewal in progress")
+	}
+	block, _ := pem.Decode(nextPEM)
+	if block == nil {
+		return errors.New("no renewal in progress")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return err
+	}
+	key, ok := parsed.(ed25519.PrivateKey)
+	if !ok || !key.Public().(ed25519.PublicKey).Equal(cert.PublicKey) {
+		return errors.New("the certificate does not belong to the prepared key")
+	}
+
+	// Order matters for a crash in between: the old key is kept as agent.key.old, then the new
+	// key and finally the certificate replace the current ones. LoadAgentIdentity falls back to
+	// agent.key.old while agent.crt is still the old certificate.
+	keyPath := filepath.Join(configDir, agentKeyFile)
+	certPath := filepath.Join(configDir, agentCertFile)
+	// Only a key that matches the current certificate is worth keeping; after an interrupted
+	// renewal agent.key.old already holds the right one.
+	if _, _, err := loadCertAndKey(certPath, keyPath); err == nil {
+		old, err := os.ReadFile(keyPath)
+		if err != nil {
+			return err
+		}
+		if err := WriteFileAtomic(keyPath+".old", old, 0600); err != nil {
+			return err
+		}
+	}
+	if err := WriteFileAtomic(keyPath, nextPEM, 0600); err != nil {
+		return err
+	}
+	if err := WriteFileAtomic(certPath, pemCert(certDER), 0644); err != nil {
+		return err
+	}
+	_ = os.Remove(nextPath)
+	_ = os.Remove(keyPath + ".old")
+	return nil
 }

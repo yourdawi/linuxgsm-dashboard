@@ -70,6 +70,9 @@ func AgentVersionsCompatible(controller, agent string) bool {
 const (
 	// AgentHelloPath answers with AgentHello.
 	AgentHelloPath = "/agent/v1/hello"
+	// AgentCSRPath and AgentCertPath renew the node certificate (controller driven).
+	AgentCSRPath  = "/agent/v1/csr"
+	AgentCertPath = "/agent/v1/cert"
 	// AgentActorHeader names the dashboard user a forwarded request acts for (audit log only).
 	AgentActorHeader = "X-LGSM-Actor"
 	// AgentActorIPHeader is the address of that user as seen by the controller (audit log only).

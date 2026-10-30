@@ -192,3 +192,16 @@ func TestAgentReadWriteModeAndLocalRestrictions(t *testing.T) {
 		t.Errorf("audit entry missing: %+v", e.app.auth.GetAuditLogs())
 	}
 }
+
+func TestAgentRenewalRoutesInEveryMode(t *testing.T) {
+	e := newAgentEnv(t, backend.AgentPolicy{Mode: backend.AgentModeReadOnly})
+	for _, path := range []string{backend.AgentCSRPath, backend.AgentCertPath} {
+		// The test app is not paired, so the routes fail later; the access mode must not stop them.
+		if rec := e.req(http.MethodPost, path, "{}"); isReadOnlyDenial(rec) || rec.Code == http.StatusNotFound {
+			t.Errorf("%s on a read-only node: %d %s", path, rec.Code, rec.Body.String())
+		}
+		if rec := e.req(http.MethodGet, path, nil); rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s: %d", path, rec.Code)
+		}
+	}
+}

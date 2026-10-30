@@ -346,6 +346,7 @@ Game servers on other machines, for example further LXC containers, VMs or a ren
 - **Access mode.** *Read only* allows viewing (servers, consoles, logs, configs, files, backup downloads) plus start, stop and restart. *Read and write* allows everything. The mode is chosen when the node is added and when the agent is installed; the node enforces it itself, and the dashboard can only restrict it further, not raise it. Opening firewall ports and updates triggered by the dashboard need a separate opt-in on the node (`allow_firewall`, `allow_self_update` in `agent-policy.json`).
 - **Users** can be assigned to individual servers of a node or to a whole node, which also covers servers installed there later. Servers of nodes have the ID `<node>~<server>`.
 - **Offline nodes** keep their servers in the list with their last known state, marked as offline.
+- **Certificates** of nodes are valid for 30 days and renewed automatically through the connection about 10 days before they expire; the new key is created on the node. A node that was offline for more than 30 days has to be paired again (Settings > Nodes > *Pair again*, which keeps its assignments).
 - Dashboard and nodes must run the same minor version (for example 1.2.x); a node with another version shows "update required" and is not used until it is updated.
 
 ### Installing a node

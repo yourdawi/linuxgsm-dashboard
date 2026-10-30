@@ -39,8 +39,9 @@ type AgentHub struct {
 	mu      sync.Mutex
 	tunnels map[string]*AgentTunnelClient
 	status  map[string]NodeStatus
-	servers map[string][]GameServerInstance // last known servers per node, global IDs
-	hosts   map[string]HostStats            // last host statistics per node
+	servers map[string][]GameServerInstance                 // last known servers per node, global IDs
+	hosts   map[string]HostStats                            // last host statistics per node
+	signCSR func([]byte, string, time.Time) ([]byte, error) // renews node certificates (agent_renew.go)
 }
 
 // NewAgentHub creates an empty hub. logf may be nil.
@@ -76,6 +77,11 @@ func (h *AgentHub) Attach(nodeID string, client *AgentTunnelClient) {
 		if !h.handshake(nodeID, client) {
 			client.Close()
 		} else {
+			h.retireOldKeys(nodeID, client)
+			if st := h.Status(nodeID); st.Hello != nil && st.Hello.Protocol == AgentProtocolVersion &&
+				h.renewIfDue(nodeID, client, agentRenewNow()) {
+				return // reconnects with the renewed certificate
+			}
 			if h.Status(nodeID).Compatible {
 				go h.pollServers(nodeID, client)
 			}

@@ -373,3 +373,15 @@ func (t *AgentTunnelClient) KeepAlive(interval, timeout time.Duration, failures 
 		}
 	}
 }
+
+// PeerCertificate returns the node certificate the tunnel was opened with.
+func (t *AgentTunnelClient) PeerCertificate() *x509.Certificate {
+	if t.conn == nil {
+		return nil
+	}
+	certs := t.conn.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		return nil
+	}
+	return certs[0]
+}
