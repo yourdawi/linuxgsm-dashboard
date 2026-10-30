@@ -264,7 +264,13 @@ func TestNoDetailsDuringInstall(t *testing.T) {
 	im.static = false
 	im.rt = discoverRuntime{rt, []GameServerInstance{{ID: "ts3server", Script: "ts3server", User: "ts3", Dir: t.TempDir(), Status: "stopped"}}}
 
-	done := im.beginInstall("ts3")
+	done, ok := im.beginInstall("ts3")
+	if !ok {
+		t.Fatal("install refused")
+	}
+	if _, ok := im.beginInstall("ts3"); ok {
+		t.Fatal("a second installation for the same user was allowed")
+	}
 	im.ScanInstances()
 	if s, _ := im.getServer("ts3server"); s.Status != "installing" {
 		t.Errorf("status during install = %q", s.Status)

@@ -430,6 +430,9 @@ func existingInstallUser(req InstallRequest) (*passwdEntry, error) {
 	if uid, err := lfileOwnerUID(entry.Home); err != nil || (uid >= 0 && uid != entry.UID) {
 		return nil, fmt.Errorf("user %s already exists, but its home directory %s belongs to another user", req.Username, entry.Home)
 	}
+	if !wasCreatedByDashboard(entry.Name, entry.UID) && isAdminAccount(entry.Name, entry.Home) {
+		return nil, fmt.Errorf("user %s already exists and is an administrator or login account (sudo group or SSH keys): choose another user name", req.Username)
+	}
 	entries, err := os.ReadDir(entry.Home)
 	if err != nil {
 		return nil, fmt.Errorf("user %s already exists, but its home directory %s cannot be read", req.Username, entry.Home)
@@ -525,10 +528,16 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 			logLine(Msg(lang, "[ERROR] Failed to create user: ", "[FEHLER] Benutzer konnte nicht erstellt werden: ") + err.Error())
 			return err
 		}
+		// Only users the dashboard created are ever deleted together with their home.
+		recordCreatedUser(username)
 	}
 
-	// Set password if provided
-	if req.Password != "" {
+	// Set the password of a new user. An existing user keeps its password: it may be a login
+	// somebody uses.
+	if req.Password != "" && existing != nil {
+		logLine(Msg(lang, "[INSTALL] The user already exists, its password is not changed.",
+			"[INSTALL] Der Benutzer existiert bereits, sein Passwort wird nicht geändert."))
+	} else if req.Password != "" {
 		logLine(Msg(lang, "[INSTALL] Setting password for user...", "[INSTALL] Setze Passwort für Benutzer..."))
 		chpasswdCmd := exec.CommandContext(ctx, "chpasswd")
 		chpasswdCmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", username, req.Password))
@@ -566,15 +575,9 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 		}
 	}
 
-	// 3.5 Grant temporary sudo access for LinuxGSM dependency auto-installer
-	sudoersFile := fmt.Sprintf("/etc/sudoers.d/lgsm-%s", username)
-	sudoersContent := fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL\n", username)
-	if err := WriteFileAtomic(sudoersFile, []byte(sudoersContent), 0440); err != nil {
-		logLine(Msg(lang, "[WARNING] Failed to configure temporary sudo permissions: ", "[WARNUNG] Sudo-Berechtigungen konnten nicht temporär konfiguriert werden: ") + err.Error())
-	}
-	defer func() {
-		_ = os.Remove(sudoersFile)
-	}()
+	// 3.5 Install the packages LinuxGSM needs as root; the game server user gets no sudo.
+	logLine(Msg(lang, "[INSTALL] Checking dependencies...", "[INSTALL] Prüfe Abhängigkeiten..."))
+	installDependencies(ctx, gameCmd, usesSteamCMD(ctx, gameCmd), lang, logf)
 
 	// 4. Run game auto-install: runuser -l <user> -c "cd '<dir>' && ./'<gameCmd>' auto-install"
 	logLine(Msg(lang, "[INSTALL] Installing server via LinuxGSM (SteamCMD)...", "[INSTALL] Installiere Server via LinuxGSM (SteamCMD)..."))
@@ -596,7 +599,7 @@ func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedU
 	// Remove the autostart unit (current and legacy naming), only if it runs this server.
 	removeAutostart(srv)
 
-	if sharedUser || !isDedicatedServerUser(srv) {
+	if sharedUser || !mayDeleteLinuxUser(srv) {
 		// Keep the Linux user: it hosts other servers or is not a dedicated game server user
 		// (for example a personal account that LinuxGSM was installed into).
 		_ = removeCronLinesForScript(h, srv, nil)
@@ -615,6 +618,7 @@ func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedU
 		fmt.Printf("[ERROR] Failed to delete user %s: %v\n", srv.User, err)
 		return fmt.Errorf("failed to delete user")
 	}
+	forgetCreatedUser(srv.User)
 	return nil
 }
 

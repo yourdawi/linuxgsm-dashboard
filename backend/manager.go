@@ -133,6 +133,7 @@ func NewInstanceManager(configDir string, rt Runtime) *InstanceManager {
 		detailsTried: make(map[string]time.Time),
 	}
 	im.customPaths = im.loadCustomPaths()
+	hostConfigDir = configDir
 
 	rt.Init()
 	im.ScanInstances()
@@ -322,23 +323,27 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 	}
 }
 
-// beginInstall marks an installation under username until the returned function is called.
-// LinuxGSM must not run `details` for a server whose auto-install is still running: both would
-// download modules and create directories at the same time.
-func (im *InstanceManager) beginInstall(username string) func() {
+// beginInstall marks an installation under username until the returned function is called. It
+// fails while another installation for the same user runs: both would bootstrap and auto-install
+// into the same directory. LinuxGSM must not run `details` for a server whose auto-install is
+// still running either.
+func (im *InstanceManager) beginInstall(username string) (func(), bool) {
 	im.detailsMu.Lock()
+	defer im.detailsMu.Unlock()
 	if im.installing == nil {
 		im.installing = make(map[string]int)
 	}
+	if im.installing[username] > 0 {
+		return nil, false
+	}
 	im.installing[username]++
-	im.detailsMu.Unlock()
 	return func() {
 		im.detailsMu.Lock()
 		if im.installing[username]--; im.installing[username] <= 0 {
 			delete(im.installing, username)
 		}
 		im.detailsMu.Unlock()
-	}
+	}, true
 }
 
 func (im *InstanceManager) isInstalling(srv *GameServerInstance) bool {
@@ -820,6 +825,13 @@ func (im *InstanceManager) RunBulkAction(action string, serverIDs []string) map[
 // Server deletion
 // -------------------------------------------------------------
 
+// writeJSONError answers with {"error": msg, "code": code}; the UI reacts to the code.
+func writeJSONError(w http.ResponseWriter, status int, msg, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg, "code": code})
+}
+
 // DeleteServer deletes a server and reports whether it succeeded. Its ID is released afterwards;
 // the caller removes it from the user permissions.
 func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, serverID string) bool {
@@ -829,10 +841,31 @@ func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, 
 		return false
 	}
 
-	// 1. Stop the server first
+	if im.isInstalling(&srv) {
+		writeJSONError(w, http.StatusConflict, "The server is still being installed", "installing")
+		return false
+	}
+
+	// 1. Stop the server first. LinuxGSM can refuse (stoponlyifnoplayers) or fail; deleting the
+	// files under a running server would leave a process the dashboard can no longer see.
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	_ = im.runLGSM(stopCtx, srv, "stop")
 	cancel()
+	if isTmuxSessionActive(im.rt, srv) {
+		if r.URL.Query().Get("force") != "1" {
+			writeJSONError(w, http.StatusConflict, "The server is still running after the stop command", "still_running")
+			return false
+		}
+		if socket, session, ok := findLinuxGSMTmuxTarget(im.rt, srv); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			_ = im.rt.RunAsUser(ctx, srv, ExecIO{}, false, "tmux", "-L", socket, "kill-session", "-t", session)
+			cancel()
+		}
+		if isTmuxSessionActive(im.rt, srv) {
+			writeJSONError(w, http.StatusConflict, "The server could not be stopped", "still_running")
+			return false
+		}
+	}
 
 	// 2. Count instances sharing the same user
 	im.mu.Lock()

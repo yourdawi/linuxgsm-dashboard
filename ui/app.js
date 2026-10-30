@@ -3690,6 +3690,8 @@ const i18n = {
         "btn-mods-install": "Install Mods",
         "btn-mods-update": "Update Mods",
         "btn-mods-remove": "Remove Mods",
+        "delete-force-confirm": "The server is still running after the stop command (for example players are online and LinuxGSM only stops empty servers). End its session and delete it anyway?",
+        "delete-installing": "The server is still being installed. Delete it when the installation has finished.",
         "btn-change-password": "Set ServerAdmin password",
         "btn-fastdl": "FastDL Sync",
         "btn-postdetails": "Support Log (Termbin)",
@@ -4259,6 +4261,8 @@ const i18n = {
         "btn-mods-install": "Mods Installieren",
         "btn-mods-update": "Mods Updaten",
         "btn-mods-remove": "Mods entfernen",
+        "delete-force-confirm": "Der Server läuft nach dem Stopp-Befehl noch (zum Beispiel sind Spieler online und LinuxGSM stoppt nur leere Server). Sitzung beenden und trotzdem löschen?",
+        "delete-installing": "Der Server wird noch installiert. Lösche ihn, wenn die Installation abgeschlossen ist.",
         "btn-change-password": "ServerAdmin-Passwort setzen",
         "btn-fastdl": "FastDL Sync",
         "btn-postdetails": "Support Log (Termbin)",
@@ -5047,9 +5051,20 @@ async function confirmDeleteServer() {
     el.btnDeleteConfirmSubmit.disabled = true;
     
     try {
-        const res = await apiFetch(`/api/servers/${serverId}/delete`, {
-            method: 'POST'
-        });
+        const url = `/api/servers/${encodeURIComponent(serverId)}/delete`;
+        let res = await apiFetch(url, { method: 'POST' });
+        if (res.status === 409) {
+            // Still running after the stop (players online with stoponlyifnoplayers, hung
+            // server) or still installing.
+            const data = await res.json().catch(() => ({}));
+            if (data.code === 'still_running' && confirm(t('delete-force-confirm'))) {
+                res = await apiFetch(url + '?force=1', { method: 'POST' });
+            } else {
+                alert(data.code === 'installing' ? t('delete-installing') : (data.error || t('status-error')));
+                el.btnDeleteConfirmSubmit.disabled = false;
+                return;
+            }
+        }
         if (res.status !== 200) {
             throw new Error('Delete API failed');
         }

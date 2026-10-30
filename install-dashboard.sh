@@ -1080,6 +1080,8 @@ do_uninstall() {
         rm -f "/etc/systemd/system/$svc.service"
     done
     systemctl daemon-reload
+    # Temporary sudo rules of installs by versions before 2.0.0 that were interrupted.
+    rm -f /etc/sudoers.d/lgsm-*
 
     # 2. Remove firewall rules (a node agent opens no port)
     [ "$is_agent" != "true" ] && configure_firewall "remove"
