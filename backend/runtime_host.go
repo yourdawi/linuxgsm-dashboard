@@ -579,19 +579,8 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 // directory. Otherwise only this instance is removed, and the LinuxGSM files of its directory
 // once no other instance is left there; the Linux user is kept.
 func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedUser bool) error {
-	// Remove systemd service if it exists (current and legacy naming)
-	for _, unit := range []string{"linuxgsm-" + srv.Script, srv.ID} {
-		if !IsValidScriptName(unit) {
-			continue
-		}
-		servicePath := filepath.Join("/etc/systemd/system", unit+".service")
-		if _, err := os.Stat(servicePath); err == nil {
-			_ = exec.Command("systemctl", "stop", unit+".service").Run()
-			_ = exec.Command("systemctl", "disable", unit+".service").Run()
-			_ = os.Remove(servicePath)
-			_ = exec.Command("systemctl", "daemon-reload").Run()
-		}
-	}
+	// Remove the autostart unit (current and legacy naming), only if it runs this server.
+	removeAutostart(srv)
 
 	if sharedUser || !isDedicatedServerUser(srv) {
 		// Keep the Linux user: it hosts other servers or is not a dedicated game server user
@@ -833,45 +822,3 @@ func (HostRuntime) WriteCrontab(srv GameServerInstance, content string) error {
 	return cmd.Run()
 }
 
-// InstallAutostart writes and enables the systemd unit linuxgsm-<script>.service.
-func (HostRuntime) InstallAutostart(srv GameServerInstance) error {
-	if !IsSafeServerDir(srv.Dir) || !IsValidScriptName(srv.Script) || !IsValidLinuxUsername(srv.User) {
-		return fmt.Errorf("server cannot be installed as systemd service")
-	}
-	// The description comes from game server output: strip anything systemd could interpret.
-	desc := strings.Map(func(r rune) rune {
-		if r == '%' || r == '\\' {
-			return -1
-		}
-		return r
-	}, sanitizeDisplayText(srv.Name, 100))
-
-	scriptPath := scriptPathOf(srv)
-	systemdCode := fmt.Sprintf(`[Unit]
-Description=LinuxGSM %s Server
-After=network.target
-
-[Service]
-Type=simple
-User=%s
-WorkingDirectory=%s
-ExecStart=%s start
-ExecStop=%s stop
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-`, desc, srv.User, srv.Dir, scriptPath, scriptPath)
-
-	unit := fmt.Sprintf("linuxgsm-%s.service", srv.Script)
-	servicePath := filepath.Join("/etc/systemd/system", unit)
-	if err := WriteFileAtomic(servicePath, []byte(systemdCode), 0644); err != nil {
-		return err
-	}
-
-	_ = exec.Command("systemctl", "daemon-reload").Run()
-	_ = exec.Command("systemctl", "enable", unit).Run()
-
-	return nil
-}

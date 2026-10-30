@@ -136,6 +136,13 @@ func NewInstanceManager(configDir string, rt Runtime) *InstanceManager {
 
 	rt.Init()
 	im.ScanInstances()
+	if m, ok := rt.(interface{ MigrateAutostart(GameServerInstance) }); ok {
+		go func() {
+			for _, srv := range im.snapshot() {
+				m.MigrateAutostart(srv)
+			}
+		}()
+	}
 	im.startQueryLoop()
 	im.startDiskLoop()
 
@@ -178,6 +185,17 @@ func (im *InstanceManager) GetInstances() []GameServerInstance {
 		}
 		item.Disk = im.cachedDisk(item.Dir)
 		list = append(list, item)
+	}
+	return list
+}
+
+// snapshot returns copies of all known instances without rescanning.
+func (im *InstanceManager) snapshot() []GameServerInstance {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	list := make([]GameServerInstance, 0, len(im.instances))
+	for _, inst := range im.instances {
+		list = append(list, *inst)
 	}
 	return list
 }
@@ -679,9 +697,14 @@ func (s *sseWriter) exit(code int) {
 	s.send(map[string]interface{}{"type": "exit", "code": code})
 }
 
-func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, serverID, action, lang string) {
+func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, serverID, action string, input ActionInput, lang string) {
 	if _, ok := ActionPermission(action); !ok {
 		http.Error(w, "Invalid action name", http.StatusBadRequest)
+		return
+	}
+	stdin, err := ActionStdin(action, input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -717,8 +740,8 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 		return
 	}
 
-	err := streamLines(func(out io.Writer) error {
-		return im.rt.RunLGSM(context.Background(), srv, ExecIO{Stdin: strings.NewReader("y\ny\ny\n"), Stdout: out, Stderr: out}, action)
+	err = streamLines(func(out io.Writer) error {
+		return im.rt.RunLGSM(context.Background(), srv, ExecIO{Stdin: strings.NewReader(stdin), Stdout: out, Stderr: out}, action)
 	}, func(line string) {
 		sse.log(stripAnsi(line))
 	}, func(err error) {

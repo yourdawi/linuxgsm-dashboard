@@ -441,9 +441,6 @@
                             <button id="console-btn-test-alert" class="btn btn-secondary" disabled>
                                 <span data-i18n="btn-test-alert">Alert Testen</span>
                             </button>
-                            <button id="console-btn-debug" class="btn btn-secondary" disabled title="Debug Modus" data-i18n-title="btn-debug">
-                                <span data-i18n="btn-debug">Debug Modus</span>
-                            </button>
                             <button id="console-btn-map-compressor" class="btn btn-secondary hidden" disabled>
                                 <span data-i18n="btn-map-compressor">Map Compressor</span>
                             </button>
@@ -1431,11 +1428,11 @@
     <div id="modal-mods" class="modal-overlay hidden">
         <div class="modal-card">
             <div class="modal-header">
-                <h3 data-i18n="modal-mods-title">Installierte Mods und Plugins</h3>
+                <h3 data-i18n="modal-mods-title">Mods und Plugins</h3>
                 <button id="btn-close-modal-mods" class="btn-icon modal-close-btn">&times;</button>
             </div>
             <div class="modal-body">
-                <p class="text-muted text-sm mb-3" data-i18n="modal-mods-desc">Verwalte installierte Addons und Plugins für diesen Server.</p>
+                <p class="text-muted text-sm mb-3" data-i18n="modal-mods-desc">Installiere oder entferne die Addons und Plugins, die LinuxGSM für dieses Spiel anbietet.</p>
                 <div id="modal-mods-list" class="mods-list-container">
                     <div class="text-center text-muted py-3" data-i18n="mods-loading">Lade Mod-Liste...</div>
                 </div>
@@ -1443,6 +1440,35 @@
             <div class="modal-footer">
                 <button id="btn-close-mods-modal-footer" class="btn btn-secondary" data-i18n="btn-cancel">Schließen</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Modal: TeamSpeak 3 ServerAdmin password -->
+    <div id="modal-ts3pw" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width: 460px;">
+            <div class="modal-header">
+                <h3 data-i18n="modal-ts3pw-title">ServerAdmin-Passwort setzen</h3>
+                <button id="btn-close-modal-ts3pw" class="btn-icon modal-close-btn">&times;</button>
+            </div>
+            <form id="ts3pw-form">
+                <div class="modal-body">
+                    <p class="text-muted text-sm mb-3" data-i18n="modal-ts3pw-desc">LinuxGSM startet den TeamSpeak-3-Server mit dem neuen ServerQuery-Passwort für serveradmin neu.</p>
+                    <div class="form-group">
+                        <label for="ts3pw-password" data-i18n="ts3pw-password">Neues Passwort</label>
+                        <input type="password" id="ts3pw-password" required minlength="8" maxlength="64" autocomplete="new-password">
+                        <small class="text-muted" data-i18n="ts3pw-hint">8 bis 64 Zeichen: Buchstaben, Ziffern und . _ + = @ # % ^ * ! ? : , ~ -</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="ts3pw-confirm" data-i18n="ts3pw-confirm">Passwort wiederholen</label>
+                        <input type="password" id="ts3pw-confirm" required minlength="8" maxlength="64" autocomplete="new-password">
+                    </div>
+                    <div id="ts3pw-error" class="error-message"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" id="btn-cancel-ts3pw" class="btn btn-secondary" data-i18n="btn-cancel">Abbrechen</button>
+                    <button type="submit" class="btn btn-warning" data-i18n="ts3pw-submit">Passwort setzen</button>
+                </div>
+            </form>
         </div>
     </div>
 

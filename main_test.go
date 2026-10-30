@@ -303,7 +303,7 @@ func TestActionEndpoint(t *testing.T) {
 	if rec := e.do(&operator, http.MethodPost, "/api/servers/srv1/action", map[string]string{"action": "restart"}); !isPermissionDenied(rec) {
 		t.Errorf("operator restart without permission: %d", rec.Code)
 	}
-	for _, adminOnly := range []string{"update", "full-wipe", "postdetails", "debug"} {
+	for _, adminOnly := range []string{"update", "full-wipe", "postdetails", "mods-install", "change-password"} {
 		if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/action", map[string]string{"action": adminOnly}); !isPermissionDenied(rec) {
 			t.Errorf("non-admin %s: %d", adminOnly, rec.Code)
 		}

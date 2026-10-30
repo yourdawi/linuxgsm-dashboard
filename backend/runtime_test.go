@@ -186,7 +186,7 @@ func TestRunActionStreamsRuntimeOutput(t *testing.T) {
 	im := newFakeManager(rt, GameServerInstance{ID: "vhserver", Script: "vhserver", User: "vh", Dir: "/home/vh"})
 
 	rec := httptest.NewRecorder()
-	im.RunAction(rec, httptest.NewRequest("POST", "/", nil), "vhserver", "start", "en")
+	im.RunAction(rec, httptest.NewRequest("POST", "/", nil), "vhserver", "start", ActionInput{}, "en")
 	body := rec.Body.String()
 	for _, want := range []string{`"text":"Starting\n"`, `"text":"OK\n"`, `"type":"exit"`, `"code":5`} {
 		if !strings.Contains(body, want) {

@@ -460,7 +460,6 @@ const el = {
     cronBuilderForm: document.getElementById('cron-builder-form'),
     cronBuilderMessage: document.getElementById('cron-builder-message'),
 
-    consoleBtnDebug: document.getElementById('console-btn-debug'),
     consoleBtnMapCompressor: document.getElementById('console-btn-map-compressor'),
     settingsStopmodeSelect: document.getElementById('settings-stopmode-select'),
     settingsStopmodeSaveBtn: document.getElementById('settings-stopmode-save-btn'),
@@ -531,12 +530,14 @@ function initApp() {
     if (el.consoleBtnCheckUpdate) el.consoleBtnCheckUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'check-update'));
     el.consoleBtnUpdateLgsm.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'update-lgsm'));
     el.consoleBtnForceUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'force-update'));
-    if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'mods-install'));
+    if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.addEventListener('click', () => {
+        const server = state.servers.find(s => s.id === state.selectedConsoleServer);
+        if (server) openModsModal(server);
+    });
     if (el.consoleBtnModsUpdate) el.consoleBtnModsUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'mods-update'));
     if (el.consoleBtnFastdl) el.consoleBtnFastdl.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'fastdl'));
     if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'postdetails'));
     el.consoleBtnTestAlert.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'test-alert'));
-    if (el.consoleBtnDebug) el.consoleBtnDebug.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'debug'));
     if (el.consoleBtnMapCompressor) el.consoleBtnMapCompressor.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'map-compressor'));
     
     el.consoleModeTmux.addEventListener('click', () => switchConsoleMode('tmux'));
@@ -1634,13 +1635,15 @@ function createServerCard(server) {
 
 // -------------------------------------------------------------
 // Action Logs Live Stream Handler
-function runServerAction(serverId, action) {
+// extra carries the answers a command needs (mod for mods-install/-remove, password for the TS3
+// change-password).
+function runServerAction(serverId, action, extra = {}) {
     const tAction = t('btn-' + action) || action.toUpperCase();
     runStreamModal({
         title: t('modal-stream-title-run').replace('{action}', tAction).replace('{server}', serverId),
         runningText: t('status-running-action'),
         url: `/api/servers/${encodeURIComponent(serverId)}/action`,
-        body: { action, lang: state.language },
+        body: { ...extra, action, lang: state.language },
         errorText: t('modal-stream-err-run'),
         onExit: () => {
             // If in console tab, refresh console button states
@@ -1748,15 +1751,10 @@ function updateConsoleViewButtons() {
     const canBackup = hasUserPermission('backup');
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
     
-    if (isAdmin || canBackup) {
-        el.consoleBtnDetails.classList.remove('hidden');
-        el.consoleBtnBackup.classList.remove('hidden');
-        if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.classList.remove('hidden');
-    } else {
-        el.consoleBtnDetails.classList.add('hidden');
-        el.consoleBtnBackup.classList.add('hidden');
-        if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.classList.add('hidden');
-    }
+    // details prints the server passwords, so it needs the config permission like the editor.
+    el.consoleBtnDetails.classList.toggle('hidden', !(isAdmin || hasUserPermission('config')));
+    el.consoleBtnBackup.classList.toggle('hidden', !(isAdmin || canBackup));
+    if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.classList.toggle('hidden', !isAdmin);
     
     if (isAdmin) {
         el.consoleBtnValidate.classList.remove('hidden');
@@ -3175,20 +3173,24 @@ function handleSettingsServerChange() {
     loadCronSchedule(serverID);
     loadServerStopMode(serverID);
     
-    // 1. Generate Systemd template
+    // 1. Generate Systemd template (same as backend/autostart.go)
     const serverDir = server.dir || `/home/${server.user}`;
-    const systemdCode = `[Unit]
+    const systemdCode = `# /etc/systemd/system/linuxgsm-${server.user}-${server.script}.service
+[Unit]
 Description=LinuxGSM ${server.name} Server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=simple
+Type=forking
 User=${server.user}
 WorkingDirectory=${serverDir}
+RemainAfterExit=yes
 ExecStart=${serverDir}/${server.script} start
-ExecStop=${serverDir}/${server.script} stop
-Restart=always
-RestartSec=10
+ExecStop=-${serverDir}/${server.script} stop
+Restart=no
+TimeoutStartSec=15min
+TimeoutStopSec=5min
 
 [Install]
 WantedBy=multi-user.target`;
@@ -3685,6 +3687,8 @@ const i18n = {
         "btn-check-update": "Check Update",
         "btn-mods-install": "Install Mods",
         "btn-mods-update": "Update Mods",
+        "btn-mods-remove": "Remove Mods",
+        "btn-change-password": "Set ServerAdmin password",
         "btn-fastdl": "FastDL Sync",
         "btn-postdetails": "Support Log (Termbin)",
         "files-btn-upload": "Upload File",
@@ -3724,9 +3728,26 @@ const i18n = {
         "audit-title": "Security Audit Log",
         "audit-subtitle": "Unfiltered log of administrative actions and user logins.",
         "audit-empty": "No audit entries recorded.",
-        "modal-mods-title": "Installed mods and plugins",
-        "modal-mods-desc": "Manage installed addons and plugins for this server.",
+        "modal-mods-title": "Mods and plugins",
+        "modal-mods-desc": "Install or remove the addons and plugins LinuxGSM offers for this game.",
         "mods-loading": "Loading mods list...",
+        "mods-installed": "Installed",
+        "mods-available": "Available",
+        "mods-none-installed": "No mods installed (lgsm/mods/installed-mods.txt).",
+        "mods-none-available": "LinuxGSM offers no mods for this game.",
+        "mods-load-error": "The mod list could not be loaded.",
+        "mods-btn-install": "Install",
+        "mods-btn-reinstall": "Reinstall",
+        "mods-btn-remove": "Remove",
+        "mods-confirm-remove": "Remove {mod}? LinuxGSM deletes the files it installed for this mod.",
+        "modal-ts3pw-title": "Set ServerAdmin password",
+        "modal-ts3pw-desc": "LinuxGSM restarts the TeamSpeak 3 server with the new ServerQuery password for serveradmin.",
+        "ts3pw-password": "New password",
+        "ts3pw-confirm": "Repeat password",
+        "ts3pw-hint": "8 to 64 characters: letters, digits and . _ + = @ # % ^ * ! ? : , ~ -",
+        "ts3pw-mismatch": "The passwords do not match.",
+        "ts3pw-invalid": "The password needs 8 to 64 characters: letters, digits and . _ + = @ # % ^ * ! ? : , ~ -",
+        "ts3pw-submit": "Set password",
         "alerts-settings-title": "Notification Alerts Settings",
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Install & Enable Service",
@@ -4235,6 +4256,8 @@ const i18n = {
         "btn-check-update": "Update prüfen",
         "btn-mods-install": "Mods Installieren",
         "btn-mods-update": "Mods Updaten",
+        "btn-mods-remove": "Mods entfernen",
+        "btn-change-password": "ServerAdmin-Passwort setzen",
         "btn-fastdl": "FastDL Sync",
         "btn-postdetails": "Support Log (Termbin)",
         "files-btn-upload": "Datei hochladen",
@@ -4274,9 +4297,26 @@ const i18n = {
         "audit-title": "Sicherheits Audit-Log",
         "audit-subtitle": "Ungefiltertes Protokoll aller administrativen Aktionen und System-Anmeldungen.",
         "audit-empty": "Keine Audit-Einträge vorhanden.",
-        "modal-mods-title": "Installierte Mods und Plugins",
-        "modal-mods-desc": "Verwalte installierte Addons und Plugins für diesen Server.",
+        "modal-mods-title": "Mods und Plugins",
+        "modal-mods-desc": "Installiere oder entferne die Addons und Plugins, die LinuxGSM für dieses Spiel anbietet.",
         "mods-loading": "Lade Mod-Liste...",
+        "mods-installed": "Installiert",
+        "mods-available": "Verfügbar",
+        "mods-none-installed": "Keine Mods installiert (lgsm/mods/installed-mods.txt).",
+        "mods-none-available": "LinuxGSM bietet für dieses Spiel keine Mods an.",
+        "mods-load-error": "Die Mod-Liste konnte nicht geladen werden.",
+        "mods-btn-install": "Installieren",
+        "mods-btn-reinstall": "Neu installieren",
+        "mods-btn-remove": "Entfernen",
+        "mods-confirm-remove": "{mod} entfernen? LinuxGSM löscht die Dateien, die es für diese Mod installiert hat.",
+        "modal-ts3pw-title": "ServerAdmin-Passwort setzen",
+        "modal-ts3pw-desc": "LinuxGSM startet den TeamSpeak-3-Server mit dem neuen ServerQuery-Passwort für serveradmin neu.",
+        "ts3pw-password": "Neues Passwort",
+        "ts3pw-confirm": "Passwort wiederholen",
+        "ts3pw-hint": "8 bis 64 Zeichen: Buchstaben, Ziffern und . _ + = @ # % ^ * ! ? : , ~ -",
+        "ts3pw-mismatch": "Die Passwörter stimmen nicht überein.",
+        "ts3pw-invalid": "Das Passwort braucht 8 bis 64 Zeichen: Buchstaben, Ziffern und . _ + = @ # % ^ * ! ? : , ~ -",
+        "ts3pw-submit": "Passwort setzen",
         "alerts-settings-title": "Benachrichtigungs-Einstellungen",
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Dienst automatisch installieren & aktivieren",
@@ -6211,7 +6251,7 @@ function renderConsoleGameActions(server) {
             { id: 'game-act-map-wipe', confirmMsg: isDe ? 'Map-Wipe durchführen? Alle Bauwerke werden gelöscht!' : 'Perform Map Wipe? All player structures will be deleted!', action: 'map-wipe' },
             { id: 'game-act-full-wipe', confirmMsg: isDe ? 'Full-Wipe durchführen? Alle Bauwerke und Blueprints werden gelöscht!' : 'Perform Full Wipe? All map progress and blueprint data will be deleted!', action: 'full-wipe' },
             { id: 'game-act-map-compressor', confirmMsg: isDe ? 'Map-Komprimierung ausführen?' : 'Run Map Compressor?', action: 'map-compressor' },
-            { id: 'game-act-mods-install', action: 'mods-install' },
+            { id: 'game-act-mods-install', open: () => openModsModal(server) },
             { id: 'game-act-mods-update', action: 'mods-update' }
         );
     } 
@@ -6223,11 +6263,7 @@ function renderConsoleGameActions(server) {
                 <span>${isDe ? 'Query-Admin-Passwort zurücksetzen' : 'Reset query admin password'}</span>
             </button>
         `;
-        clickHandlers.push({
-            id: 'game-act-ts3-pw',
-            confirmMsg: isDe ? 'Möchtest du das Query-Admin-Passwort zurücksetzen? Der Server startet danach neu.' : 'Reset TeamSpeak 3 Query Admin password? Server will restart.',
-            action: 'change-password'
-        });
+        clickHandlers.push({ id: 'game-act-ts3-pw', open: () => openTs3PasswordModal(server) });
     }
     // 3. Source Engine & FastDL Supported Games (CS2, CS:GO, TF2, CSS, GMod, CoD4, Sven Co-op, Xonotic, etc.)
     else if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih', 'cod4', 'sven', 'xon'].includes(game)) {
@@ -6251,7 +6287,7 @@ function renderConsoleGameActions(server) {
                 </button>
             `;
             clickHandlers.push(
-                { id: 'game-act-mods-install', action: 'mods-install' },
+                { id: 'game-act-mods-install', open: () => openModsModal(server) },
                 { id: 'game-act-mods-update', action: 'mods-update' }
             );
         }
@@ -6288,7 +6324,7 @@ function renderConsoleGameActions(server) {
             </button>
         `;
         clickHandlers.push(
-            { id: 'game-act-mods-install', action: 'mods-install' },
+            { id: 'game-act-mods-install', open: () => openModsModal(server) },
             { id: 'game-act-mods-update', action: 'mods-update' }
         );
     }
@@ -6310,7 +6346,9 @@ function renderConsoleGameActions(server) {
             const btn = document.getElementById(item.id);
             if (btn) {
                 btn.addEventListener('click', () => {
-                    if (item.confirmMsg) {
+                    if (item.open) {
+                        item.open();
+                    } else if (item.confirmMsg) {
                         if (confirm(item.confirmMsg)) {
                             runServerAction(server.id, item.action);
                         }
@@ -6521,39 +6559,127 @@ if (el.consoleInputForm) {
 }
 
 // ----------------------------------------------------
-// Installed Mods & Plugins Modal
+// Mods & Plugins Modal
 // ----------------------------------------------------
+// mods-install and mods-remove ask LinuxGSM for a mod name, so the mod is picked here: the
+// installed ones (to remove) and the ones LinuxGSM offers for the game (to install).
 function openModsModal(server) {
     if (!el.modalMods) return;
+    const serverId = server.id;
+    el.modalMods.dataset.server = serverId;
     el.modalMods.classList.remove('hidden');
     el.modalModsList.innerHTML = `<div class="text-center text-muted py-3">${t('mods-loading')}</div>`;
 
-    fetch(`/api/servers/${encodeURIComponent(server.id)}/mods`)
-        .then(r => r.json())
-        .then(data => {
-            const installed = data.installed || [];
-            if (installed.length === 0) {
-                el.modalModsList.innerHTML = `
-                    <div class="alert alert-info">
-                        ${state.language === 'de' ? 'Keine aktiven Mods in lgsm/mods/installed-mods.txt registriert.' : 'No active mods registered in lgsm/mods/installed-mods.txt.'}
-                    </div>
-                `;
-            } else {
-                let html = '<ul class="list-group">';
-                installed.forEach(mod => {
-                    html += `<li class="list-group-item flex-between align-center"><span class="mono">${escapeHtml(mod)}</span></li>`;
-                });
-                html += '</ul>';
-                el.modalModsList.innerHTML = html;
-            }
+    const base = `/api/servers/${encodeURIComponent(serverId)}`;
+    const getJSON = url => fetch(url).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))));
+    const current = () => el.modalMods.dataset.server === serverId && !el.modalMods.classList.contains('hidden');
+    Promise.all([getJSON(`${base}/mods`), getJSON(`${base}/mods/available`)])
+        .then(([inst, avail]) => {
+            if (current()) renderModsModal(server, inst.installed || [], avail.available || []);
         })
         .catch(() => {
-            el.modalModsList.innerHTML = `<div class="alert alert-danger">${t('status-error')}</div>`;
+            if (current()) el.modalModsList.innerHTML = `<div class="alert alert-danger">${t('mods-load-error')}</div>`;
         });
+}
+
+function renderModsModal(server, installed, available) {
+    const locked = serverWriteLocked(server.id);
+    const lockAttr = locked ? `disabled title="${escapeHtml(serverWriteLockedText(server.id))}"` : '';
+    const installedSet = new Set(installed);
+
+    let html = `<h4 class="text-sm mb-2">${t('mods-installed')}</h4>`;
+    if (installed.length === 0) {
+        html += `<div class="alert alert-info mb-3">${t('mods-none-installed')}</div>`;
+    } else {
+        html += '<ul class="list-group mb-3">';
+        installed.forEach(mod => {
+            html += `<li class="list-group-item flex-between align-center">
+                <span class="mono">${escapeHtml(mod)}</span>
+                <button class="btn btn-danger btn-sm" data-mod-remove="${escapeHtml(mod)}" ${lockAttr}>${t('mods-btn-remove')}</button>
+            </li>`;
+        });
+        html += '</ul>';
+    }
+
+    html += `<h4 class="text-sm mb-2">${t('mods-available')}</h4>`;
+    if (available.length === 0) {
+        html += `<div class="alert alert-info">${t('mods-none-available')}</div>`;
+    } else {
+        html += '<ul class="list-group">';
+        available.forEach(mod => {
+            const label = installedSet.has(mod.command) ? t('mods-btn-reinstall') : t('mods-btn-install');
+            html += `<li class="list-group-item flex-between align-center" style="gap: 0.75rem;">
+                <div style="min-width: 0;">
+                    <span class="mono">${escapeHtml(mod.command)}</span>
+                    <div class="text-muted text-sm" style="overflow-wrap: anywhere;">${escapeHtml(mod.description)}</div>
+                </div>
+                <button class="btn btn-primary btn-sm" data-mod-install="${escapeHtml(mod.command)}" ${lockAttr}>${label}</button>
+            </li>`;
+        });
+        html += '</ul>';
+    }
+    el.modalModsList.innerHTML = html;
+
+    el.modalModsList.querySelectorAll('[data-mod-install]').forEach(btn => btn.addEventListener('click', () => {
+        el.modalMods.classList.add('hidden');
+        runServerAction(server.id, 'mods-install', { mod: btn.dataset.modInstall });
+    }));
+    el.modalModsList.querySelectorAll('[data-mod-remove]').forEach(btn => btn.addEventListener('click', () => {
+        const mod = btn.dataset.modRemove;
+        if (!confirm(t('mods-confirm-remove').replace('{mod}', mod))) return;
+        el.modalMods.classList.add('hidden');
+        runServerAction(server.id, 'mods-remove', { mod });
+    }));
 }
 
 if (el.btnCloseModalMods) el.btnCloseModalMods.addEventListener('click', () => el.modalMods.classList.add('hidden'));
 if (el.btnCloseModsModalFooter) el.btnCloseModsModalFooter.addEventListener('click', () => el.modalMods.classList.add('hidden'));
+
+// ----------------------------------------------------
+// TeamSpeak 3 ServerAdmin password
+// ----------------------------------------------------
+// LinuxGSM writes the password into a shell line, so the backend accepts only these characters.
+const TS3_PASSWORD_RE = /^[A-Za-z0-9._+=@#%^*!?:,~-]{8,64}$/;
+
+function openTs3PasswordModal(server) {
+    const modal = document.getElementById('modal-ts3pw');
+    if (!modal) return;
+    modal.dataset.server = server.id;
+    document.getElementById('ts3pw-password').value = '';
+    document.getElementById('ts3pw-confirm').value = '';
+    document.getElementById('ts3pw-error').textContent = '';
+    modal.classList.remove('hidden');
+    document.getElementById('ts3pw-password').focus();
+}
+
+(function initTs3PasswordModal() {
+    const modal = document.getElementById('modal-ts3pw');
+    const form = document.getElementById('ts3pw-form');
+    if (!modal || !form) return;
+    const close = () => {
+        modal.classList.add('hidden');
+        document.getElementById('ts3pw-password').value = '';
+        document.getElementById('ts3pw-confirm').value = '';
+    };
+    document.getElementById('btn-close-modal-ts3pw').addEventListener('click', close);
+    document.getElementById('btn-cancel-ts3pw').addEventListener('click', close);
+    form.addEventListener('submit', e => {
+        e.preventDefault();
+        const password = document.getElementById('ts3pw-password').value;
+        const errorEl = document.getElementById('ts3pw-error');
+        if (!TS3_PASSWORD_RE.test(password)) {
+            errorEl.textContent = t('ts3pw-invalid');
+            return;
+        }
+        if (password !== document.getElementById('ts3pw-confirm').value) {
+            errorEl.textContent = t('ts3pw-mismatch');
+            return;
+        }
+        const serverId = modal.dataset.server;
+        close();
+        runServerAction(serverId, 'change-password', { password });
+    });
+})();
 
 // ----------------------------------------------------
 // Web File Manager

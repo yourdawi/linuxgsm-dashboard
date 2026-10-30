@@ -2,6 +2,8 @@ package backend
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Size limits for files that are loaded into memory.
@@ -600,6 +603,30 @@ func (im *InstanceManager) GetInstalledMods(serverID string) ([]string, error) {
 		}
 	}
 	return installedMods, nil
+}
+
+// AvailableMods asks LinuxGSM which mods it offers for a server: mods-install prints the list
+// and is then answered with "exit", so nothing is installed.
+func (im *InstanceManager) AvailableMods(serverID string) ([]ModInfo, error) {
+	srv, ok := im.getServer(serverID)
+	if !ok {
+		return nil, ErrServerNotFound
+	}
+	if im.static || im.isInstalling(&srv) {
+		return []ModInfo{}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var out bytes.Buffer
+	err := im.rt.RunLGSM(ctx, srv, ExecIO{Stdin: strings.NewReader("exit\n"), Stdout: &out, Stderr: &out}, "mods-install")
+	mods := ParseAvailableMods(out.String())
+	if len(mods) == 0 && err != nil && isStartError(err) {
+		return nil, err
+	}
+	if mods == nil {
+		mods = []ModInfo{}
+	}
+	return mods, nil
 }
 
 // -------------------------------------------------------------

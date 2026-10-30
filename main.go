@@ -1071,6 +1071,7 @@ var serverRoutes = map[string]routePolicy{
 	"files/content GET":         {backend.PermFiles, backend.AccessRead},
 	"files/upload POST":         {backend.PermFiles, backend.AccessWrite},
 	"mods GET":                  {backend.PermView, backend.AccessRead},
+	"mods/available GET":        {backend.PermAdmin, backend.AccessRead},
 	"stopmode GET":              {backend.PermView, backend.AccessRead},
 	"stopmode POST":             {backend.PermAdmin, backend.AccessWrite},
 	"clone POST":                {backend.PermAdmin, backend.AccessWrite},
@@ -1195,6 +1196,13 @@ func (a *app) handleServer(w http.ResponseWriter, r *http.Request, user backend.
 	case "mods":
 		mods, _ := a.inst.GetInstalledMods(serverID)
 		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "installed": mods})
+	case "mods/available":
+		mods, err := a.inst.AvailableMods(serverID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Could not list the mods")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "available": mods})
 	case "stopmode":
 		ctx.stopMode()
 	case "clone":
@@ -1667,8 +1675,10 @@ func (c serverCtx) simple(auditAction, details string, fn func() error) {
 
 func (c serverCtx) runAction() {
 	var payload struct {
-		Action string `json:"action"`
-		Lang   string `json:"lang"`
+		Action   string `json:"action"`
+		Mod      string `json:"mod"`
+		Password string `json:"password"`
+		Lang     string `json:"lang"`
 	}
 	if !decodeJSON(c.w, c.r, &payload, 16*1024) {
 		return
@@ -1685,8 +1695,13 @@ func (c serverCtx) runAction() {
 	if c.app.agentMode && !c.app.agentAllows(c.w, backend.ActionAccess(payload.Action)) {
 		return
 	}
-	c.audit("ACTION_"+strings.ToUpper(payload.Action), fmt.Sprintf("Executed action %s", payload.Action))
-	c.app.inst.RunAction(c.w, c.r, c.serverID, payload.Action, langOf(c.r, payload.Lang))
+	detail := fmt.Sprintf("Executed action %s", payload.Action)
+	if payload.Mod != "" && backend.IsValidModName(payload.Mod) {
+		detail += " (" + payload.Mod + ")"
+	}
+	c.audit("ACTION_"+strings.ToUpper(payload.Action), detail)
+	input := backend.ActionInput{Mod: payload.Mod, Password: payload.Password}
+	c.app.inst.RunAction(c.w, c.r, c.serverID, payload.Action, input, langOf(c.r, payload.Lang))
 }
 
 func (c serverCtx) getConsole() {

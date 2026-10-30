@@ -129,11 +129,13 @@ func ActionPermission(action string) (string, bool) {
 		return PermStop, true
 	case "restart":
 		return PermRestart, true
-	case "backup", "details":
+	case "backup":
 		return PermBackup, true
+	case "details": // prints server, RCON and admin passwords in clear text
+		return PermConfig, true
 	case "update", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe",
 		"change-password", "check-update", "mods-install", "mods-update", "mods-remove", "fastdl",
-		"map-compressor", "skeleton", "debug", "install-default-resources", "postdetails":
+		"map-compressor", "skeleton", "install-default-resources", "postdetails":
 		return PermAdmin, true
 	}
 	return "", false
