@@ -568,6 +568,7 @@
                             <option value="" data-i18n="settings-tools-select-default">-- Server auswählen --</option>
                         </select>
                     </div>
+                    <span id="settings-node-lock-note" class="badge badge-warning hidden"></span>
                     <span class="text-muted" style="font-size: 0.8rem;" data-i18n="settings-server-select-hint">Einstellungen gelten für die ausgewählte Server-Instanz.</span>
                 </div>
 
@@ -746,9 +747,9 @@
                                 <div class="form-group mb-0" style="flex: 1; min-width: 250px; max-width: 380px; display: flex; gap: 0.5rem; align-items: flex-end;">
                                     <div style="flex: 1;">
                                         <label for="settings-server-tag-input" style="font-size:0.85rem;" data-i18n="settings-tag-label">Server Tag / Cluster</label>
-                                        <input type="text" id="settings-server-tag-input" class="form-control mt-1" data-i18n-placeholder="settings-tag-placeholder" placeholder="z. B. Cluster-1, Public, EU-Server">
+                                        <input type="text" id="settings-server-tag-input" data-keep-enabled="1" class="form-control mt-1" data-i18n-placeholder="settings-tag-placeholder" placeholder="z. B. Cluster-1, Public, EU-Server">
                                     </div>
-                                    <button id="settings-server-tag-save-btn" class="btn btn-secondary btn-sm" style="padding: 0.625rem 1rem;" data-i18n="btn-save">Speichern</button>
+                                    <button id="settings-server-tag-save-btn" data-keep-enabled="1" class="btn btn-secondary btn-sm" style="padding: 0.625rem 1rem;" data-i18n="btn-save">Speichern</button>
                                 </div>
 
                                 <div class="form-group mb-0" style="flex: 1; min-width: 280px; max-width: 420px; display: flex; gap: 0.5rem; align-items: flex-end;">

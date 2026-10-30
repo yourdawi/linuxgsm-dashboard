@@ -2809,8 +2809,14 @@ func runAgent(configDir string, maxUploadBytes int64, fastdlPort int, fastdlURL 
 			IdleTimeout:       60 * time.Second,
 			MaxHeaderBytes:    64 << 10,
 		}
+		l, err := net.Listen("tcp", fastdl.Addr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] FastDL port: %v\n", err)
+			return 1
+		}
 		go func() {
-			if err := fastdl.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			// Public port: at most 128 connections at a time, so it cannot exhaust the node.
+			if err := fastdl.Serve(backend.LimitListener(l, 128)); err != nil && err != http.ErrServerClosed {
 				fmt.Fprintf(os.Stderr, "[ERROR] FastDL port: %v\n", err)
 			}
 		}()

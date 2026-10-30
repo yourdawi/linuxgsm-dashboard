@@ -557,6 +557,7 @@ function initApp() {
     // Settings listeners
     el.settingsPasswordForm.addEventListener('submit', changePassword);
     el.settingsServerSelect.addEventListener('change', handleSettingsServerChange);
+    watchSettingsWriteLock();
     if (el.settingsServerTagSaveBtn) el.settingsServerTagSaveBtn.addEventListener('click', saveServerTagFromSettings);
     if (el.settingsStopmodeSaveBtn) el.settingsStopmodeSaveBtn.addEventListener('click', saveServerStopModeFromSettings);
     if (el.settingsBtnOpenClone) el.settingsBtnOpenClone.addEventListener('click', () => {
@@ -3084,8 +3085,48 @@ function populateSettingsServerSelect() {
     handleSettingsServerChange();
 }
 
+// applySettingsWriteLock disables the server tools, schedule and alert controls while the selected
+// server runs on a read-only or offline node (the node would refuse the changes). Tags stay
+// editable: the dashboard keeps them itself. Controls added later by the loaders are caught by
+// the observer installed in watchSettingsWriteLock.
+function applySettingsWriteLock(allowLock = true) {
+    const serverId = el.settingsServerSelect ? el.settingsServerSelect.value : '';
+    const locked = allowLock && !!serverId && serverWriteLocked(serverId);
+    [el.settingsToolsArea, el.settingsCronArea, el.alertsSettingsPanel].forEach(container => {
+        if (!container) return;
+        container.querySelectorAll('input, select, textarea, button').forEach(c => {
+            if (c.dataset.keepEnabled) return;
+            if (locked) {
+                if (!c.disabled) {
+                    c.disabled = true;
+                    c.dataset.nodeLocked = '1';
+                }
+            } else if (c.dataset.nodeLocked) {
+                c.disabled = false;
+                delete c.dataset.nodeLocked;
+            }
+        });
+    });
+    const note = document.getElementById('settings-node-lock-note');
+    if (note) {
+        note.textContent = locked ? serverWriteLockedText(serverId) : '';
+        note.classList.toggle('hidden', !locked);
+    }
+}
+
+function watchSettingsWriteLock() {
+    const observer = new MutationObserver(() => applySettingsWriteLock());
+    [el.settingsToolsArea, el.settingsCronArea, el.alertsSettingsPanel].forEach(container => {
+        if (container) observer.observe(container, { childList: true, subtree: true });
+    });
+}
+
 function handleSettingsServerChange() {
     if (!el.settingsServerSelect) return;
+    // First give back what an earlier lock disabled, so the permission checks below decide alone;
+    // the lock for the new server follows once the controls are set up.
+    applySettingsWriteLock(false);
+    setTimeout(applySettingsWriteLock, 0);
     const serverID = el.settingsServerSelect.value;
     const hasServer = !!serverID;
     
