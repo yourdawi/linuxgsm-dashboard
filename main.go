@@ -1027,6 +1027,8 @@ func (a *app) handleBulk(w http.ResponseWriter, r *http.Request, user backend.Us
 		writeError(w, http.StatusBadRequest, "Invalid bulk action")
 		return
 	}
+	// Updates and backups of several servers take longer than the usual write limit.
+	backend.DisableWriteDeadline(w)
 	if len(payload.ServerIDs) == 0 || len(payload.ServerIDs) > maxBulkServers {
 		writeError(w, http.StatusBadRequest, "Invalid bulk payload")
 		return

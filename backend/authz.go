@@ -135,7 +135,7 @@ func ActionPermission(action string) (string, bool) {
 		return PermConfig, true
 	case "update", "validate", "update-lgsm", "force-update", "test-alert", "map-wipe", "full-wipe",
 		"change-password", "check-update", "mods-install", "mods-update", "mods-remove", "fastdl",
-		"map-compressor", "skeleton", "install-default-resources", "postdetails":
+		"map-compressor", "skeleton", "install-default-resources", "postdetails", "workshop-update":
 		return PermAdmin, true
 	}
 	return "", false

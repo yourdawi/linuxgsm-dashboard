@@ -300,8 +300,10 @@ func scanServerDir(dir string, owner passwdEntry, requireOwner bool) []*GameServ
 			Status: "stopped",
 			Port:   parseServerPort(dir, filepath.Join(dir, "lgsm", "config-lgsm"), scriptName),
 			Game:   getGameFromScriptName(scriptName),
-			UID:    owner.UID,
-			GID:    owner.GID,
+			Commands: linuxGSMCommands(lgsmCfgValuesAt(dir, filepath.Join(dir, "lgsm", "config-lgsm"), scriptName),
+				shortnameOfScript(dir, scriptName)),
+			UID: owner.UID,
+			GID: owner.GID,
 		}
 		if isTmuxSessionActive(HostRuntime{}, *inst) {
 			inst.Status = "running"

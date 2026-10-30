@@ -202,3 +202,47 @@ func (im *InstanceManager) IsLinuxGSMSettingsFile(serverID, path string) bool {
 	realPath, err2 := filepath.EvalSymlinks(path)
 	return err1 == nil && err2 == nil && IsWithin(realDir, realPath)
 }
+
+// newestGameLog finds the newest file in LinuxGSM's game log directory (gamelogdir, to which
+// log/server links). It returns a root the file lies in (the server directory or the target of
+// a symlinked serverfiles) and the path relative to it.
+func newestGameLog(srv GameServerInstance) (root, rel string, ok bool) {
+	var dirs []string
+	values := lgsmCfgValues(srv, true)
+	if raw := values["gamelogdir"]; raw != "" {
+		if p, ok := expandLGSMValue(raw, values, lgsmBaseVars(srv)); ok && filepath.IsAbs(p) {
+			if srv.Layout == LayoutData {
+				p = srv.dashboardPath(p)
+			}
+			if p != "" {
+				dirs = append(dirs, filepath.Clean(p))
+			}
+		}
+	}
+	dirs = append(dirs, filepath.Join(srv.Dir, "log", "server"))
+
+	roots := append([]string{srv.Dir}, configRoots(srv)...)
+	for _, dir := range dirs {
+		resolved, err := ResolveAbsInRoots(dir, roots...)
+		if err != nil {
+			continue
+		}
+		entries, err := readDirNoSymlinks(resolved)
+		if err != nil {
+			continue
+		}
+		var newest os.FileInfo
+		for _, e := range entries {
+			if !e.Type().IsRegular() {
+				continue
+			}
+			if info, err := e.Info(); err == nil && (newest == nil || info.ModTime().After(newest.ModTime())) {
+				newest = info
+			}
+		}
+		if newest != nil {
+			return resolved, newest.Name(), true
+		}
+	}
+	return "", "", false
+}

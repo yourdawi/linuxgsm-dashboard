@@ -153,6 +153,8 @@ func dockerInstances(containers []DockerContainer, dataDir string) []*GameServer
 			Status: status,
 			Port:   parseServerPort(dir, filepath.Join(dir, "config-lgsm"), script),
 			Game:   getGameFromScriptName(script),
+			Commands: linuxGSMCommands(lgsmCfgValuesAt(dir, filepath.Join(dir, "config-lgsm"), script),
+				strings.TrimSuffix(gameServerName(script), "server")),
 			UID:    uid,
 			GID:    gid,
 			Layout: LayoutData,

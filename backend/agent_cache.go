@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"time"
 )
@@ -190,6 +191,15 @@ func sanitizeNodeServer(s GameServerInstance, nodeID string) (GameServerInstance
 	}
 	if IsValidScriptName(s.Script) {
 		out.Script = s.Script
+	}
+	// Only commands the dashboard knows; nil (an older node) keeps every button.
+	if s.Commands != nil {
+		out.Commands = []string{}
+		for _, c := range s.Commands {
+			if _, known := ActionPermission(c); (known || c == "send") && !slices.Contains(out.Commands, c) && len(out.Commands) < 64 {
+				out.Commands = append(out.Commands, c)
+			}
+		}
 	}
 	for i, p := range s.ParsedPorts {
 		if i == 32 {

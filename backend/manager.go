@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,10 +40,12 @@ type GameServerInstance struct {
 	NodeOffline  bool          `json:"node_offline,omitempty"`
 	NodeMode     string        `json:"node_mode,omitempty"` // effective access mode of the node
 	Capabilities *Capabilities `json:"capabilities,omitempty"`
-	UID          int           `json:"-"`
-	GID          int           `json:"-"`
-	BindIP       string        `json:"-"` // "Server IP" reported by LinuxGSM details, used for queries
-	Layout       string        `json:"-"` // LayoutHost or LayoutData (see layout.go)
+	// Commands are the LinuxGSM commands the game offers (see commands.go); nil when unknown.
+	Commands []string `json:"commands,omitempty"`
+	UID      int      `json:"-"`
+	GID      int      `json:"-"`
+	BindIP   string   `json:"-"` // "Server IP" reported by LinuxGSM details, used for queries
+	Layout   string   `json:"-"` // LayoutHost or LayoutData (see layout.go)
 }
 
 // QueryInfo is the live state reported by the game server itself (see query.go).
@@ -106,6 +109,7 @@ type InstanceManager struct {
 	detailsMu    sync.Mutex
 	detailsTried map[string]time.Time
 	installing   map[string]int // Linux users (container names in Docker mode) being installed
+	actionLocks  dirLocks       // one LinuxGSM command per directory at a time
 
 	queryMu    sync.Mutex
 	queryCache map[string]queryState
@@ -485,16 +489,9 @@ func (im *InstanceManager) GetConsole(serverID string, mode string, lang string)
 		return readServerLog(srv.Dir, filepath.Join("log", "script", srv.Script+"-script.log"), 150, lang)
 
 	case "game":
-		// Look in <rootdir>/log/game/ directory or serverfiles
-		gameLogRel := filepath.Join("log", "game")
-		if gameLogDir, err := ResolveInRoot(srv.Dir, gameLogRel); err == nil {
-			if entries, err := os.ReadDir(gameLogDir); err == nil {
-				for _, e := range entries {
-					if e.Type().IsRegular() {
-						return readServerLog(srv.Dir, filepath.Join(gameLogRel, e.Name()), 150, lang)
-					}
-				}
-			}
+		// LinuxGSM's gamelogdir (log/server links to it): the newest file there.
+		if root, rel, ok := newestGameLog(srv); ok {
+			return readServerLog(root, rel, 150, lang)
 		}
 		// Fallback: look for common engine logs
 		if sfRoot, err := ServerSubRoot(srv.Dir, "serverfiles", srv.UID); err == nil {
@@ -508,7 +505,7 @@ func (im *InstanceManager) GetConsole(serverID string, mode string, lang string)
 		}
 		return []string{
 			Msg(lang, "Game engine log file not found.", "Spiele-Engine Logdatei nicht gefunden."),
-			Msg(lang, "Checked directory: ", "Geprüfter Ordner: ") + filepath.ToSlash(gameLogRel),
+			Msg(lang, "Checked: gamelogdir of the LinuxGSM config and log/server", "Geprüft: gamelogdir aus der LinuxGSM-Konfiguration und log/server"),
 		}, nil
 
 	default: // "console" or default
@@ -581,6 +578,10 @@ func (im *InstanceManager) SendConsoleCommand(serverID string, command string) e
 	srv, ok := im.getServer(serverID)
 	if !ok {
 		return fmt.Errorf("server not found")
+	}
+	// LinuxGSM's consoleinteract="no": the game reads nothing from its console.
+	if !srv.HasCommand("send") {
+		return fmt.Errorf("this game does not accept console input")
 	}
 	if err := ValidateConsoleCommand(command); err != nil {
 		return err
@@ -702,6 +703,67 @@ func (s *sseWriter) exit(code int) {
 	s.send(map[string]interface{}{"type": "exit", "code": code})
 }
 
+// Commands for one LinuxGSM root directory run one at a time: instances in a directory share
+// serverfiles and LinuxGSM's lock files, so two updates (or an update and a backup) of
+// vhserver and vhserver-2 at once would work on the same files.
+type dirLocks struct {
+	mu   sync.Mutex
+	busy map[string]chan struct{}
+}
+
+// tryLock takes the lock of dir; false while another command runs there.
+func (l *dirLocks) tryLock(dir string) (func(), bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.busy == nil {
+		l.busy = make(map[string]chan struct{})
+	}
+	if _, busy := l.busy[dir]; busy {
+		return nil, false
+	}
+	ch := make(chan struct{})
+	l.busy[dir] = ch
+	return func() {
+		l.mu.Lock()
+		delete(l.busy, dir)
+		l.mu.Unlock()
+		close(ch)
+	}, true
+}
+
+// lock waits for the lock of dir.
+func (l *dirLocks) lock(dir string) func() {
+	for {
+		if release, ok := l.tryLock(dir); ok {
+			return release
+		}
+		l.mu.Lock()
+		ch := l.busy[dir]
+		l.mu.Unlock()
+		if ch != nil {
+			<-ch
+		}
+	}
+}
+
+// ErrServerBusy is returned while another command runs for the server's directory.
+var ErrServerBusy = errors.New("another command is running for this server, try again when it has finished")
+
+// checkAction validates a command for srv: known, offered by LinuxGSM for this game, and not
+// while the server is being installed.
+func (im *InstanceManager) checkAction(srv GameServerInstance, action string) error {
+	if _, ok := ActionPermission(action); !ok {
+		return fmt.Errorf("invalid action")
+	}
+	if !srv.HasCommand(action) {
+		return fmt.Errorf("LinuxGSM has no %s command for this game", action)
+	}
+	if im.isInstalling(&srv) {
+		return fmt.Errorf("the server is being installed")
+	}
+	return nil
+}
+
 func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, serverID, action string, input ActionInput, lang string) {
 	if _, ok := ActionPermission(action); !ok {
 		http.Error(w, "Invalid action name", http.StatusBadRequest)
@@ -712,35 +774,41 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	im.mu.Lock()
-	srvPtr := im.instances[serverID]
-	if srvPtr == nil {
-		im.mu.Unlock()
+	srv, ok := im.getServer(serverID)
+	if !ok {
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
 	}
-	srv := *srvPtr
-
-	// Set local state status to avoid concurrent triggers
-	oldStatus := srvPtr.Status
-	if action == "update" || action == "update-lgsm" || action == "force-update" {
-		srvPtr.Status = "updating"
+	if err := im.checkAction(srv, action); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-	im.mu.Unlock()
+	release, ok := im.actionLocks.tryLock(srv.Dir)
+	if !ok {
+		http.Error(w, ErrServerBusy.Error(), http.StatusConflict)
+		return
+	}
+	defer release()
 
-	// Callback to update status inside streaming routine
-	updateStatus := func(newStatus string) {
+	// Status while the command runs; only this action resets it.
+	setStatus := func(status string) {
 		im.mu.Lock()
 		defer im.mu.Unlock()
 		if s, ok := im.instances[serverID]; ok {
-			s.Status = newStatus
+			s.Status = status
 		}
+	}
+	updating := action == "update" || action == "update-lgsm" || action == "force-update" || action == "validate" ||
+		action == "mods-update" || action == "workshop-update"
+	if updating {
+		setStatus("updating")
 	}
 
 	sse, ok := newSSEWriter(w)
 	if !ok {
-		updateStatus(oldStatus)
+		if updating {
+			setStatus(srv.Status)
+		}
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return
 	}
@@ -752,20 +820,17 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 	}, func(err error) {
 		sse.log("\n" + Msg(lang, "Error reading output: ", "Fehler beim Lesen des Outputs: ") + err.Error())
 	})
+	if updating {
+		// ScanInstances detects the real status again.
+		setStatus("stopped")
+	}
 	if isStartError(err) {
-		updateStatus(oldStatus)
+		im.ScanInstances()
 		sse.log(Msg(lang, "Error starting command: ", "Fehler beim Starten des Befehls: ") + err.Error())
 		sse.exit(1)
 		return
 	}
 	exitCode := ExitCode(err)
-
-	// Reset status from "updating" so ScanInstances detects the actual status
-	im.mu.Lock()
-	if s, ok := im.instances[serverID]; ok && s.Status == "updating" {
-		s.Status = "stopped"
-	}
-	im.mu.Unlock()
 
 	// Rescan instances to reflect status changes
 	im.ScanInstances()
@@ -778,18 +843,26 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 	sse.exit(exitCode)
 }
 
-// RunActionDirect runs an allowlisted LinuxGSM command without streaming.
+// RunActionDirect runs an allowlisted LinuxGSM command without streaming. It waits while another
+// command runs for the server's directory.
 func (im *InstanceManager) RunActionDirect(serverID, action string) error {
 	srv, ok := im.getServer(serverID)
 	if !ok {
 		return fmt.Errorf("server not found")
 	}
-	if _, ok := ActionPermission(action); !ok {
-		return fmt.Errorf("invalid action")
+	if err := im.checkAction(srv, action); err != nil {
+		return err
 	}
+	release := im.actionLocks.lock(srv.Dir)
+	defer release()
 	return im.runLGSM(context.Background(), srv, action)
 }
 
+// maxBulkWorkers bounds how many servers a bulk action runs at once.
+const maxBulkWorkers = 4
+
+// RunBulkAction runs action on several servers. Results are "Success", "Warning: ..." (LinuxGSM
+// exit code 3: done, with warnings) or "Error: ...".
 func (im *InstanceManager) RunBulkAction(action string, serverIDs []string) map[string]string {
 	results := make(map[string]string)
 	if _, ok := BulkActionPermission(action); !ok {
@@ -801,20 +874,24 @@ func (im *InstanceManager) RunBulkAction(action string, serverIDs []string) map[
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-
+	slots := make(chan struct{}, maxBulkWorkers)
 	for _, sid := range serverIDs {
-		wg.Add(1)
-		go func(serverID string) {
-			defer wg.Done()
-			err := im.RunActionDirect(serverID, action)
-			mu.Lock()
-			if err != nil {
-				results[serverID] = "Error: " + err.Error()
-			} else {
-				results[serverID] = "Success"
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			err := im.RunActionDirect(sid, action)
+			result := "Success"
+			switch {
+			case err == nil:
+			case ExitCode(err) == 3:
+				result = "Warning: finished with warnings, see the LinuxGSM log"
+			default:
+				result = "Error: " + err.Error()
 			}
+			mu.Lock()
+			results[sid] = result
 			mu.Unlock()
-		}(sid)
+		})
 	}
 	wg.Wait()
 	im.ScanInstances()

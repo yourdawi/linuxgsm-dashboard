@@ -155,8 +155,10 @@ async function runStreamModal({ title, runningText, url, body, errorText, onExit
                 appendLine(data.text);
             } else if (data.type === 'exit') {
                 exited = true;
-                el.modalStreamStatus.textContent = data.code === 0 ? t('status-success') : t('status-error');
-                el.modalStreamStatus.className = data.code === 0 ? 'badge badge-success' : 'badge badge-danger';
+                // LinuxGSM ends with 3 after warnings: the command itself succeeded.
+                const outcome = data.code === 0 ? ['status-success', 'badge-success'] : data.code === 3 ? ['status-warning', 'badge-warning'] : ['status-error', 'badge-danger'];
+                el.modalStreamStatus.textContent = t(outcome[0]);
+                el.modalStreamStatus.className = 'badge ' + outcome[1];
                 el.modalStreamClose.disabled = false;
                 if (onExit) onExit(data.code);
             }
@@ -1732,7 +1734,25 @@ function updateConsoleViewButtons() {
         if (el.consoleBtnFastdl) el.consoleBtnFastdl.classList.add('hidden');
         el.consoleBtnTestAlert.classList.add('hidden');
     }
-    
+    // Only commands LinuxGSM offers for this game (validate needs SteamCMD, fastdl Source, ...).
+    if (Array.isArray(server.commands)) {
+        [[el.consoleBtnValidate, 'validate'], [el.consoleBtnCheckUpdate, 'check-update'], [el.consoleBtnForceUpdate, 'force-update'],
+            [el.consoleBtnUpdateLgsm, 'update-lgsm'], [el.consoleBtnModsInstall, 'mods-install'], [el.consoleBtnModsUpdate, 'mods-update'],
+            [el.consoleBtnFastdl, 'fastdl'], [el.consoleBtnMapCompressor, 'map-compressor']]
+            .forEach(([btn, cmd]) => { if (btn && !server.commands.includes(cmd)) btn.classList.add('hidden'); });
+        // consoleinteract="no": the game reads nothing typed into its console.
+        if (!server.commands.includes('send')) {
+            el.consoleInputField.disabled = true;
+            el.consoleInputSubmit.disabled = true;
+            if (el.consoleInputField.dataset.defaultPlaceholder === undefined) {
+                el.consoleInputField.dataset.defaultPlaceholder = el.consoleInputField.placeholder;
+            }
+            el.consoleInputField.placeholder = t('console-no-input');
+        } else if (el.consoleInputField.dataset.defaultPlaceholder !== undefined && !isReadOnlyNodeServer(server)) {
+            el.consoleInputField.placeholder = el.consoleInputField.dataset.defaultPlaceholder;
+        }
+    }
+
     if (isRunning) {
         el.consoleStatusDot.className = 'status-dot status-online';
         el.consoleStatusText.textContent = t('modal-stream-running');
@@ -1762,7 +1782,7 @@ function updateConsoleViewButtons() {
             }
             el.consoleInputField.placeholder = t('card-node-read-only');
         }
-    } else if (el.consoleInputField.dataset.defaultPlaceholder !== undefined) {
+    } else if (el.consoleInputField.dataset.defaultPlaceholder !== undefined && !(Array.isArray(server.commands) && !server.commands.includes('send'))) {
         el.consoleInputField.placeholder = el.consoleInputField.dataset.defaultPlaceholder;
         delete el.consoleInputField.dataset.defaultPlaceholder;
     }
@@ -3640,6 +3660,8 @@ const i18n = {
         "btn-mods-install": "Install Mods",
         "btn-mods-update": "Update Mods",
         "btn-mods-remove": "Remove Mods",
+        "console-no-input": "This game does not accept console commands (LinuxGSM: consoleinteract=no)",
+        "status-warning": "Done with warnings",
         "config-game-badge": "Game",
         "config-game-badge-title": "The config file LinuxGSM starts the game with (servercfgfullpath)",
         "delete-force-confirm": "The server is still running after the stop command (for example players are online and LinuxGSM only stops empty servers). End its session and delete it anyway?",
@@ -4213,6 +4235,8 @@ const i18n = {
         "btn-mods-install": "Mods Installieren",
         "btn-mods-update": "Mods Updaten",
         "btn-mods-remove": "Mods entfernen",
+        "console-no-input": "Dieses Spiel nimmt keine Konsolenbefehle an (LinuxGSM: consoleinteract=no)",
+        "status-warning": "Fertig mit Warnungen",
         "config-game-badge": "Spiel",
         "config-game-badge-title": "Die Konfigurationsdatei, mit der LinuxGSM das Spiel startet (servercfgfullpath)",
         "delete-force-confirm": "Der Server läuft nach dem Stopp-Befehl noch (zum Beispiel sind Spieler online und LinuxGSM stoppt nur leere Server). Sitzung beenden und trotzdem löschen?",
@@ -6123,161 +6147,66 @@ async function installCronjobs() {
     }
 }
 
+// Game specific actions: only the commands LinuxGSM offers for this game (server.commands, see
+// backend/commands.go). The TS3 password change stays hidden: LinuxGSM's command does not apply
+// the password.
+const GAME_ACTIONS = [
+    { cmd: 'map-wipe', cls: 'btn-danger', label: ['Map wipe', 'Map-Wipe'], confirm: ['Perform a map wipe? All player structures will be deleted!', 'Map-Wipe durchführen? Alle Bauwerke werden gelöscht!'] },
+    { cmd: 'full-wipe', cls: 'btn-danger', label: ['Full wipe', 'Full-Wipe'], confirm: ['Perform a full wipe? All map progress and blueprints will be deleted!', 'Full-Wipe durchführen? Alle Bauwerke und Blueprints werden gelöscht!'] },
+    { cmd: 'map-compressor', cls: 'btn-secondary', label: ['Compress maps', 'Maps komprimieren'], confirm: ['Run the map compressor?', 'Map-Komprimierung ausführen?'] },
+    { cmd: 'mods-install', cls: 'btn-primary', label: ['Mods and plugins', 'Mods und Plugins'], open: 'mods' },
+    { cmd: 'mods-update', cls: 'btn-secondary', label: ['Update mods', 'Mods aktualisieren'] },
+    { cmd: 'workshop-update', cls: 'btn-secondary', label: ['Update Workshop mods', 'Workshop-Mods aktualisieren'] },
+    { cmd: 'install-default-resources', cls: 'btn-primary', label: ['Install MTA default resources', 'MTA-Standardressourcen installieren'] },
+    { cmd: 'fastdl', cls: 'btn-primary', label: ['Build FastDL (bzip2)', 'FastDL erzeugen (bzip2)'], fastdlPanel: true }
+];
+
+function serverHasCommand(server, cmd) {
+    return Array.isArray(server.commands) && server.commands.includes(cmd);
+}
+
 function renderConsoleGameActions(server) {
-    if (!server || !el.consoleGameActions) {
-        if (el.consoleGameActions) {
-            el.consoleGameActions.classList.add('hidden');
-            el.consoleGameActions.innerHTML = '';
-        }
-        return;
-    }
-
+    const hide = () => {
+        if (!el.consoleGameActions) return;
+        el.consoleGameActions.classList.add('hidden');
+        el.consoleGameActions.innerHTML = '';
+    };
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
-    const isBusy = server.status === 'installing' || server.status === 'updating';
-
-    if (!isAdmin) {
-        el.consoleGameActions.classList.add('hidden');
-        el.consoleGameActions.innerHTML = '';
+    if (!server || !el.consoleGameActions || !isAdmin) {
+        hide();
+        return;
+    }
+    const isDe = state.language === 'de';
+    const disabledAttr = (server.status === 'installing' || server.status === 'updating') ? 'disabled' : '';
+    const actions = GAME_ACTIONS.filter(a => serverHasCommand(server, a.cmd));
+    if (actions.length === 0) {
+        hide();
         return;
     }
 
-    const game = (server.game || '').toLowerCase();
-    const disabledAttr = isBusy ? 'disabled' : '';
-    let buttonsHtml = '';
-    const clickHandlers = [];
-
-    const isDe = state.language === 'de';
-
-    // 1. Rust Specific Actions
-    if (game === 'rust') {
-        buttonsHtml += `
-            <button id="game-act-map-wipe" class="btn btn-danger btn-sm" ${disabledAttr}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-                <span>${isDe ? 'Map Wipe' : 'Map Wipe'}</span>
-            </button>
-            <button id="game-act-full-wipe" class="btn btn-danger btn-sm" ${disabledAttr}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                <span>${isDe ? 'Full Wipe' : 'Full Wipe'}</span>
-            </button>
-            <button id="game-act-map-compressor" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'Map komprimieren' : 'Compress map'}</span>
-            </button>
-            <button id="game-act-mods-install" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'Oxide / uMod installieren' : 'Install Oxide / uMod'}</span>
-            </button>
-            <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'Oxide / uMod aktualisieren' : 'Update Oxide / uMod'}</span>
-            </button>
-        `;
-        clickHandlers.push(
-            { id: 'game-act-map-wipe', confirmMsg: isDe ? 'Map-Wipe durchführen? Alle Bauwerke werden gelöscht!' : 'Perform Map Wipe? All player structures will be deleted!', action: 'map-wipe' },
-            { id: 'game-act-full-wipe', confirmMsg: isDe ? 'Full-Wipe durchführen? Alle Bauwerke und Blueprints werden gelöscht!' : 'Perform Full Wipe? All map progress and blueprint data will be deleted!', action: 'full-wipe' },
-            { id: 'game-act-map-compressor', confirmMsg: isDe ? 'Map-Komprimierung ausführen?' : 'Run Map Compressor?', action: 'map-compressor' },
-            { id: 'game-act-mods-install', open: () => openModsModal(server) },
-            { id: 'game-act-mods-update', action: 'mods-update' }
-        );
-    } 
-    // 2. TeamSpeak 3: no button for now. LinuxGSM's change-password reports success but never
-    // passes the password to ts3server (its parms/ts3serverpass variables are no longer read).
-    // openTs3PasswordModal is ready for when LinuxGSM fixes it:
-    //   clickHandlers.push({ id: 'game-act-ts3-pw', open: () => openTs3PasswordModal(server) });
-    // 3. Source Engine & FastDL Supported Games (CS2, CS:GO, TF2, CSS, GMod, CoD4, Sven Co-op, Xonotic, etc.)
-    else if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih', 'cod4', 'sven', 'xon'].includes(game)) {
-        buttonsHtml += `
-            <button id="game-act-fastdl" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'FastDL erzeugen (bzip2)' : 'Build FastDL (bzip2)'}</span>
-            </button>
-            <div id="game-fastdl-info" data-server="${escapeHtml(server.id)}" style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;"></div>
-        `;
-        clickHandlers.push({ id: 'game-act-fastdl', action: 'fastdl' });
-        // Filled once the panel is in the DOM.
-        setTimeout(() => loadFastDLInfo(server), 0);
-
-        if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih'].includes(game)) {
-            buttonsHtml += `
-                <button id="game-act-mods-install" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                    <span>${isDe ? 'Metamod / SourceMod installieren' : 'Install Metamod / SourceMod'}</span>
-                </button>
-                <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                    <span>${isDe ? 'Metamod / SourceMod aktualisieren' : 'Update Metamod / SourceMod'}</span>
-                </button>
-            `;
-            clickHandlers.push(
-                { id: 'game-act-mods-install', open: () => openModsModal(server) },
-                { id: 'game-act-mods-update', action: 'mods-update' }
-            );
-        }
+    let html = '';
+    actions.forEach(a => {
+        html += `<button id="game-act-${a.cmd}" class="btn ${a.cls} btn-sm" ${disabledAttr}><span>${escapeHtml(isDe ? a.label[1] : a.label[0])}</span></button>`;
+    });
+    if (actions.some(a => a.fastdlPanel)) {
+        html += `<div id="game-fastdl-info" data-server="${escapeHtml(server.id)}" style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;"></div>`;
     }
-    // 4. Multi Theft Auto (MTA:SA)
-    else if (game === 'mta' || game === 'multitheftauto') {
-        buttonsHtml += `
-            <button id="game-act-mta-resources" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'MTA-Standardressourcen installieren' : 'Install MTA default resources'}</span>
-            </button>
-        `;
-        clickHandlers.push({ id: 'game-act-mta-resources', action: 'install-default-resources' });
-    }
-    // 5. Mod & Workshop Games (Arma 3, Minecraft, 7DTD, Factorio, ARK, KF2, DST, Insurgency, Valheim, TrackMania)
-    else if (['arma3', 'mc', 'mcb', 'mct', 'sdtd', 'fct', 'ark', 'kf2', 'dst', 'inss', 'vh', 'valheim', 'tm2', 'tmf'].includes(game)) {
-        let modFrameworkLabel = isDe ? 'Mods / Plugins' : 'Mods / Plugins';
-        if (game === 'arma3') modFrameworkLabel = 'Arma 3 Mods / Workshop';
-        else if (['mc', 'mcb', 'mct'].includes(game)) modFrameworkLabel = 'Paper/Spigot/Fabric Plugins';
-        else if (game === 'sdtd') modFrameworkLabel = "Alloc's Server Fixes";
-        else if (game === 'fct') modFrameworkLabel = 'Factorio Mod Portal';
-        else if (game === 'ark') modFrameworkLabel = 'ARK Workshop Mods';
-        else if (game === 'kf2') modFrameworkLabel = 'KF2 Workshop Maps & Mutators';
-        else if (game === 'dst') modFrameworkLabel = 'DST Workshop Mods';
-        else if (game === 'inss') modFrameworkLabel = 'Mod.io Mods';
-        else if (['vh', 'valheim'].includes(game)) modFrameworkLabel = 'Valheim BepInEx Mods';
-        else if (['tm2', 'tmf'].includes(game)) modFrameworkLabel = 'TrackMania Plugins & Scripts';
+    el.consoleGameActions.innerHTML = html;
+    el.consoleGameActions.classList.remove('hidden');
+    if (actions.some(a => a.fastdlPanel)) loadFastDLInfo(server);
 
-        buttonsHtml += `
-            <button id="game-act-mods-install" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>${isDe ? `${modFrameworkLabel} installieren` : `Install ${modFrameworkLabel}`}</span>
-            </button>
-            <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>${isDe ? `${modFrameworkLabel} aktualisieren` : `Update ${modFrameworkLabel}`}</span>
-            </button>
-        `;
-        clickHandlers.push(
-            { id: 'game-act-mods-install', open: () => openModsModal(server) },
-            { id: 'game-act-mods-update', action: 'mods-update' }
-        );
-    }
-    // 5. Unreal Tournament (UT2004, UT3, UT99)
-    else if (['ut2k4', 'ut3', 'ut99'].includes(game)) {
-        buttonsHtml += `
-            <button id="game-act-map-compressor" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'UT-Maps komprimieren (Redirect)' : 'Compress UT maps (redirect)'}</span>
-            </button>
-        `;
-        clickHandlers.push({ id: 'game-act-map-compressor', action: 'map-compressor' });
-    }
-
-    if (buttonsHtml) {
-        el.consoleGameActions.innerHTML = buttonsHtml;
-        el.consoleGameActions.classList.remove('hidden');
-
-        clickHandlers.forEach(item => {
-            const btn = document.getElementById(item.id);
-            if (btn) {
-                btn.addEventListener('click', () => {
-                    if (item.open) {
-                        item.open();
-                    } else if (item.confirmMsg) {
-                        if (confirm(item.confirmMsg)) {
-                            runServerAction(server.id, item.action);
-                        }
-                    } else {
-                        runServerAction(server.id, item.action);
-                    }
-                });
+    actions.forEach(a => {
+        const btn = document.getElementById(`game-act-${a.cmd}`);
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            if (a.open === 'mods') {
+                openModsModal(server);
+                return;
             }
+            if (a.confirm && !confirm(isDe ? a.confirm[1] : a.confirm[0])) return;
+            runServerAction(server.id, a.cmd);
         });
-    } else {
-        el.consoleGameActions.classList.add('hidden');
-        el.consoleGameActions.innerHTML = '';
-    }
+    });
 }
 
 function updateBulkToolbarState() {
@@ -6305,11 +6234,22 @@ async function runBulkAction(action) {
             method: 'POST',
             body: JSON.stringify({ action: action, serverIds: checked })
         });
-        if (res.status === 200) {
-            refreshDashboard();
+        const data = await res.json().catch(() => ({}));
+        if (res.status !== 200) {
+            alert((state.language === 'de' ? 'Sammelaktion fehlgeschlagen: ' : 'Bulk action failed: ') + (data.error || res.status));
+            return;
         }
+        // Report every server that did not simply succeed (offline or read-only node, warnings, errors).
+        const problems = Object.entries(data).filter(([, result]) => result !== 'Success');
+        if (problems.length > 0) {
+            const name = (id) => { const s = state.servers.find(x => x.id === id); return s ? serverLabel(s) : id; };
+            alert((state.language === 'de' ? 'Ergebnis der Sammelaktion:\n' : 'Bulk action result:\n') +
+                problems.map(([id, result]) => `${name(id)}: ${result}`).join('\n'));
+        }
+        refreshDashboard();
     } catch (e) {
         console.error('Bulk action error:', e);
+        alert((state.language === 'de' ? 'Sammelaktion fehlgeschlagen: ' : 'Bulk action failed: ') + e.message);
     }
 }
 
