@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -27,10 +28,13 @@ import (
 const AgentEnrollALPN = "lgsm-enroll/1"
 
 const (
-	// maxAgentHandshakes bounds concurrent unauthenticated handshakes.
-	maxAgentHandshakes = 32
-	agentEnrollTimeout = 15 * time.Second
-	maxEnrollBody      = 64 << 10
+	// maxAgentHandshakes bounds concurrent unauthenticated handshakes; maxAgentHandshakesPerIP keeps
+	// a single address from taking all of them (addresses of a local reverse proxy are exempt,
+	// because every agent behind it shares that address).
+	maxAgentHandshakes      = 64
+	maxAgentHandshakesPerIP = 4
+	agentEnrollTimeout      = 15 * time.Second
+	maxEnrollBody           = 64 << 10
 )
 
 // AgentGateway accepts agent connections for the controller.
@@ -45,11 +49,13 @@ type AgentGateway struct {
 	Logf func(format string, args ...interface{})
 
 	handshakes chan struct{}
+	perIPMu    sync.Mutex
+	perIP      map[string]int
 }
 
 // NewAgentGateway creates a gateway.
 func NewAgentGateway(ca *ControllerCA, nodes *NodeRegistry) *AgentGateway {
-	return &AgentGateway{CA: ca, Nodes: nodes, handshakes: make(chan struct{}, maxAgentHandshakes)}
+	return &AgentGateway{CA: ca, Nodes: nodes, handshakes: make(chan struct{}, maxAgentHandshakes), perIP: make(map[string]int)}
 }
 
 func (g *AgentGateway) logf(format string, args ...interface{}) {
@@ -93,9 +99,7 @@ func agentEnrollLimiterKey(ip string) string { return "agent-enroll:" + ip }
 
 // HandleCarrier runs the inner handshake on a carrier connection and dispatches it.
 func (g *AgentGateway) HandleCarrier(raw net.Conn, clientIP string) {
-	select {
-	case g.handshakes <- struct{}{}:
-	default:
+	if !g.acquireHandshake(clientIP) {
 		raw.Close()
 		return
 	}
@@ -103,7 +107,7 @@ func (g *AgentGateway) HandleCarrier(raw net.Conn, clientIP string) {
 	ctx, cancel := context.WithTimeout(context.Background(), agentTunnelHandshakeTimeout)
 	err := conn.HandshakeContext(ctx)
 	cancel()
-	<-g.handshakes
+	g.releaseHandshake(clientIP)
 	if err != nil {
 		g.logf("[AGENT] Handshake from %s failed: %v", clientIP, err)
 		raw.Close()
@@ -125,6 +129,48 @@ func (g *AgentGateway) HandleCarrier(raw net.Conn, clientIP string) {
 		g.logf("[AGENT] Rejected connection from %s (protocol %q)", clientIP, state.NegotiatedProtocol)
 		conn.Close()
 	}
+}
+
+// perIPExempt reports whether an address is a local proxy, where all agents share one address.
+func perIPExempt(clientIP string) bool {
+	ip := net.ParseIP(clientIP)
+	return ip == nil || ip.IsLoopback()
+}
+
+// acquireHandshake takes a slot for an unauthenticated handshake, globally and per address.
+func (g *AgentGateway) acquireHandshake(clientIP string) bool {
+	if !perIPExempt(clientIP) {
+		g.perIPMu.Lock()
+		if g.perIP[clientIP] >= maxAgentHandshakesPerIP {
+			g.perIPMu.Unlock()
+			return false
+		}
+		g.perIP[clientIP]++
+		g.perIPMu.Unlock()
+	}
+	select {
+	case g.handshakes <- struct{}{}:
+		return true
+	default:
+		g.releasePerIP(clientIP)
+		return false
+	}
+}
+
+func (g *AgentGateway) releaseHandshake(clientIP string) {
+	<-g.handshakes
+	g.releasePerIP(clientIP)
+}
+
+func (g *AgentGateway) releasePerIP(clientIP string) {
+	if perIPExempt(clientIP) {
+		return
+	}
+	g.perIPMu.Lock()
+	if g.perIP[clientIP]--; g.perIP[clientIP] <= 0 {
+		delete(g.perIP, clientIP)
+	}
+	g.perIPMu.Unlock()
 }
 
 func (g *AgentGateway) handleEnroll(conn *tls.Conn, clientIP string) {

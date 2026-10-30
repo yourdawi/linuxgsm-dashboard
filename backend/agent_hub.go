@@ -41,6 +41,7 @@ type AgentHub struct {
 	status  map[string]NodeStatus
 	servers map[string][]GameServerInstance                 // last known servers per node, global IDs
 	hosts   map[string]HostStats                            // last host statistics per node
+	fastdl  map[string]int                                  // FastDL downloads in flight per node
 	signCSR func([]byte, string, time.Time) ([]byte, error) // renews node certificates (agent_renew.go)
 }
 
@@ -231,4 +232,32 @@ func (h *AgentHub) Disconnect(nodeID string) {
 	if c != nil {
 		c.Close()
 	}
+}
+
+// maxFastDLStreamsPerNode bounds the public FastDL downloads the dashboard passes through one
+// node's tunnel, so anonymous downloads can never take all of its streams and lock the
+// administrators out.
+const maxFastDLStreamsPerNode = 32
+
+// TryFastDLSlot reserves a FastDL stream for a node. The returned function releases it.
+func (h *AgentHub) TryFastDLSlot(nodeID string) (func(), bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.fastdl == nil {
+		h.fastdl = make(map[string]int)
+	}
+	if h.fastdl[nodeID] >= maxFastDLStreamsPerNode {
+		return nil, false
+	}
+	h.fastdl[nodeID]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			if h.fastdl[nodeID]--; h.fastdl[nodeID] <= 0 {
+				delete(h.fastdl, nodeID)
+			}
+			h.mu.Unlock()
+		})
+	}, true
 }

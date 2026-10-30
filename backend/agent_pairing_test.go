@@ -444,3 +444,37 @@ func TestNodeIDsAndMachineID(t *testing.T) {
 		t.Fatalf("agent without machine ID: %v", err)
 	}
 }
+
+func TestAgentGatewayHandshakeLimits(t *testing.T) {
+	c := newTestController(t)
+	g := c.gw
+	for i := 0; i < maxAgentHandshakesPerIP; i++ {
+		if !g.acquireHandshake("203.0.113.9") {
+			t.Fatalf("slot %d refused", i)
+		}
+	}
+	if g.acquireHandshake("203.0.113.9") {
+		t.Fatal("one address took more than its share")
+	}
+	if !g.acquireHandshake("203.0.113.10") {
+		t.Fatal("another address was refused")
+	}
+	g.releaseHandshake("203.0.113.10")
+	// Behind a local reverse proxy all agents share 127.0.0.1; only the global limit applies.
+	n := 0
+	for g.acquireHandshake("127.0.0.1") {
+		n++
+	}
+	if n != maxAgentHandshakes-maxAgentHandshakesPerIP {
+		t.Fatalf("loopback got %d slots", n)
+	}
+	for i := 0; i < n; i++ {
+		g.releaseHandshake("127.0.0.1")
+	}
+	for i := 0; i < maxAgentHandshakesPerIP; i++ {
+		g.releaseHandshake("203.0.113.9")
+	}
+	if len(g.perIP) != 0 || len(g.handshakes) != 0 {
+		t.Fatalf("slots leaked: %v %d", g.perIP, len(g.handshakes))
+	}
+}

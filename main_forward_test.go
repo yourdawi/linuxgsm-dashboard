@@ -409,3 +409,83 @@ func TestNodeUpgradeEndpoint(t *testing.T) {
 		t.Fatalf("non-admin: %d", rec.Code)
 	}
 }
+
+func TestHardenNodeResponseStatusAndSizes(t *testing.T) {
+	mk := func(code int, h http.Header) *http.Response {
+		return &http.Response{StatusCode: code, Status: http.StatusText(code), Header: h, Body: io.NopCloser(strings.NewReader("x"))}
+	}
+	for _, code := range []int{http.StatusUnauthorized, http.StatusFound, http.StatusMovedPermanently} {
+		resp := mk(code, http.Header{"Location": {"https://evil.example/"}, "Content-Type": {"application/json"}})
+		_ = hardenNodeResponse(resp)
+		if resp.StatusCode != http.StatusBadGateway || resp.Header.Get("Location") != "" {
+			t.Errorf("%d passed through as %d", code, resp.StatusCode)
+		}
+	}
+	resp := mk(http.StatusNotModified, http.Header{"Etag": {`"a"`}})
+	_ = hardenNodeResponse(resp)
+	if resp.StatusCode != http.StatusNotModified {
+		t.Errorf("304 changed to %d", resp.StatusCode)
+	}
+
+	resp = mk(http.StatusPartialContent, http.Header{
+		"Content-Type": {"application/octet-stream"}, "Content-Length": {"3"},
+		"Content-Range": {"bytes 0-2/7"}, "Accept-Ranges": {"bytes"},
+	})
+	_ = hardenNodeResponse(resp)
+	if resp.Header.Get("Content-Length") != "3" || resp.Header.Get("Content-Range") != "bytes 0-2/7" || resp.Header.Get("Accept-Ranges") != "bytes" {
+		t.Errorf("download sizes dropped: %v", resp.Header)
+	}
+	resp = mk(http.StatusOK, http.Header{"Content-Type": {"application/octet-stream"}, "Content-Length": {"3\r\nX: y"}, "Content-Range": {"bytes evil"}})
+	_ = hardenNodeResponse(resp)
+	if resp.Header.Get("Content-Length") != "" || resp.Header.Get("Content-Range") != "" {
+		t.Errorf("invalid size headers kept: %v", resp.Header)
+	}
+	resp = mk(http.StatusOK, http.Header{"Content-Type": {"application/json"}, "Content-Length": {"100"}})
+	_ = hardenNodeResponse(resp)
+	if resp.Header.Get("Content-Length") != "" {
+		t.Error("Content-Length kept for a JSON answer that is cut")
+	}
+}
+
+func TestNodeFastDLRangeAndLimit(t *testing.T) {
+	m := newMultiNodeEnv(t, backend.AgentModeReadWrite)
+	req := httptest.NewRequest(http.MethodGet, "/fastdl/node-a~srv1/maps/de_test.bsp", nil)
+	req.Header.Set("Range", "bytes=0-2")
+	rec := httptest.NewRecorder()
+	m.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPartialContent || rec.Body.String() != "MAP" || rec.Header().Get("Content-Range") != "bytes 0-2/7" {
+		t.Fatalf("range via node: %d %q %v", rec.Code, rec.Body.String(), rec.Header())
+	}
+
+	// All FastDL slots of the node taken: further downloads wait instead of using up the tunnel.
+	var releases []func()
+	for {
+		release, ok := m.app.agents.Hub.TryFastDLSlot("node-a")
+		if !ok {
+			break
+		}
+		releases = append(releases, release)
+	}
+	if len(releases) != 32 {
+		t.Fatalf("slots: %d", len(releases))
+	}
+	rec = httptest.NewRecorder()
+	m.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fastdl/node-a~srv1/maps/de_test.bsp", nil))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("over the limit: %d", rec.Code)
+	}
+	// Administration of the node still works.
+	admin := m.login("admin2")
+	if rec := m.do(&admin, http.MethodGet, "/api/servers/node-a~srv1/configs", nil); rec.Code != http.StatusOK {
+		t.Fatalf("administration blocked: %d", rec.Code)
+	}
+	for _, r := range releases {
+		r()
+	}
+	releases[0]() // releasing twice is harmless
+	rec = httptest.NewRecorder()
+	m.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fastdl/node-a~srv1/maps/de_test.bsp", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("after release: %d", rec.Code)
+	}
+}

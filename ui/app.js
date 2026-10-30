@@ -1441,6 +1441,19 @@ async function setFastDLMode(serverId, mode) {
     if (server) loadFastDLInfo(server);
 }
 
+// serverWriteLocked reports whether nothing may be changed on a server (by ID): it runs on a
+// read-only node or its node is offline. The node refuses such changes anyway; the views hide
+// or disable the controls so the user does not run into that error.
+function serverWriteLocked(serverId) {
+    const server = state.servers.find(s => s.id === serverId);
+    return !!(server && (server.node_offline || isReadOnlyNodeServer(server)));
+}
+
+function serverWriteLockedText(serverId) {
+    const server = state.servers.find(s => s.id === serverId);
+    return server && server.node_offline ? t('card-node-offline') : t('card-node-read-only');
+}
+
 // isReadOnlyNodeServer reports whether a server runs on a node that only allows reading plus
 // start, stop and restart.
 function isReadOnlyNodeServer(server) {
@@ -1947,8 +1960,12 @@ async function loadConfigFile(path, name, liElement) {
         
         state.activeConfigContent = data.content;
         el.editorTextarea.value = data.content;
+        // Configs of a read-only or offline node can be read, not saved.
+        const locked = serverWriteLocked(state.activeConfigServer);
         el.editorTextarea.disabled = false;
-        el.btnConfigSave.disabled = false;
+        el.editorTextarea.readOnly = locked;
+        el.btnConfigSave.disabled = locked;
+        el.btnConfigSave.title = locked ? serverWriteLockedText(state.activeConfigServer) : '';
         updateEditorLineNumbers();
         
         // Parse config and build form
@@ -5452,7 +5469,7 @@ function updateBackupsView() {
         if (el.cloudbackupMessage) el.cloudbackupMessage.textContent = '';
         
         const placeholder = document.createElement('tr');
-        placeholder.innerHTML = `<td colspan="4" class="text-center text-muted" style="padding: 2rem;">\${t('backups-no-server-selected')}</td>`;
+        placeholder.innerHTML = `<td colspan="4" class="text-center text-muted" style="padding: 2rem;">${t('backups-no-server-selected')}</td>`;
         el.backupsTableBody.appendChild(placeholder);
         return;
     }
@@ -5474,7 +5491,16 @@ function updateBackupsView() {
     if (el.cloudbackupRemote) el.cloudbackupRemote.disabled = false;
     if (el.cloudbackupPath) el.cloudbackupPath.disabled = false;
     if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = false;
-    
+
+    // Read-only or offline node: viewing and downloading only.
+    if (serverWriteLocked(state.selectedBackupServer)) {
+        [el.backupsBtnCreate, el.backupsBtnUpload, el.backupsSettingMaxBackups, el.backupsSettingMaxBackupDays,
+            el.backupsSettingStopOnBackup, el.backupsSettingsSaveBtn, el.backupsSettingAutoBackupEnabled,
+            el.backupsSettingCronPreset, el.backupsSettingCronCustom, el.cloudbackupEnabled, el.cloudbackupRemote,
+            el.cloudbackupPath, el.cloudbackupBtnSave].forEach(c => { if (c) c.disabled = true; });
+        el.backupsSettingsMessage.textContent = serverWriteLockedText(state.selectedBackupServer);
+    }
+
     loadBackupsList();
     loadBackupSettings();
     loadCloudBackupSettings();
@@ -5519,6 +5545,7 @@ async function loadBackupsList() {
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
                             ${t('btn-download')}
                         </a>
+                        ${serverWriteLocked(serverId) ? '' : `
                         <button class="btn btn-warning btn-sm" onclick="confirmRestoreBackup(${jsArg(serverId)}, ${jsArg(backup.name)})" style="display: inline-flex; align-items: center; gap: 0.25rem;">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0-.57-8.38l5.67-5.67"></path></svg>
                             ${t('btn-restore')}
@@ -5526,7 +5553,7 @@ async function loadBackupsList() {
                         <button class="btn btn-danger btn-sm" onclick="confirmDeleteBackup(${jsArg(serverId)}, ${jsArg(backup.name)})" style="display: inline-flex; align-items: center; gap: 0.25rem;">
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                             ${t('btn-delete')}
-                        </button>
+                        </button>`}
                     </td>
                 `;
                 el.backupsTableBody.appendChild(tr);
@@ -6431,6 +6458,11 @@ function initFileManager() {
     el.filesServerSelect.addEventListener('change', () => {
         currentFilesServer = el.filesServerSelect.value;
         currentFilesSubpath = '';
+        if (el.filesBtnUpload) {
+            const locked = serverWriteLocked(currentFilesServer);
+            el.filesBtnUpload.disabled = locked;
+            el.filesBtnUpload.title = locked ? serverWriteLockedText(currentFilesServer) : '';
+        }
         loadFilesTree();
     });
 
@@ -6582,6 +6614,13 @@ async function openFileEditor(path) {
     activeEditingFilePath = path;
     el.filesEditingFilename.textContent = path;
     el.filesEditorCard.classList.remove('hidden');
+    // Files of a read-only or offline node can be read, not saved.
+    const locked = serverWriteLocked(currentFilesServer);
+    el.filesEditorTextarea.readOnly = locked;
+    if (el.filesBtnSave) {
+        el.filesBtnSave.disabled = locked;
+        el.filesBtnSave.title = locked ? serverWriteLockedText(currentFilesServer) : '';
+    }
     el.filesEditorTextarea.value = state.language === 'de' ? 'Lade Dateiinhalt...' : 'Loading file content...';
 
     try {

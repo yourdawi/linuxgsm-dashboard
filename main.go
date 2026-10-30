@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -1433,7 +1434,8 @@ func (a *app) forwardToNode(w http.ResponseWriter, r *http.Request, client *back
 			out.URL = &url.URL{Scheme: "https", Host: "agent", Path: path, RawQuery: pr.In.URL.RawQuery}
 			out.Host = "agent"
 			h := http.Header{}
-			for _, k := range []string{"Content-Type", "Accept", "Accept-Language"} {
+			// Range and If-Range let interrupted downloads continue.
+			for _, k := range []string{"Content-Type", "Accept", "Accept-Language", "Range", "If-Range"} {
 				if v := pr.In.Header.Get(k); v != "" {
 					h.Set(k, v)
 				}
@@ -1555,6 +1557,12 @@ type tunnelTransport struct{ client *backend.AgentTunnelClient }
 
 func (t tunnelTransport) RoundTrip(r *http.Request) (*http.Response, error) { return t.client.Do(r) }
 
+// Patterns for size headers a node may send along with downloads.
+var (
+	reDigits       = regexp.MustCompile(`^[0-9]{1,19}$`)
+	reContentRange = regexp.MustCompile(`^bytes ([0-9]{1,19}-[0-9]{1,19}|\*)/([0-9]{1,19}|\*)$`)
+)
+
 // Media types a node may answer with; anything else is delivered as a download.
 var nodeContentTypes = map[string]bool{
 	"application/json":         true,
@@ -1568,6 +1576,18 @@ var nodeContentTypes = map[string]bool{
 func hardenNodeResponse(resp *http.Response) error {
 	in := resp.Header
 	out := http.Header{}
+
+	// A node never answers 401 (the browser would log out of the dashboard) or redirects.
+	if resp.StatusCode == http.StatusUnauthorized ||
+		resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != http.StatusNotModified {
+		resp.Body.Close()
+		resp.StatusCode, resp.Status = http.StatusBadGateway, "502 Bad Gateway"
+		resp.Body = io.NopCloser(strings.NewReader(`{"error":"Unexpected answer from the node"}` + "\n"))
+		resp.ContentLength = -1
+		resp.Header = http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"no-store"}}
+		resp.Trailer = nil
+		return nil
+	}
 
 	mediaType, params, err := mime.ParseMediaType(in.Get("Content-Type"))
 	if err != nil || !nodeContentTypes[mediaType] {
@@ -1586,6 +1606,18 @@ func hardenNodeResponse(resp *http.Response) error {
 	for _, k := range []string{"Last-Modified", "ETag"} {
 		if v := in.Get(k); v != "" && len(v) < 128 {
 			out.Set(k, v)
+		}
+	}
+	// Sizes and ranges of downloads (progress, resuming); JSON answers are cut below instead.
+	if mediaType != "application/json" {
+		if v := in.Get("Content-Length"); reDigits.MatchString(v) {
+			out.Set("Content-Length", v)
+		}
+		if v := in.Get("Content-Range"); reContentRange.MatchString(v) {
+			out.Set("Content-Range", v)
+		}
+		if in.Get("Accept-Ranges") == "bytes" {
+			out.Set("Accept-Ranges", "bytes")
 		}
 	}
 	out.Set("Cache-Control", "no-store")
@@ -2769,8 +2801,10 @@ func runAgent(configDir string, maxUploadBytes int64, fastdlPort int, fastdlURL 
 
 	if fastdlPort > 0 {
 		fastdl := &http.Server{
-			Addr:              fmt.Sprintf(":%d", fastdlPort),
-			Handler:           http.HandlerFunc(a.serveNodeFastDL),
+			Addr:    fmt.Sprintf(":%d", fastdlPort),
+			Handler: http.HandlerFunc(a.serveNodeFastDL),
+			// Public port: requests are tiny, so slow clients cannot hold a request open.
+			ReadTimeout:       30 * time.Second,
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 			MaxHeaderBytes:    64 << 10,
@@ -3030,6 +3064,13 @@ func (a *app) forwardFastDL(w http.ResponseWriter, r *http.Request, nodeID, loca
 		http.NotFound(w, r)
 		return
 	}
+	release, ok := a.agents.Hub.TryFastDLSlot(nodeID)
+	if !ok {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "Too many downloads, try again shortly", http.StatusServiceUnavailable)
+		return
+	}
+	defer release()
 	a.forwardToNode(w, r, client, backend.User{Username: "fastdl"}, "/fastdl/"+localID+"/"+rel)
 }
 
