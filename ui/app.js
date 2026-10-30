@@ -717,7 +717,9 @@ function handleRouting() {
         refreshMetrics();
         startMetricsPolling();
     } else if (viewName === 'console') {
-        ensureServersLoaded().then(() => {
+        // Fresh statuses: the console buttons and the input depend on them.
+        fetchServers().then(() => {
+            if (state.lastActiveView !== 'console') return;
             populateConsoleDropdown();
             if (state.selectedConsoleServer) {
                 startConsolePolling();
@@ -740,6 +742,7 @@ function handleRouting() {
                 currentFilesServer = state.servers[0].id;
                 if (el.filesServerSelect) el.filesServerSelect.value = currentFilesServer;
             }
+            applyFilesUploadLock();
             loadFilesTree();
         });
     } else if (viewName === 'audit') {
@@ -748,15 +751,21 @@ function handleRouting() {
 }
 
 async function ensureServersLoaded() {
-    if (!state.servers || state.servers.length === 0) {
-        try {
-            const res = await apiFetch('/api/servers');
-            if (res.status === 200) {
-                state.servers = await res.json();
-            }
-        } catch (e) {
-            console.error('Failed to fetch servers:', e);
-        }
+    if (!state.servers || state.servers.length === 0) await fetchServers();
+}
+
+// fetchServers reloads the server list; an error answer never replaces it.
+async function fetchServers() {
+    try {
+        const res = await apiFetch('/api/servers');
+        if (!res.ok) return false;
+        const list = await res.json();
+        if (!Array.isArray(list)) return false;
+        state.servers = list;
+        return true;
+    } catch (e) {
+        console.error('Failed to fetch servers:', e);
+        return false;
     }
 }
 
@@ -783,8 +792,8 @@ async function checkAuthStatus() {
     try {
         const res = await fetch('/api/servers');
         if (res.status === 200) {
-            // Logged in!
-            hideLogin();
+            // Logged in! The role must be known before routing checks it.
+            await hideLogin();
             handleRouting();
         } else {
             showLogin();
@@ -800,6 +809,8 @@ function showLogin() {
     stopConsolePolling();
     stopMetricsPolling();
     stopDashboardPolling();
+    clearInterval(state.nodesInterval);
+    state.nodesInterval = null;
 }
 
 async function hideLogin() {
@@ -927,9 +938,9 @@ async function handleLogin(e) {
     }
 }
 
-function completeLogin() {
+async function completeLogin() {
     el.passwordInput.value = '';
-    hideLogin();
+    await hideLogin();
     window.location.hash = '#dashboard';
     handleRouting();
 }
@@ -1211,8 +1222,7 @@ function stopDashboardPolling() {
 async function refreshDashboard() {
     el.btnRefreshDashboard.classList.add('animate-spin');
     try {
-        const res = await apiFetch('/api/servers');
-        state.servers = await res.json();
+        if (!(await fetchServers())) return;
         updateStatsOverview();
         renderServersGrid();
     } catch (e) {
@@ -1297,13 +1307,18 @@ function renderServersGridQuiet() {
         return matchesText && matchesTag;
     });
 
+    // A server that appeared or vanished (deleted elsewhere, node removed) needs a full redraw,
+    // also for the tag filter.
+    const shown = [...el.serversContainer.querySelectorAll('.server-card')].map(c => c.id).sort().join('|');
+    const wanted = filtered.map(s => `server-card-${s.id}`).sort().join('|');
+    if (shown !== wanted) {
+        renderServersGrid();
+        return;
+    }
+
     filtered.forEach(server => {
         const card = document.getElementById(`server-card-${server.id}`);
-        if (!card) {
-            // Server was newly detected, full redraw
-            renderServersGrid();
-            return;
-        }
+        if (!card) return;
         const menuOpen = card.querySelector('.sc-menu[open]');
         if (card.dataset.status !== server.status && !menuOpen) {
             // Status changed: the available actions differ, so rebuild this card only.
@@ -1586,7 +1601,7 @@ function runServerAction(serverId, action, extra = {}) {
         onExit: () => {
             // If in console tab, refresh console button states
             if (state.lastActiveView === 'console' && state.selectedConsoleServer === serverId) {
-                setTimeout(updateConsoleViewButtons, 1000);
+                fetchServers().then(updateConsoleViewButtons);
             }
         }
     });
@@ -1597,8 +1612,8 @@ function runServerAction(serverId, action, extra = {}) {
 // -------------------------------------------------------------
 
 function populateConsoleDropdown() {
-    // Keep current selection if valid
-    const current = el.consoleServerSelect.value;
+    // The server chosen on a card (openConsole) wins over the previous selection.
+    const current = state.selectedConsoleServer || el.consoleServerSelect.value;
     
     el.consoleServerSelect.innerHTML = `<option value="">${t('console-select-default')}</option>`;
     
@@ -1611,16 +1626,20 @@ function populateConsoleDropdown() {
     
     if (current && state.servers.find(s => s.id === current)) {
         el.consoleServerSelect.value = current;
+        if (state.selectedConsoleServer !== current) el.terminalOutput.innerHTML = '';
+        state.selectedConsoleServer = current;
     } else {
         state.selectedConsoleServer = '';
-        updateConsoleViewButtons();
     }
+    updateConsoleViewButtons();
 }
 
 function openConsole(serverId) {
+    if (state.selectedConsoleServer !== serverId) el.terminalOutput.innerHTML = '';
     state.selectedConsoleServer = serverId;
-    window.location.hash = '#console';
-    handleRouting();
+    // The hashchange event routes; only an unchanged hash needs routing here.
+    if (window.location.hash === '#console') handleRouting();
+    else window.location.hash = '#console';
 }
 
 function handleConsoleServerChange() {
@@ -1759,6 +1778,10 @@ function startConsolePolling() {
     
     // Poll every 1.5 seconds
     state.consoleInterval = setInterval(fetchConsoleData, 1500);
+    // The status decides which buttons work and whether commands can be sent.
+    state.consoleStatusInterval = setInterval(() => {
+        fetchServers().then(ok => { if (ok && state.lastActiveView === 'console') updateConsoleViewButtons(); });
+    }, 5000);
 }
 
 function stopConsolePolling() {
@@ -1766,14 +1789,19 @@ function stopConsolePolling() {
         clearInterval(state.consoleInterval);
         state.consoleInterval = null;
     }
+    clearInterval(state.consoleStatusInterval);
+    state.consoleStatusInterval = null;
 }
 
 async function fetchConsoleData() {
     if (!state.selectedConsoleServer) return;
+    const serverId = state.selectedConsoleServer, mode = state.consoleMode;
     
     try {
-        const res = await apiFetch(`/api/servers/${state.selectedConsoleServer}/console?mode=${state.consoleMode}`);
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/console?mode=${mode}`);
         const data = await res.json();
+        // A late answer for another server or mode must not overwrite the terminal.
+        if (serverId !== state.selectedConsoleServer || mode !== state.consoleMode) return;
         
         if (data.lines) {
             // Rendering the whole buffer or tailing
@@ -2445,7 +2473,8 @@ async function loadSettingsInfo() {
         // Ensure active subtab is visible
         switchSettingsSubtab(state.settingsSubtab || 'general');
 
-        // Populate tools dropdown
+        // Populate tools dropdown (the page may have been opened directly on #settings)
+        await ensureServersLoaded();
         populateSettingsServerSelect();
 
         applySettingsPermissions();
@@ -5581,7 +5610,8 @@ function updateBackupsView() {
     if (el.cloudbackupEnabled) el.cloudbackupEnabled.disabled = false;
     if (el.cloudbackupRemote) el.cloudbackupRemote.disabled = false;
     if (el.cloudbackupPath) el.cloudbackupPath.disabled = false;
-    if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = false;
+    // Cloud settings are saved by administrators only (the backend requires it).
+    if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = !(state.currentUser && state.currentUser.role === 'admin');
 
     // Read-only or offline node: viewing and downloading only.
     if (serverWriteLocked(state.selectedBackupServer)) {
@@ -5607,6 +5637,7 @@ async function loadBackupsList() {
     
     try {
         const res = await apiFetch(`/api/servers/${serverId}/backups`);
+        if (serverId !== state.selectedBackupServer) return; // another server was chosen meanwhile
         el.backupsLoading.classList.add('hidden');
         
         if (res.status === 200) {
@@ -5664,6 +5695,7 @@ async function loadBackupSettings() {
         const res = await apiFetch(`/api/servers/${serverId}/backups/settings`);
         if (res.status === 200) {
             const settings = await res.json();
+            if (serverId !== state.selectedBackupServer) return;
             el.backupsSettingMaxBackups.value = settings.maxbackups || '';
             el.backupsSettingMaxBackupDays.value = settings.maxbackupdays || '';
             el.backupsSettingStopOnBackup.value = settings.stoponbackup === 'off' ? 'off' : 'on';
@@ -6633,11 +6665,11 @@ function initFileManager() {
     el.filesServerSelect.addEventListener('change', () => {
         currentFilesServer = el.filesServerSelect.value;
         currentFilesSubpath = '';
-        if (el.filesBtnUpload) {
-            const locked = serverWriteLocked(currentFilesServer);
-            el.filesBtnUpload.disabled = locked;
-            el.filesBtnUpload.title = locked ? serverWriteLockedText(currentFilesServer) : '';
-        }
+        // An open file belongs to the previous server.
+        fileEditorSeq++;
+        fileEditorLoaded = null;
+        el.filesEditorCard.classList.add('hidden');
+        applyFilesUploadLock();
         loadFilesTree();
     });
 
@@ -6784,35 +6816,73 @@ function navigateFilesUp() {
 
 let activeEditingFilePath = '';
 
+// applyFilesUploadLock disables uploads for servers of read-only or offline nodes.
+function applyFilesUploadLock() {
+    if (!el.filesBtnUpload) return;
+    const locked = !!currentFilesServer && serverWriteLocked(currentFilesServer);
+    el.filesBtnUpload.disabled = locked;
+    el.filesBtnUpload.title = locked ? serverWriteLockedText(currentFilesServer) : '';
+}
+
+// The editor only saves what it loaded: after a failed load (file too large, error) or for a
+// binary file there is nothing to save, and a late answer for a file that is no longer open is
+// dropped. Otherwise Save would write the error text or another file's content over the file.
+let fileEditorSeq = 0;
+let fileEditorLoaded = null; // { server, path } of the content in the textarea
+
+function setFileEditorEditable(editable, lockText) {
+    el.filesEditorTextarea.readOnly = !editable;
+    if (el.filesBtnSave) {
+        el.filesBtnSave.disabled = !editable;
+        el.filesBtnSave.title = editable ? '' : (lockText || '');
+    }
+}
+
 async function openFileEditor(path) {
     if (!currentFilesServer) return;
+    const serverId = currentFilesServer;
+    const seq = ++fileEditorSeq;
+    fileEditorLoaded = null;
     activeEditingFilePath = path;
     el.filesEditingFilename.textContent = path;
     el.filesEditorCard.classList.remove('hidden');
-    // Files of a read-only or offline node can be read, not saved.
-    const locked = serverWriteLocked(currentFilesServer);
-    el.filesEditorTextarea.readOnly = locked;
-    if (el.filesBtnSave) {
-        el.filesBtnSave.disabled = locked;
-        el.filesBtnSave.title = locked ? serverWriteLockedText(currentFilesServer) : '';
-    }
+    setFileEditorEditable(false);
     el.filesEditorTextarea.value = state.language === 'de' ? 'Lade Dateiinhalt...' : 'Loading file content...';
 
+    let text = null, error = '';
     try {
-        const res = await apiFetch(`/api/servers/${currentFilesServer}/files/content?path=${encodeURIComponent(path)}`);
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/files/content?path=${encodeURIComponent(path)}`);
         if (res.status === 200) {
-            const text = await res.text();
-            el.filesEditorTextarea.value = text;
+            text = await res.text();
         } else {
-            el.filesEditorTextarea.value = state.language === 'de' ? 'Fehler beim Lesen des Dateiinhalts.' : 'Error reading file content.';
+            const data = await res.json().catch(() => ({}));
+            error = data.error || '';
         }
     } catch (e) {
-        el.filesEditorTextarea.value = 'Error: ' + e.message;
+        error = e.message;
     }
+    if (seq !== fileEditorSeq) return; // another file was opened meanwhile
+
+    if (text === null) {
+        el.filesEditorTextarea.value = (state.language === 'de' ? 'Fehler beim Lesen des Dateiinhalts.' : 'Error reading file content.') + (error ? ` (${error})` : '');
+        return;
+    }
+    if (text.includes('\u0000') || (text.match(/�/g) || []).length > 8) {
+        el.filesEditorTextarea.value = state.language === 'de'
+            ? 'Binärdatei: sie kann im Browser nicht bearbeitet werden. Nutze den Download.'
+            : 'Binary file: it cannot be edited in the browser. Use the download instead.';
+        return;
+    }
+    el.filesEditorTextarea.value = text;
+    fileEditorLoaded = { server: serverId, path };
+    // Files of a read-only or offline node can be read, not saved.
+    const locked = serverWriteLocked(serverId);
+    setFileEditorEditable(!locked, locked ? serverWriteLockedText(serverId) : '');
 }
 
 async function saveFileContent() {
     if (!currentFilesServer || !activeEditingFilePath) return;
+    if (!fileEditorLoaded || fileEditorLoaded.server !== currentFilesServer || fileEditorLoaded.path !== activeEditingFilePath) return;
     try {
         const res = await apiFetch(`/api/servers/${currentFilesServer}/files`, {
             method: 'POST',
@@ -6936,6 +7006,7 @@ async function loadServerStopMode(serverId) {
         const res = await apiFetch(`/api/servers/${serverId}/stopmode`);
         if (res.status === 200) {
             const data = await res.json();
+            if (el.settingsServerSelect.value !== serverId) return;
             el.settingsStopmodeSelect.value = data.stopmode || 'default';
         }
     } catch (e) {
@@ -7068,15 +7139,19 @@ function handleRustWipeSubmit() {
 // Cloud Backup (rclone) Integration
 // ----------------------------------------------------
 async function loadCloudBackupSettings() {
-    if (!state.selectedBackupServer) return;
+    const serverId = state.selectedBackupServer;
+    if (!serverId) return;
     try {
-        const res = await apiFetch(`/api/servers/${state.selectedBackupServer}/cloudbackup/settings`);
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/cloudbackup/settings`);
         if (res.status === 200) {
             const data = await res.json();
+            if (serverId !== state.selectedBackupServer) return;
             if (el.cloudbackupEnabled) el.cloudbackupEnabled.checked = !!data.enabled;
             if (el.cloudbackupRemote) el.cloudbackupRemote.value = data.remote || '';
             if (el.cloudbackupPath) el.cloudbackupPath.value = data.path || 'backups';
-            if (el.cloudbackupBtnSync) el.cloudbackupBtnSync.disabled = !data.enabled || !data.remote;
+            // Syncing is a write on the node; saving the settings needs an administrator.
+            if (el.cloudbackupBtnSync) el.cloudbackupBtnSync.disabled = !data.enabled || !data.remote || serverWriteLocked(serverId);
+            if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = !(state.currentUser && state.currentUser.role === 'admin') || serverWriteLocked(serverId);
         }
     } catch (e) {
         console.error('Failed to load cloud backup settings:', e);
