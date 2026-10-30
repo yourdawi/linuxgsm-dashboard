@@ -51,6 +51,13 @@ func (h *AgentHub) retireOldKeys(nodeID string, client *AgentTunnelClient) {
 // It reports whether a renewal took place (the tunnel is closed then).
 func (h *AgentHub) renewIfDue(nodeID string, client *AgentTunnelClient, now time.Time) bool {
 	leaf := client.PeerCertificate()
+	// A tunnel whose key is no longer paired (the node was paired again elsewhere) must neither
+	// stay connected nor get a fresh certificate.
+	if leaf != nil && h.nodes.VerifyNodeCert(leaf) != nil {
+		h.logf("[AGENT] Node %s: the tunnel's key is no longer paired, disconnecting", nodeID)
+		client.Close()
+		return true
+	}
 	h.mu.Lock()
 	sign := h.signCSR
 	h.mu.Unlock()
@@ -106,7 +113,7 @@ func agentPostJSON(client *AgentTunnelClient, path string, body, out interface{}
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	resp, err := client.DoControl(req)
 	if err != nil {
 		return err
 	}

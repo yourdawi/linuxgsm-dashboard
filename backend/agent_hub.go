@@ -154,7 +154,7 @@ func fetchAgentHello(client *AgentTunnelClient) (AgentHello, error) {
 	if err != nil {
 		return AgentHello{}, err
 	}
-	resp, err := client.Do(req)
+	resp, err := client.DoControl(req)
 	if err != nil {
 		return AgentHello{}, err
 	}

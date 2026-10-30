@@ -20,6 +20,8 @@ type multiNodeEnv struct {
 	*testEnv
 	agent     *agentEnv
 	stopAgent func()
+	gwURL     string // pairing and tunnel endpoint of the controller
+	caFP      string
 }
 
 func newMultiNodeEnv(t *testing.T, controllerMode string) *multiNodeEnv {
@@ -65,7 +67,7 @@ func newMultiNodeEnv(t *testing.T, controllerMode string) *multiNodeEnv {
 	}
 	t.Cleanup(stop)
 
-	m := &multiNodeEnv{testEnv: e, agent: ae, stopAgent: stop}
+	m := &multiNodeEnv{testEnv: e, agent: ae, stopAgent: stop, gwURL: srv.URL, caFP: gw.CA.Fingerprint()}
 	m.waitFor(t, func() bool {
 		_, ok := agents.Hub.NodeServer("node-a~srv1")
 		return ok
@@ -263,10 +265,14 @@ func TestHardenNodeResponse(t *testing.T) {
 	if h.Get("Content-Type") != "application/octet-stream" {
 		t.Errorf("content type %q", h.Get("Content-Type"))
 	}
-	for _, k := range []string{"Set-Cookie", "Content-Security-Policy", "Location", "Access-Control-Allow-Origin"} {
+	for _, k := range []string{"Set-Cookie", "Location", "Access-Control-Allow-Origin"} {
 		if h.Get(k) != "" {
 			t.Errorf("%s passed through", k)
 		}
+	}
+	// The node's CSP is replaced by the sandbox policy.
+	if csp := h.Values("Content-Security-Policy"); len(csp) != 1 || csp[0] != sandboxCSP {
+		t.Errorf("CSP %q", csp)
 	}
 	if cd := h.Get("Content-Disposition"); cd != `attachment; filename=passwd` {
 		t.Errorf("disposition %q", cd)

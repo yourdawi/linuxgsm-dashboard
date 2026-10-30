@@ -45,6 +45,9 @@ type AgentGateway struct {
 	Limiter *LoginLimiter
 	// OnTunnel receives every established node tunnel. It owns the client from then on.
 	OnTunnel func(nodeID string, client *AgentTunnelClient)
+	// OnEnrolled runs after a node was paired, before it gets its certificate. Re-pairing replaces
+	// the keys; the tunnel of the old installation is closed here (nil: nothing happens).
+	OnEnrolled func(nodeID string)
 	// Logf receives log lines (nil: discarded).
 	Logf func(format string, args ...interface{})
 
@@ -207,6 +210,9 @@ func (g *AgentGateway) handleEnroll(conn *tls.Conn, clientIP string) {
 	}
 	if g.Limiter != nil {
 		g.Limiter.Success(key)
+	}
+	if g.OnEnrolled != nil {
+		g.OnEnrolled(resp.NodeID)
 	}
 	g.logf("[AGENT] Node %s paired from %s (%s)", resp.NodeID, clientIP, resp.Mode)
 	reply(resp)

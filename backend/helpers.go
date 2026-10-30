@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -381,18 +382,38 @@ func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// The public IP is looked up at most every publicIPCacheTime; port checks are frequent and the
+// lookup is an outside request.
+const publicIPCacheTime = 10 * time.Minute
+
+var publicIPCache struct {
+	sync.Mutex
+	ip      string
+	fetched time.Time
+}
+
 func getPublicIP() (string, error) {
+	publicIPCache.Lock()
+	defer publicIPCache.Unlock()
+	if publicIPCache.ip != "" && time.Since(publicIPCache.fetched) < publicIPCacheTime {
+		return publicIPCache.ip, nil
+	}
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("https://api.ipify.org")
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	ipBytes, err := io.ReadAll(resp.Body)
+	ipBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64))
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(ipBytes)), nil
+	ip := strings.TrimSpace(string(ipBytes))
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("invalid answer from the IP lookup")
+	}
+	publicIPCache.ip, publicIPCache.fetched = ip, time.Now()
+	return ip, nil
 }
 
 func checkTCP(ip string, port int) bool {

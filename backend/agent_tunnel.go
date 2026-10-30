@@ -45,6 +45,9 @@ const (
 	// allows. Above that limit the client transport would try to dial a second connection,
 	// which a tunnel cannot provide, so further requests wait instead.
 	agentTunnelMaxStreams = 200
+	// agentTunnelControlStreams of them are kept for the controller's own requests (ping, hello,
+	// server list, renewal), so user requests can never starve the liveness ping.
+	agentTunnelControlStreams = 8
 )
 
 // ErrAgentTunnelClosed is returned for requests on a tunnel that is no longer connected.
@@ -238,6 +241,7 @@ type AgentTunnelClient struct {
 	conn      *tls.Conn
 	transport *http.Transport
 	streams   chan struct{}
+	control   chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -245,7 +249,8 @@ type AgentTunnelClient struct {
 func newAgentTunnelClient(conn *tls.Conn) *AgentTunnelClient {
 	t := &AgentTunnelClient{
 		conn:    conn,
-		streams: make(chan struct{}, agentTunnelMaxStreams),
+		streams: make(chan struct{}, agentTunnelMaxStreams-agentTunnelControlStreams),
+		control: make(chan struct{}, agentTunnelControlStreams),
 		done:    make(chan struct{}),
 	}
 	var dialed int32
@@ -281,11 +286,20 @@ func (t *AgentTunnelClient) Close() error {
 }
 
 // Do sends req to the agent. Only path and query of req.URL are used. At most
-// agentTunnelMaxStreams requests run at the same time; further requests wait for a free stream
-// or until their context ends. The response body must be closed.
+// agentTunnelMaxStreams-agentTunnelControlStreams requests run at the same time; further requests
+// wait for a free stream or until their context ends. The response body must be closed.
 func (t *AgentTunnelClient) Do(req *http.Request) (*http.Response, error) {
+	return t.do(req, t.streams)
+}
+
+// DoControl is Do for the controller's own requests, which use the reserved streams.
+func (t *AgentTunnelClient) DoControl(req *http.Request) (*http.Response, error) {
+	return t.do(req, t.control)
+}
+
+func (t *AgentTunnelClient) do(req *http.Request, slots chan struct{}) (*http.Response, error) {
 	select {
-	case t.streams <- struct{}{}:
+	case slots <- struct{}{}:
 	case <-t.done:
 		return nil, ErrAgentTunnelClosed
 	case <-req.Context().Done():
@@ -301,7 +315,7 @@ func (t *AgentTunnelClient) Do(req *http.Request) (*http.Response, error) {
 
 	resp, err := t.transport.RoundTrip(out)
 	if err != nil {
-		<-t.streams
+		<-slots
 		select {
 		case <-t.done:
 			return nil, ErrAgentTunnelClosed
@@ -312,7 +326,7 @@ func (t *AgentTunnelClient) Do(req *http.Request) (*http.Response, error) {
 		}
 		return nil, err
 	}
-	resp.Body = &tunnelBody{ReadCloser: resp.Body, release: func() { <-t.streams }}
+	resp.Body = &tunnelBody{ReadCloser: resp.Body, release: func() { <-slots }}
 	return resp, nil
 }
 
@@ -335,7 +349,7 @@ func (t *AgentTunnelClient) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp, err := t.Do(req)
+	resp, err := t.DoControl(req)
 	if err != nil {
 		return err
 	}

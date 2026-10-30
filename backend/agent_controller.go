@@ -51,6 +51,7 @@ func (c *AgentController) Gateway(create bool) (*AgentGateway, error) {
 	gw.Limiter = NewLoginLimiter()
 	gw.Logf = c.logf
 	gw.OnTunnel = c.Hub.Attach
+	gw.OnEnrolled = c.Hub.Disconnect
 	c.Hub.SetCertificateSigner(ca.SignNodeCSR)
 	// The controller's own tunnel certificate is renewed while the dashboard keeps running.
 	go func() {

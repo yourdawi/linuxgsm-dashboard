@@ -18,7 +18,9 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
 	"os"
 	"os/exec"
@@ -272,6 +274,8 @@ type app struct {
 	secureCookies  bool  // always set the Secure flag on cookies
 	trustProxy     bool  // honour X-Forwarded-For / X-Forwarded-Proto from a reverse proxy
 	maxUploadBytes int64 // upload limit for backups and file manager uploads
+
+	nodeRequests nodeRequestLimiter // concurrent forwarded requests per user and node
 }
 
 // -------------------------------------------------------------
@@ -1409,6 +1413,13 @@ func (a *app) handleNodeServer(w http.ResponseWriter, r *http.Request, user back
 	if r.Method != http.MethodGet {
 		a.auth.LogAudit(user.Username, ip, "NODE_REQUEST", fmt.Sprintf("%s %s on node %s", r.Method, route, nodeID), serverID)
 	}
+	release, ok := a.nodeRequests.acquire(nodeID, user.Username)
+	if !ok {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusTooManyRequests, "Too many requests to this node at once, try again shortly")
+		return
+	}
+	defer release()
 	a.forwardToNode(w, r, client, user, "/api/servers/"+localID+"/"+route)
 
 	switch route {
@@ -1431,9 +1442,12 @@ func (a *app) handleNodeServer(w http.ResponseWriter, r *http.Request, user back
 func (a *app) forwardToNode(w http.ResponseWriter, r *http.Request, client *backend.AgentTunnelClient, user backend.User, path string) {
 	// Answers can stream for a long time (console output, downloads, actions).
 	backend.DisableWriteDeadline(w)
-	// Whatever the node sends must never run in the dashboard's origin.
-	w.Header().Set("Content-Security-Policy", sandboxCSP)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Whatever the node sends must never run in the dashboard's origin. hardenNodeResponse puts
+	// the security headers on the response itself; ReverseProxy adds response headers to these,
+	// so the ones the middleware set are removed to avoid duplicates.
+	for _, k := range []string{"Content-Security-Policy", "X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy"} {
+		w.Header().Del(k)
+	}
 
 	ip := a.clientIP(r)
 	proxy := &httputil.ReverseProxy{
@@ -1459,6 +1473,7 @@ func (a *app) forwardToNode(w http.ResponseWriter, r *http.Request, client *back
 			if r.Context().Err() != nil {
 				return // the browser went away
 			}
+			setNodeSecurityHeaders(w.Header())
 			writeError(w, http.StatusBadGateway, "The node did not answer")
 		},
 	}
@@ -1560,10 +1575,50 @@ func plainText(s string, max int) string {
 	return strings.ToValidUTF8(s, "")
 }
 
+// maxNodeRequestsPerUser bounds the forwarded requests one user keeps open on one node, so a
+// single account cannot occupy the node's tunnel (slow port checks, slow downloads).
+const maxNodeRequestsPerUser = 24
+
+type nodeRequestLimiter struct {
+	mu     sync.Mutex
+	active map[string]int
+}
+
+// acquire takes a slot for user on node; release must be called when the request ends.
+func (l *nodeRequestLimiter) acquire(node, user string) (release func(), ok bool) {
+	key := node + "\x00" + user
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.active == nil {
+		l.active = make(map[string]int)
+	}
+	if l.active[key] >= maxNodeRequestsPerUser {
+		return nil, false
+	}
+	l.active[key]++
+	return func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.active[key]--; l.active[key] <= 0 {
+			delete(l.active, key)
+		}
+	}, true
+}
+
 // tunnelTransport sends proxied requests through an agent tunnel.
 type tunnelTransport struct{ client *backend.AgentTunnelClient }
 
-func (t tunnelTransport) RoundTrip(r *http.Request) (*http.Response, error) { return t.client.Do(r) }
+// errNode1xx aborts a forwarded request whose node answered with an informational status.
+var errNode1xx = errors.New("informational response from node")
+
+// RoundTrip refuses 1xx answers: ReverseProxy would pass the node's headers on and then clear
+// the dashboard's security headers of the final response.
+func (t tunnelTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	ctx := httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+		Got1xxResponse: func(int, textproto.MIMEHeader) error { return errNode1xx },
+	})
+	return t.client.Do(r.WithContext(ctx))
+}
 
 // Patterns for size headers a node may send along with downloads.
 var (
@@ -1593,6 +1648,7 @@ func hardenNodeResponse(resp *http.Response) error {
 		resp.Body = io.NopCloser(strings.NewReader(`{"error":"Unexpected answer from the node"}` + "\n"))
 		resp.ContentLength = -1
 		resp.Header = http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"no-store"}}
+		setNodeSecurityHeaders(resp.Header)
 		resp.Trailer = nil
 		return nil
 	}
@@ -1629,6 +1685,7 @@ func hardenNodeResponse(resp *http.Response) error {
 		}
 	}
 	out.Set("Cache-Control", "no-store")
+	setNodeSecurityHeaders(out)
 	resp.Header = out
 	resp.Trailer = nil
 	if mediaType == "application/json" {
@@ -1636,6 +1693,15 @@ func hardenNodeResponse(resp *http.Response) error {
 		resp.ContentLength = -1
 	}
 	return nil
+}
+
+// setNodeSecurityHeaders puts the headers that keep a node's answer from running in the
+// dashboard origin on the response itself, so nothing on the way can drop them.
+func setNodeSecurityHeaders(h http.Header) {
+	h.Set("Content-Security-Policy", sandboxCSP)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
 }
 
 type limitedBody struct {
@@ -3051,7 +3117,7 @@ func (a *app) handleFastDL(w http.ResponseWriter, r *http.Request) {
 	}
 	trimmed := strings.TrimPrefix(r.URL.Path, "/fastdl/")
 	parts := strings.SplitN(trimmed, "/", 2)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" || !backend.IsValidServerID(parts[0]) {
+	if len(parts) < 2 || !backend.IsValidServerID(parts[0]) || !isCanonicalFastDLPath(parts[1]) {
 		http.NotFound(w, r)
 		return
 	}
@@ -3105,13 +3171,33 @@ func (a *app) serveNodeFastDL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/fastdl/"), "/", 2)
-	if !strings.HasPrefix(r.URL.Path, "/fastdl/") || len(parts) < 2 || parts[1] == "" ||
+	if !strings.HasPrefix(r.URL.Path, "/fastdl/") || len(parts) < 2 || !isCanonicalFastDLPath(parts[1]) ||
 		!backend.IsValidLocalServerID(parts[0]) || !a.policyAllowsServer(parts[0]) ||
 		a.inst.FastDLMode(parts[0]) != backend.FastDLNode {
 		http.NotFound(w, r)
 		return
 	}
 	a.serveFastDLFile(w, r, parts[0], parts[1])
+}
+
+// isCanonicalFastDLPath accepts a relative file path without empty, "." or ".." segments,
+// backslashes or control characters. FastDL requests are forwarded to nodes, which serve them
+// with full rights, so a path must never be able to climb into the agent's API.
+func isCanonicalFastDLPath(rel string) bool {
+	if rel == "" || len(rel) > 1024 || strings.ContainsAny(rel, "\\\x00") {
+		return false
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+		for _, c := range seg {
+			if c < 0x20 || c == 0x7f {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // policyAllowsServer applies the node's server list (all servers when it lists none).

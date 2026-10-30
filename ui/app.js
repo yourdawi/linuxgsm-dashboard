@@ -1404,6 +1404,8 @@ async function loadFastDLInfo(server) {
         // keep the default
     }
     if (box.dataset.server !== server.id) return;
+    // For servers on nodes the answer comes from the node: only known modes are used.
+    if (!['dashboard', 'node', 'off'].includes(info.mode)) info.mode = 'dashboard';
     let url = '';
     let note = '';
     if (info.mode === 'dashboard') url = fastdlUrl(server);
@@ -5009,10 +5011,10 @@ async function checkServerPorts(serverId) {
 
             row.innerHTML = `
                 <td style="padding: 0.75rem 0.5rem; text-align: left; font-family: monospace; font-size: 0.85rem;">
-                    ${probe.port} <span style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;">${probe.description}</span>
+                    ${Number(probe.port) || 0} <span style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;">${escapeHtml(probe.description)}</span>
                 </td>
                 <td style="padding: 0.75rem 0.5rem; text-align: left; font-size: 0.8rem;">
-                    ${probe.protocol}
+                    ${escapeHtml(probe.protocol)}
                 </td>
                 <td style="padding: 0.75rem 0.5rem; text-align: right;">
                     <span class="${badgeClass}" style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 4px;">${statusText}</span>

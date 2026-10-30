@@ -83,7 +83,7 @@ func fetchNodeServers(client *AgentTunnelClient, nodeID string) ([]GameServerIns
 	if err != nil {
 		return nil, err
 	}
-	resp, err := client.Do(req)
+	resp, err := client.DoControl(req)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func fetchNodeHost(client *AgentTunnelClient) (HostStats, error) {
 	if err != nil {
 		return HostStats{}, err
 	}
-	resp, err := client.Do(req)
+	resp, err := client.DoControl(req)
 	if err != nil {
 		return HostStats{}, err
 	}
