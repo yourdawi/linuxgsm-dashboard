@@ -360,10 +360,12 @@ func (a *app) clientIP(r *http.Request) string {
 		return "controller"
 	}
 	if a.trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first := strings.TrimSpace(strings.Split(xff, ",")[0])
-			if net.ParseIP(first) != nil {
-				return first
+		// The rightmost entry is the address the trusted proxy saw; anything left of it was sent
+		// by the client (nginx appends to the header it received).
+		if values := r.Header.Values("X-Forwarded-For"); len(values) > 0 {
+			parts := strings.Split(values[len(values)-1], ",")
+			if last := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(last) != nil {
+				return net.ParseIP(last).String()
 			}
 		}
 	}
@@ -648,20 +650,20 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	ip := a.clientIP(r)
 	keys := []string{"ip:" + ip, "user:" + strings.ToLower(creds.Username)}
-	if ok, wait := a.limiter.Allow(keys...); !ok {
+	ok, wait, done := a.limiter.Reserve(keys...)
+	if !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, "Too many failed login attempts. Please try again later.")
 		return
 	}
 
 	result, err := a.auth.BeginLogin(creds.Username, creds.Password)
+	done(err == nil)
 	if err != nil {
-		a.limiter.Failure(keys...)
 		a.auth.LogAudit(creds.Username, ip, "LOGIN_FAILED", "Invalid username or password", "")
 		writeError(w, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
-	a.limiter.Success(keys...)
 
 	if result.Challenge != "" {
 		// Password correct, the account uses 2FA: the browser gets a short-lived challenge that is
@@ -703,14 +705,15 @@ func (a *app) handleLoginSecondFactor(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := a.clientIP(r)
 	keys := []string{"ip:" + ip, "2fa:" + strings.ToLower(username)}
-	if ok, wait := a.limiter.Allow(keys...); !ok {
+	ok, wait, done := a.limiter.Reserve(keys...)
+	if !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, "Too many failed attempts. Please try again later.")
 		return
 	}
 	sessionID, usedRecovery, err := a.auth.CompleteLogin(payload.Challenge, payload.Code)
+	done(err == nil)
 	if err != nil {
-		a.limiter.Failure(keys...)
 		a.auth.LogAudit(username, ip, "LOGIN_2FA_FAILED", "Invalid two-factor code", "")
 		if errors.Is(err, backend.ErrChallengeExpired) {
 			writeError(w, http.StatusUnauthorized, "Login expired, please sign in again")
@@ -719,7 +722,6 @@ func (a *app) handleLoginSecondFactor(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "Invalid code")
 		return
 	}
-	a.limiter.Success(keys...)
 	details := "User logged in with two-factor authentication"
 	if usedRecovery {
 		details = "User logged in with a recovery code"
@@ -743,6 +745,18 @@ func requestHostName(r *http.Request) string {
 	return strings.Trim(host, "[]")
 }
 
+// limitReverify guards the password and code checks of a logged-in user (2FA setup, password
+// change) with the login limiter, so a stolen session cannot be used to guess the password.
+func (a *app) limitReverify(w http.ResponseWriter, username string) (func(bool), bool) {
+	ok, wait, done := a.limiter.Reserve("user:" + strings.ToLower(username))
+	if !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "Too many failed attempts. Please try again later.")
+		return nil, false
+	}
+	return done, true
+}
+
 func (a *app) handleTwoFactorSetup(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
 	var payload struct {
 		Password string `json:"password"`
@@ -750,7 +764,12 @@ func (a *app) handleTwoFactorSetup(w http.ResponseWriter, r *http.Request, user 
 	if !decodeJSON(w, r, &payload, 4*1024) {
 		return
 	}
+	done, ok := a.limitReverify(w, user.Username)
+	if !ok {
+		return
+	}
 	setup, err := a.auth.StartTwoFactorSetup(user.Username, payload.Password, requestHostName(r))
+	done(err == nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -791,7 +810,13 @@ func (a *app) handleTwoFactorDisable(w http.ResponseWriter, r *http.Request, use
 	if !decodeJSON(w, r, &payload, 4*1024) {
 		return
 	}
-	if err := a.auth.DisableTwoFactor(user.Username, payload.Password, payload.Code, sessionID); err != nil {
+	done, ok := a.limitReverify(w, user.Username)
+	if !ok {
+		return
+	}
+	err := a.auth.DisableTwoFactor(user.Username, payload.Password, payload.Code, sessionID)
+	done(err == nil)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -807,7 +832,12 @@ func (a *app) handleTwoFactorRecoveryCodes(w http.ResponseWriter, r *http.Reques
 	if !decodeJSON(w, r, &payload, 4*1024) {
 		return
 	}
+	done, ok := a.limitReverify(w, user.Username)
+	if !ok {
+		return
+	}
 	codes, err := a.auth.RegenerateRecoveryCodes(user.Username, payload.Password, payload.Code)
+	done(err == nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -852,7 +882,13 @@ func (a *app) handleChangePassword(w http.ResponseWriter, r *http.Request, user 
 		writeError(w, http.StatusBadRequest, "Password too long")
 		return
 	}
-	if err := a.auth.ChangeUserPassword(user.Username, payload.OldPassword, payload.NewPassword, sessionID); err != nil {
+	done, ok := a.limitReverify(w, user.Username)
+	if !ok {
+		return
+	}
+	err := a.auth.ChangeUserPassword(user.Username, payload.OldPassword, payload.NewPassword, sessionID)
+	done(err == nil)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1464,6 +1500,12 @@ func (a *app) forwardToNode(w http.ResponseWriter, r *http.Request, client *back
 			}
 			h.Set(backend.AgentActorHeader, user.Username)
 			h.Set(backend.AgentActorIPHeader, ip)
+			if user.HasPermission(backend.PermSchedule) {
+				h.Set(backend.AgentActorScheduleHeader, "1")
+			}
+			if user.Role == "admin" {
+				h.Set(backend.AgentActorAdminHeader, "1")
+			}
 			out.Header = h
 		},
 		Transport:      tunnelTransport{client},
@@ -1813,19 +1855,47 @@ func (c serverCtx) sendConsole(route string) {
 	writeOK(c.w)
 }
 
+// actorIsAdmin reports whether the user behind the request is an administrator. On a node the
+// tunnel identity is one, so the controller's header decides.
+func (c serverCtx) actorIsAdmin() bool {
+	if c.app.agentMode {
+		return c.r.Header.Get(backend.AgentActorAdminHeader) == "1"
+	}
+	return c.user.Role == "admin"
+}
+
 func (c serverCtx) listConfigs() {
 	configs, err := c.app.inst.GetConfigFiles(c.serverID)
 	if err != nil {
 		writeError(c.w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if configs == nil {
-		configs = []backend.ConfigFile{}
+	// LinuxGSM's own configs are bash and hold secrets: administrators only.
+	visible := []backend.ConfigFile{}
+	for _, f := range configs {
+		if c.actorIsAdmin() || !c.app.inst.IsLinuxGSMSettingsFile(c.serverID, f.Path) {
+			visible = append(visible, f)
+		}
 	}
+	configs = visible
 	writeJSON(c.w, http.StatusOK, configs)
 }
 
 func (c serverCtx) configFile() {
+	path := c.r.URL.Query().Get("path")
+	if c.r.Method != http.MethodGet {
+		path = ""
+	}
+	deny := func(p string) bool {
+		if !c.actorIsAdmin() && c.app.inst.IsLinuxGSMSettingsFile(c.serverID, p) {
+			writeError(c.w, http.StatusForbidden, "LinuxGSM's own config files can only be edited by administrators")
+			return true
+		}
+		return false
+	}
+	if path != "" && deny(path) {
+		return
+	}
 	if c.r.Method == http.MethodGet {
 		filePath := c.r.URL.Query().Get("path")
 		if filePath == "" {
@@ -1849,6 +1919,9 @@ func (c serverCtx) configFile() {
 	}
 	if payload.Path == "" {
 		writeError(c.w, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+	if deny(payload.Path) {
 		return
 	}
 	result, err := c.app.inst.SaveConfigFileContent(c.serverID, payload.Path, payload.Content)
@@ -2056,6 +2129,10 @@ func (c serverCtx) backupSettings() {
 	}
 	// Changing the automatic backup cron requires the schedule permission.
 	allowSchedule := c.user.HasPermission(backend.PermSchedule)
+	if c.app.agentMode {
+		// The tunnel identity is an administrator; the controller says what the user may do.
+		allowSchedule = c.r.Header.Get(backend.AgentActorScheduleHeader) == "1"
+	}
 	if err := c.app.inst.SaveBackupSettings(c.serverID, payload, allowSchedule); err != nil {
 		writeError(c.w, http.StatusBadRequest, err.Error())
 		return

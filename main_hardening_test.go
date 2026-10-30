@@ -120,3 +120,23 @@ func TestRepairDisconnectsOldInstallation(t *testing.T) {
 		t.Fatal("the old installation connected again")
 	}
 }
+
+// Behind nginx ($proxy_add_x_forwarded_for) only the rightmost entry is trustworthy.
+func TestClientIPBehindProxy(t *testing.T) {
+	a := &app{trustProxy: true}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:5000"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.9")
+	if got := a.clientIP(r); got != "203.0.113.9" {
+		t.Errorf("got %s", got)
+	}
+	r.Header.Set("X-Forwarded-For", "garbage")
+	if got := a.clientIP(r); got != "127.0.0.1" {
+		t.Errorf("invalid header: got %s", got)
+	}
+	a.trustProxy = false
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := a.clientIP(r); got != "127.0.0.1" {
+		t.Errorf("header used without -trust-proxy: %s", got)
+	}
+}

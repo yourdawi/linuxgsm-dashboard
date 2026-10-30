@@ -109,3 +109,24 @@ func TestGameServerNameFromScript(t *testing.T) {
 	}
 	_ = os.Remove(filepath.Join(dir, "rust-eu"))
 }
+
+func TestIsLinuxGSMSettingsFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "lgsm", "config-lgsm", "vhserver")
+	mustWrite(t, filepath.Join(cfg, "secrets-vhserver.cfg"), "discordwebhook=\"x\"\n")
+	mustWrite(t, filepath.Join(dir, "serverfiles", "server.cfg"), "a=1\n")
+	if err := os.Symlink(filepath.Join(cfg, "secrets-vhserver.cfg"), filepath.Join(dir, "serverfiles", "link.cfg")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	im := NewStaticInstanceManager(t.TempDir(), GameServerInstance{ID: "vhserver", Script: "vhserver", Dir: dir})
+	for path, want := range map[string]bool{
+		filepath.Join(cfg, "secrets-vhserver.cfg"):         true,
+		filepath.Join(cfg, "..", "vhserver", "common.cfg"): true,
+		filepath.Join(dir, "serverfiles", "server.cfg"):    false,
+		filepath.Join(dir, "serverfiles", "link.cfg"):      true,
+	} {
+		if got := im.IsLinuxGSMSettingsFile("vhserver", path); got != want {
+			t.Errorf("%s: %v want %v", path, got, want)
+		}
+	}
+}

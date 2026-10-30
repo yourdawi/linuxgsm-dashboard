@@ -786,9 +786,7 @@ func (am *AuthManager) LogAudit(username, ip, action, details, serverID string) 
 	}
 
 	entries = append([]AuditEntry{newEntry}, entries...)
-	if len(entries) > 1000 {
-		entries = entries[:1000]
-	}
+	entries = trimAuditLog(entries)
 
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err == nil {
@@ -812,4 +810,35 @@ func (am *AuthManager) GetAuditLogs() []AuditEntry {
 		entries = []AuditEntry{}
 	}
 	return entries
+}
+
+// Audit log size: failed logins need no account, so they may only use part of it; a burst of
+// them must not push out what logged-in users did.
+const (
+	maxAuditEntries      = 1000
+	maxAuditFailedLogins = 200
+)
+
+func isFailedLoginAudit(action string) bool {
+	return action == "LOGIN_FAILED" || action == "LOGIN_2FA_FAILED"
+}
+
+// trimAuditLog keeps the newest entries (entries are newest first), at most maxAuditFailedLogins
+// of them failed logins.
+func trimAuditLog(entries []AuditEntry) []AuditEntry {
+	out := entries[:0]
+	failed := 0
+	for _, e := range entries {
+		if isFailedLoginAudit(e.Action) {
+			if failed >= maxAuditFailedLogins {
+				continue
+			}
+			failed++
+		}
+		out = append(out, e)
+		if len(out) >= maxAuditEntries {
+			break
+		}
+	}
+	return out
 }

@@ -407,7 +407,7 @@ Caddy passes WebSockets without extra configuration. If the proxy uses a self-si
 | `-port` | `8080` (from `config.json`) | Port the dashboard listens on. |
 | `-config-dir` | `./config` | Directory for the dashboard configuration (see below). |
 | `-secure-cookies` | `false` | Always mark cookies as `Secure`. Enable when the dashboard is only reachable via HTTPS. |
-| `-trust-proxy` | `false` | Trust `X-Forwarded-For` and `X-Forwarded-Proto` from a reverse proxy. Used for the client IP in rate limiting and the audit log, and for `Secure` cookies and HSTS behind HTTPS. Only enable this behind a proxy you control. |
+| `-trust-proxy` | `false` | Trust `X-Forwarded-For` and `X-Forwarded-Proto` from a reverse proxy. The client IP for rate limiting and the audit log is the rightmost `X-Forwarded-For` entry, the address your proxy saw (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). `X-Forwarded-Proto` decides about `Secure` cookies and HSTS behind HTTPS. Only enable this behind a proxy you control. |
 | `-max-upload-mb` | `4096` | Maximum size of backup and file manager uploads in MiB. |
 | `-max-archive-gb` | `1024` | Maximum uncompressed size of a backup archive that may be restored, in GiB. |
 | `-agent-port` | `0` | Additionally accept direct connections of nodes on this port (see [Multiple machines](#multiple-machines-nodes)). `0`: nodes connect only via WebSocket on the web port. |
@@ -464,15 +464,15 @@ There are two roles:
 | (server assigned) | View the server and its status, port check, list of installed mods, view the cron schedule and the stop mode |
 | `start`, `stop`, `restart` | The corresponding action, also in bulk actions |
 | `console` | Live console and logs, sending console commands, kicking and banning players |
-| `config` | Config editor (config file types only) |
+| `config` | Config editor for the game configs, `details` (shows the server passwords). LinuxGSM's own configs in `lgsm/config-lgsm` are for administrators only |
 | `files` | File manager in `serverfiles/` (list, view, edit, upload, download) |
-| `backup` | Create, list, download, upload, delete and restore backups, retention settings, cloud sync, `details` |
+| `backup` | Create, list, download, upload, delete and restore backups (only the server data is restored), retention settings, cloud sync |
 | `schedule` | Change cron schedules, including the automatic backup schedule |
 | `alerts` | View and change notification settings |
 
-Only administrators can manage users, install, delete and clone servers, set tags, install systemd services and cron jobs, change the stop mode and the cloud backup target, run maintenance actions (`update`, `validate`, wipes, mod installation, `debug`, `postdetails` and others), open firewall ports through the API, view the audit log, configure server directories and update the dashboard.
+Only administrators can manage users, install, delete and clone servers, set tags, install systemd services and cron jobs, change the stop mode and the cloud backup target, run maintenance actions (`update`, `validate`, wipes, mod installation, `postdetails` and others), open firewall ports through the API, view the audit log, configure server directories and update the dashboard.
 
-Note that `config` and `files` give a lot of control: LinuxGSM `.cfg` files are executed by bash and the game server loads its own files. Only grant these permissions to people you would also give shell access as the game server user.
+Note that `config`, `files` and `backup` give a lot of control: the game server loads its own files, and game configs or a restored `serverfiles` can change what it runs. Only grant these permissions to people you would also give shell access as the game server user.
 
 ## Two-factor authentication
 

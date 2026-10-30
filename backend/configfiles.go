@@ -183,3 +183,22 @@ func findConfigs(baseDir, dir string) []ConfigFile {
 	walk(dir, 0)
 	return out
 }
+
+// IsLinuxGSMSettingsFile reports whether path is one of LinuxGSM's own config files of the server
+// (config-lgsm: _default.cfg, common.cfg, the instance and secrets files, cloud_backup.json).
+// LinuxGSM sources them with bash and they hold the alert secrets, so editing them amounts to a
+// shell as the server user: only administrators may.
+func (im *InstanceManager) IsLinuxGSMSettingsFile(serverID, path string) bool {
+	srv, ok := im.getServer(serverID)
+	if !ok {
+		return false
+	}
+	dir := filepath.Join(srv.Dir, srv.configLgsmRel())
+	if IsWithin(dir, filepath.Clean(path)) {
+		return true
+	}
+	// Also through a symlink, e.g. serverfiles/x.cfg pointing at a secrets file.
+	realDir, err1 := filepath.EvalSymlinks(dir)
+	realPath, err2 := filepath.EvalSymlinks(path)
+	return err1 == nil && err2 == nil && IsWithin(realDir, realPath)
+}

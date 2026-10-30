@@ -77,4 +77,9 @@ const (
 	AgentActorHeader = "X-LGSM-Actor"
 	// AgentActorIPHeader is the address of that user as seen by the controller (audit log only).
 	AgentActorIPHeader = "X-LGSM-Actor-IP"
+	// AgentActorScheduleHeader is "1" when that user may change schedules. The node acts as
+	// administrator, so checks inside handlers that go beyond the route permission need it.
+	AgentActorScheduleHeader = "X-LGSM-Actor-Schedule"
+	// AgentActorAdminHeader is "1" when that user is an administrator.
+	AgentActorAdminHeader = "X-LGSM-Actor-Admin"
 )

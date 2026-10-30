@@ -34,7 +34,9 @@ const (
 	maxAgentHandshakes      = 64
 	maxAgentHandshakesPerIP = 4
 	agentEnrollTimeout      = 15 * time.Second
-	maxEnrollBody           = 64 << 10
+	// agentEnrollReadTimeout bounds how long the controller waits for and answers a pairing request.
+	agentEnrollReadTimeout = 10 * time.Second
+	maxEnrollBody          = 64 << 10
 )
 
 // AgentGateway accepts agent connections for the controller.
@@ -110,8 +112,8 @@ func (g *AgentGateway) HandleCarrier(raw net.Conn, clientIP string) {
 	ctx, cancel := context.WithTimeout(context.Background(), agentTunnelHandshakeTimeout)
 	err := conn.HandshakeContext(ctx)
 	cancel()
-	g.releaseHandshake(clientIP)
 	if err != nil {
+		g.releaseHandshake(clientIP)
 		g.logf("[AGENT] Handshake from %s failed: %v", clientIP, err)
 		raw.Close()
 		return
@@ -120,8 +122,12 @@ func (g *AgentGateway) HandleCarrier(raw net.Conn, clientIP string) {
 	state := conn.ConnectionState()
 	switch {
 	case state.NegotiatedProtocol == AgentEnrollALPN && len(state.PeerCertificates) == 0:
+		// Pairing is unauthenticated: the slot stays taken until the request is answered, so idle
+		// pairing connections count against the handshake limits.
+		defer g.releaseHandshake(clientIP)
 		g.handleEnroll(conn, clientIP)
 	case state.NegotiatedProtocol == agentTunnelALPN && len(state.PeerCertificates) > 0:
+		g.releaseHandshake(clientIP)
 		nodeID := state.PeerCertificates[0].Subject.CommonName
 		if g.OnTunnel == nil {
 			conn.Close()
@@ -129,6 +135,7 @@ func (g *AgentGateway) HandleCarrier(raw net.Conn, clientIP string) {
 		}
 		g.OnTunnel(nodeID, newAgentTunnelClient(conn))
 	default:
+		g.releaseHandshake(clientIP)
 		g.logf("[AGENT] Rejected connection from %s (protocol %q)", clientIP, state.NegotiatedProtocol)
 		conn.Close()
 	}
@@ -178,7 +185,7 @@ func (g *AgentGateway) releasePerIP(clientIP string) {
 
 func (g *AgentGateway) handleEnroll(conn *tls.Conn, clientIP string) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(agentEnrollTimeout))
+	_ = conn.SetDeadline(time.Now().Add(agentEnrollReadTimeout))
 	reply := func(resp EnrollResponse) {
 		_ = json.NewEncoder(conn).Encode(resp)
 	}
