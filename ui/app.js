@@ -43,6 +43,8 @@ const state = {
     configMode: 'form', // form or raw
     parsedConfigItems: [],
     formBaseContent: '', // text the config form was built from
+    configLoadSeq: 0, // increases with every list or file load of the config editor
+    configFileEntries: [], // {path, name, li} of the listed config files
     gridColumns: {}, // column choice per card grid (see COLUMN_GRIDS)
     theme: 'dark', // dark or light
     language: 'en', // en or de
@@ -1886,12 +1888,14 @@ function switchConsoleMode(mode) {
 // -------------------------------------------------------------
 
 async function openConfigEditor(serverId, selectPath) {
+    const seq = ++state.configLoadSeq;
     state.activeConfigServer = serverId;
     state.activeConfigFile = null;
     state.activeConfigContent = '';
-    state.configMode = 'form';
     state.parsedConfigItems = [];
-    
+    state.formBaseContent = '';
+    state.configFileEntries = [];
+
     const server = state.servers.find(s => s.id === serverId);
     el.modalConfigSubtitle.textContent = server ? `${server.name} (${server.user})` : serverId;
     el.configFilesList.innerHTML = `<li class="config-file-item">${t('config-loading-files')}</li>`;
@@ -1903,17 +1907,18 @@ async function openConfigEditor(serverId, selectPath) {
     
     // Reset view toggle states
     el.configModeToggle.style.display = 'none';
-    el.editorFormWrapper.classList.add('hidden');
-    el.editorTextWrapper.classList.remove('hidden');
-    el.btnConfigForm.classList.add('active');
-    el.btnConfigRaw.classList.remove('active');
-    
+    el.configFormBuilder.innerHTML = '';
+    setConfigView('raw');
+
     el.modalConfig.classList.remove('hidden');
     
     try {
         const res = await apiFetch(`/api/servers/${serverId}/configs`);
         const files = await res.json();
-        
+        // Another server or file was opened while the list was loading.
+        if (seq !== state.configLoadSeq) return;
+        if (!res.ok || !Array.isArray(files)) throw new Error(files && files.error);
+
         el.configFilesList.innerHTML = '';
         if (files.length === 0) {
             el.configFilesList.innerHTML = `<li class="config-file-item text-muted">${t('config-no-files')}</li>`;
@@ -1936,54 +1941,71 @@ async function openConfigEditor(serverId, selectPath) {
             li.innerHTML = `<span>${escapeHtml(file.name)}</span>${layerBadge}`;
             li.addEventListener('click', () => loadConfigFile(file.path, file.name, li));
             el.configFilesList.appendChild(li);
+            state.configFileEntries.push({ path: file.path, name: file.name, li: li });
             if (file.path === selectPath) loadConfigFile(file.path, file.name, li);
         });
     } catch (e) {
+        if (seq !== state.configLoadSeq) return;
         el.configFilesList.innerHTML = `<li class="config-file-item text-danger">${t('config-load-error')}</li>`;
     }
 }
 
 async function loadConfigFile(path, name, liElement) {
+    // Responses of files clicked before this one must not overwrite it.
+    const seq = ++state.configLoadSeq;
+    const serverId = state.activeConfigServer;
+
     // Highlight list item
     el.configFilesList.querySelectorAll('.config-file-item').forEach(li => li.classList.remove('active'));
     liElement.classList.add('active');
-    
+
     el.editorActiveFile.textContent = name;
     el.editorTextarea.value = t('config-loading-file');
     el.editorTextarea.disabled = true;
     el.btnConfigSave.disabled = true;
-    
+
+    // Nothing of the previous file may remain until this one is loaded: no form, no save base.
     state.activeConfigFile = path;
-    
+    state.activeConfigContent = '';
+    state.parsedConfigItems = [];
+    state.formBaseContent = '';
+    el.configFormBuilder.innerHTML = '';
+    el.configModeToggle.style.display = 'none';
+    setConfigView('raw');
+
     try {
-        const res = await apiFetch(`/api/servers/${state.activeConfigServer}/configs/file?path=${encodeURIComponent(path)}`);
-        const data = await res.json();
-        
+        const res = await apiFetch(`/api/servers/${serverId}/configs/file?path=${encodeURIComponent(path)}`);
+        const data = await res.json().catch(() => ({}));
+        if (seq !== state.configLoadSeq) return;
+        if (!res.ok || typeof data.content !== 'string') {
+            el.editorTextarea.value = data.error ? `${t('config-load-file-error')} (${data.error})` : t('config-load-file-error');
+            return;
+        }
+
         state.activeConfigContent = data.content;
         el.editorTextarea.value = data.content;
         // Configs of a read-only or offline node can be read, not saved.
-        const locked = serverWriteLocked(state.activeConfigServer);
+        const locked = serverWriteLocked(serverId);
         el.editorTextarea.disabled = false;
         el.editorTextarea.readOnly = locked;
         el.btnConfigSave.disabled = locked;
-        el.btnConfigSave.title = locked ? serverWriteLockedText(state.activeConfigServer) : '';
+        el.btnConfigSave.title = locked ? serverWriteLockedText(serverId) : '';
         updateEditorLineNumbers();
-        
-        // Parse config and build form
+
+        // Parse config and build form. LinuxGSM configs that set nothing yet (common.cfg and the
+        // instance config by default) still get the form, which explains where values come from.
         state.parsedConfigItems = parseConfig(data.content, path);
         state.formBaseContent = data.content;
-        if (state.parsedConfigItems.length > 0) {
+        if (state.parsedConfigItems.length > 0 || isLgsmConfigPath(path)) {
             el.configModeToggle.style.display = 'flex';
             buildConfigForm(state.parsedConfigItems);
-            // Show default form view
-            switchConfigMode('form');
+            setConfigView('form');
         } else {
-            // Force raw mode if not parseable
-            el.configModeToggle.style.display = 'none';
-            switchConfigMode('raw');
+            // Nothing the form could show: text view only
+            setConfigView('raw');
         }
     } catch (e) {
-        el.editorTextarea.value = t('config-load-file-error');
+        if (seq === state.configLoadSeq) el.editorTextarea.value = t('config-load-file-error');
     }
 }
 
@@ -3235,35 +3257,30 @@ function setAlertFieldsDisabled(disabled) {
 // Config Editor Mode & Parsing Helpers
 // -------------------------------------------------------------
 
-function switchConfigMode(mode) {
+// setConfigView shows the form or the text view without converting between them.
+function setConfigView(mode) {
     state.configMode = mode;
+    el.btnConfigForm.classList.toggle('active', mode === 'form');
+    el.btnConfigRaw.classList.toggle('active', mode !== 'form');
+    el.editorFormWrapper.classList.toggle('hidden', mode !== 'form');
+    el.editorTextWrapper.classList.toggle('hidden', mode === 'form');
+}
 
+function switchConfigMode(mode) {
+    if (!state.activeConfigFile || mode === state.configMode) return;
     if (mode === 'form') {
-        el.btnConfigForm.classList.add('active');
-        el.btnConfigRaw.classList.remove('active');
-
-        el.editorFormWrapper.classList.remove('hidden');
-        el.editorTextWrapper.classList.add('hidden');
-
-        // Rebuild form with the latest textarea text in case they modified it in raw view
+        // Rebuild the form from the text, which may have been edited. The form always matches the
+        // text, even when no values are left: a stale form would save the old text on top.
         const currentText = el.editorTextarea.value;
-        const parsed = parseConfig(currentText, state.activeConfigFile);
-        if (parsed.length > 0) {
-            state.parsedConfigItems = parsed;
-            state.formBaseContent = currentText;
-            buildConfigForm(parsed);
-        }
+        state.parsedConfigItems = parseConfig(currentText, state.activeConfigFile);
+        state.formBaseContent = currentText;
+        buildConfigForm(state.parsedConfigItems);
     } else {
-        el.btnConfigForm.classList.remove('active');
-        el.btnConfigRaw.classList.add('active');
-
-        el.editorFormWrapper.classList.add('hidden');
-        el.editorTextWrapper.classList.remove('hidden');
-
         // Serialize form values back to text in case they modified them in the form
         el.editorTextarea.value = configFormContent();
         updateEditorLineNumbers();
     }
+    setConfigView(mode);
 }
 
 // configFormContent applies the changed form fields to the text the form was built from. Fields
@@ -3283,7 +3300,7 @@ function configFormContent() {
     if (changes.size === 0) return base;
     const ext = state.activeConfigFile.split('.').pop().toLowerCase();
     return ext === 'json' ? serializeJsonForm(base, state.parsedConfigItems, changes)
-                          : serializeConfigForm(base, state.parsedConfigItems, changes, ext);
+                          : serializeConfigForm(base, state.parsedConfigItems, changes, ext === 'cfg' && isLgsmConfigPath(state.activeConfigFile));
 }
 
 // Keeps the spelling of the original value (true/True/TRUE).
@@ -3334,8 +3351,13 @@ function parseConfig(content, path) {
         }
     }
 
+    // LinuxGSM configs are bash; other .cfg files are game configs (Source: `hostname "x"`,
+    // Arma: `hostname = "x";`).
+    const bash = ext === 'cfg' && isLgsmConfigPath(path);
+    const gameCfg = ext === 'cfg' && !bash;
     const lines = content.split('\n');
     const kvRegex = /^(\s*([\w\.\-]+)\s*[=:]\s*)(.*)$/;
+    const cvarRegex = /^(\s*([A-Za-z_][\w\.\-]*)\s+)(\S.*)$/;
     let accumulatedComments = [];
     let section = '';
 
@@ -3362,7 +3384,9 @@ function parseConfig(content, path) {
             return;
         }
 
-        const match = line.match(kvRegex);
+        let match = line.match(kvRegex);
+        const cvar = !match && gameCfg;
+        if (cvar) match = line.match(cvarRegex);
         if (!match) return;
         const rest = match[3];
         let value = rest.trim();
@@ -3370,11 +3394,20 @@ function parseConfig(content, path) {
         let suffix = '';
         if (value[0] === '"' || value[0] === "'") {
             quote = value[0];
-            const close = findClosingQuote(value, quote, ext === 'cfg');
+            const close = findClosingQuote(value, quote, bash);
             if (close < 0) return; // value spans several lines: raw view only
             suffix = value.slice(close + 1);
             value = value.slice(1, close);
-            if (quote === '"' && ext === 'cfg') value = value.replace(/\\(["\\`])/g, '$1');
+            if (quote === '"' && bash) value = value.replace(/\\(["\\`])/g, '$1');
+        } else if (gameCfg) {
+            // An unquoted game config value ends at a // comment or the ; of Arma configs.
+            const word = value.match(/^([^\s;]+)(\s*;?\s*(\/\/.*)?)$/);
+            if (!word) {
+                if (cvar) return; // `class Missions {` and other commands are no values
+            } else {
+                value = word[1];
+                suffix = word[2];
+            }
         }
 
         const type = typed(value);
@@ -3399,6 +3432,11 @@ function parseConfig(content, path) {
     return items;
 }
 
+// isLgsmConfigPath reports whether path is one of the LinuxGSM configs in config-lgsm/<game>.
+function isLgsmConfigPath(path) {
+    return /\/config-lgsm\/[^/]+\/[^/]+\.cfg$/.test(path || '');
+}
+
 // Index of the quote that closes value[0], or -1. In bash configs \" does not close the string.
 function findClosingQuote(value, quote, bashEscapes) {
     for (let i = 1; i < value.length; i++) {
@@ -3413,6 +3451,28 @@ function findClosingQuote(value, quote, bashEscapes) {
 
 function buildConfigForm(items) {
     el.configFormBuilder.innerHTML = '';
+    // Values of read-only or offline nodes can be looked at, not changed.
+    const locked = serverWriteLocked(state.activeConfigServer);
+
+    if (items.length === 0) {
+        const path = state.activeConfigFile || '';
+        const lgsm = isLgsmConfigPath(path);
+        const hint = document.createElement('div');
+        hint.className = 'text-muted';
+        hint.textContent = t(lgsm ? 'config-form-empty-lgsm' : 'config-form-empty');
+        el.configFormBuilder.appendChild(hint);
+        const dir = path.slice(0, path.lastIndexOf('/') + 1);
+        const def = lgsm && !path.endsWith('/_default.cfg') && state.configFileEntries.find(f => f.path === dir + '_default.cfg');
+        if (def) {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-secondary btn-sm';
+            btn.style.alignSelf = 'flex-start';
+            btn.textContent = t('config-form-open-default');
+            btn.addEventListener('click', () => loadConfigFile(def.path, def.name, def.li));
+            el.configFormBuilder.appendChild(btn);
+        }
+        return;
+    }
 
     items.forEach(item => {
         const formItem = document.createElement('div');
@@ -3466,6 +3526,7 @@ function buildConfigForm(items) {
             check.type = 'checkbox';
             check.id = `config-form-val-${item.id}`;
             check.checked = item.checked;
+            check.disabled = locked;
             switchEl.appendChild(check);
 
             const slider = document.createElement('span');
@@ -3486,6 +3547,7 @@ function buildConfigForm(items) {
                 input.style.minWidth = '280px';
             }
             input.value = item.value;
+            input.readOnly = locked;
             container.appendChild(input);
         }
 
@@ -3494,13 +3556,13 @@ function buildConfigForm(items) {
     });
 }
 
-function serializeConfigForm(originalContent, items, changes, ext) {
+function serializeConfigForm(originalContent, items, changes, bash) {
     const lines = originalContent.split('\n');
     items.forEach(item => {
         if (!changes.has(item.id)) return;
         let value = changes.get(item.id);
         let quote = item.quote;
-        if (ext === 'cfg') {
+        if (bash) {
             // LinuxGSM configs are bash: escape quotes, keep ${variables} working.
             if (quote === "'" && value.includes("'")) quote = '"';
             if (quote === '"') value = value.replace(/(["\\`])/g, '\\$1');
@@ -3776,6 +3838,9 @@ const i18n = {
         "config-loading-file": "Loading content...",
         "config-load-error": "Load error",
         "config-load-file-error": "Error loading file.",
+        "config-form-empty": "No values found that the form can show. Edit this file in the text view.",
+        "config-form-empty-lgsm": "This file does not set any values yet, so LinuxGSM uses the values from _default.cfg. Values you change in the form of _default.cfg are saved here; in the text view you can add settings directly.",
+        "config-form-open-default": "Open _default.cfg",
         "saving": "Saving...",
         "saved": "Saved!",
         "config-save-error": "Error saving configuration.",
@@ -4331,6 +4396,9 @@ const i18n = {
         "config-loading-file": "Lade Inhalt...",
         "config-load-error": "Ladefehler",
         "config-load-file-error": "Fehler beim Laden der Datei.",
+        "config-form-empty": "Keine Werte gefunden, die das Formular anzeigen kann. Bearbeite die Datei in der Textansicht.",
+        "config-form-empty-lgsm": "Diese Datei setzt noch keine Werte, LinuxGSM nutzt daher die Werte aus _default.cfg. Werte, die du im Formular von _default.cfg änderst, werden hier gespeichert; in der Textansicht kannst du Einstellungen direkt eintragen.",
+        "config-form-open-default": "_default.cfg öffnen",
         "saving": "Speichert...",
         "saved": "Gespeichert!",
         "config-save-error": "Fehler beim Speichern der Konfiguration.",
