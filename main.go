@@ -2074,11 +2074,13 @@ func (c serverCtx) alerts() {
 		writeJSON(c.w, http.StatusOK, settings)
 		return
 	}
-	var payload backend.AlertSettings
+	var payload struct {
+		Values map[string]string `json:"values"`
+	}
 	if !decodeJSON(c.w, c.r, &payload, 64*1024) {
 		return
 	}
-	if err := c.app.inst.SaveAlertSettings(c.serverID, payload); err != nil {
+	if err := c.app.inst.SaveAlertSettings(c.serverID, payload.Values); err != nil {
 		writeError(c.w, http.StatusBadRequest, err.Error())
 		return
 	}

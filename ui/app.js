@@ -377,58 +377,7 @@ const el = {
     btnCloseModalMods: document.getElementById('btn-close-modal-mods'),
     btnCloseModsModalFooter: document.getElementById('btn-close-mods-modal-footer'),
     
-    alertsSettingDiscordEnabled: document.getElementById('alerts-setting-discord-enabled'),
-    alertsSettingDiscordWebhook: document.getElementById('alerts-setting-discord-webhook'),
-    alertsSettingDiscordContainer: document.getElementById('alerts-setting-discord-container'),
-    
-    alertsSettingTelegramEnabled: document.getElementById('alerts-setting-telegram-enabled'),
-    alertsSettingTelegramToken: document.getElementById('alerts-setting-telegram-token'),
-    alertsSettingTelegramChatid: document.getElementById('alerts-setting-telegram-chatid'),
-    alertsSettingTelegramContainer: document.getElementById('alerts-setting-telegram-container'),
-    
-    alertsSettingEmailEnabled: document.getElementById('alerts-setting-email-enabled'),
-    alertsSettingEmailSmtp: document.getElementById('alerts-setting-email-smtp'),
-    alertsSettingEmailPort: document.getElementById('alerts-setting-email-port'),
-    alertsSettingEmailUser: document.getElementById('alerts-setting-email-user'),
-    alertsSettingEmailPass: document.getElementById('alerts-setting-email-pass'),
-    alertsSettingEmailDest: document.getElementById('alerts-setting-email-dest'),
-    alertsSettingEmailContainer: document.getElementById('alerts-setting-email-container'),
-    
-    alertsSettingNtfyEnabled: document.getElementById('alerts-setting-ntfy-enabled'),
-    alertsSettingNtfyUrl: document.getElementById('alerts-setting-ntfy-url'),
-    alertsSettingNtfyTopic: document.getElementById('alerts-setting-ntfy-topic'),
-    alertsSettingNtfyToken: document.getElementById('alerts-setting-ntfy-token'),
-    alertsSettingNtfyContainer: document.getElementById('alerts-setting-ntfy-container'),
-    
-    alertsSettingSlackEnabled: document.getElementById('alerts-setting-slack-enabled'),
-    alertsSettingSlackWebhook: document.getElementById('alerts-setting-slack-webhook'),
-    alertsSettingSlackContainer: document.getElementById('alerts-setting-slack-container'),
-    
-    alertsSettingMatrixEnabled: document.getElementById('alerts-setting-matrix-enabled'),
-    alertsSettingMatrixHomeserver: document.getElementById('alerts-setting-matrix-homeserver'),
-    alertsSettingMatrixRoomid: document.getElementById('alerts-setting-matrix-roomid'),
-    alertsSettingMatrixToken: document.getElementById('alerts-setting-matrix-token'),
-    alertsSettingMatrixContainer: document.getElementById('alerts-setting-matrix-container'),
-    
-    alertsSettingPushoverEnabled: document.getElementById('alerts-setting-pushover-enabled'),
-    alertsSettingPushoverToken: document.getElementById('alerts-setting-pushover-token'),
-    alertsSettingPushoverUser: document.getElementById('alerts-setting-pushover-user'),
-    alertsSettingPushoverContainer: document.getElementById('alerts-setting-pushover-container'),
-    
-    alertsSettingPushbulletEnabled: document.getElementById('alerts-setting-pushbullet-enabled'),
-    alertsSettingPushbulletToken: document.getElementById('alerts-setting-pushbullet-token'),
-    alertsSettingPushbulletChannel: document.getElementById('alerts-setting-pushbullet-channel'),
-    alertsSettingPushbulletContainer: document.getElementById('alerts-setting-pushbullet-container'),
-    
-    alertsSettingIftttEnabled: document.getElementById('alerts-setting-ifttt-enabled'),
-    alertsSettingIftttKey: document.getElementById('alerts-setting-ifttt-key'),
-    alertsSettingIftttEvent: document.getElementById('alerts-setting-ifttt-event'),
-    alertsSettingIftttContainer: document.getElementById('alerts-setting-ifttt-container'),
-    
-    alertsSettingRocketchatEnabled: document.getElementById('alerts-setting-rocketchat-enabled'),
-    alertsSettingRocketchatWebhook: document.getElementById('alerts-setting-rocketchat-webhook'),
-    alertsSettingRocketchatContainer: document.getElementById('alerts-setting-rocketchat-container'),
-    
+    alertsFields: document.getElementById('alerts-fields'),
     alertsSettingsPanel: document.getElementById('alerts-settings-panel'),
     alertsSettingsSaveBtn: document.getElementById('alerts-settings-save-btn'),
     alertsSettingsMessage: document.getElementById('alerts-settings-message'),
@@ -599,16 +548,6 @@ function initApp() {
     
     // Alerts listeners
     el.alertsSettingsForm.addEventListener('submit', saveAlertSettings);
-    el.alertsSettingDiscordEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingDiscordEnabled, el.alertsSettingDiscordContainer));
-    el.alertsSettingTelegramEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingTelegramEnabled, el.alertsSettingTelegramContainer));
-    el.alertsSettingEmailEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingEmailEnabled, el.alertsSettingEmailContainer));
-    if (el.alertsSettingNtfyEnabled) el.alertsSettingNtfyEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingNtfyEnabled, el.alertsSettingNtfyContainer));
-    if (el.alertsSettingSlackEnabled) el.alertsSettingSlackEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingSlackEnabled, el.alertsSettingSlackContainer));
-    if (el.alertsSettingMatrixEnabled) el.alertsSettingMatrixEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingMatrixEnabled, el.alertsSettingMatrixContainer));
-    if (el.alertsSettingPushoverEnabled) el.alertsSettingPushoverEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingPushoverEnabled, el.alertsSettingPushoverContainer));
-    if (el.alertsSettingPushbulletEnabled) el.alertsSettingPushbulletEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletContainer));
-    if (el.alertsSettingIftttEnabled) el.alertsSettingIftttEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingIftttEnabled, el.alertsSettingIftttContainer));
-    if (el.alertsSettingRocketchatEnabled) el.alertsSettingRocketchatEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatContainer));
     
     el.backupsSettingAutoBackupEnabled.addEventListener('change', () => {
         if (el.backupsSettingAutoBackupEnabled.checked) {
@@ -3239,23 +3178,10 @@ function hasPerm(permission) {
 }
 
 function setAlertFieldsDisabled(disabled) {
-    const alertElements = [
-        el.alertsSettingDiscordEnabled, el.alertsSettingDiscordWebhook,
-        el.alertsSettingTelegramEnabled, el.alertsSettingTelegramToken, el.alertsSettingTelegramChatid,
-        el.alertsSettingEmailEnabled, el.alertsSettingEmailSmtp, el.alertsSettingEmailPort, el.alertsSettingEmailUser, el.alertsSettingEmailPass, el.alertsSettingEmailDest,
-        el.alertsSettingNtfyEnabled, el.alertsSettingNtfyUrl, el.alertsSettingNtfyTopic, el.alertsSettingNtfyToken,
-        el.alertsSettingSlackEnabled, el.alertsSettingSlackWebhook,
-        el.alertsSettingMatrixEnabled, el.alertsSettingMatrixHomeserver, el.alertsSettingMatrixRoomid, el.alertsSettingMatrixToken,
-        el.alertsSettingPushoverEnabled, el.alertsSettingPushoverToken, el.alertsSettingPushoverUser,
-        el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletToken, el.alertsSettingPushbulletChannel,
-        el.alertsSettingIftttEnabled, el.alertsSettingIftttKey, el.alertsSettingIftttEvent,
-        el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatWebhook,
-        el.alertsSettingsSaveBtn
-    ];
-    alertElements.forEach(elem => {
-        if (elem) elem.disabled = disabled;
-    });
+    if (el.alertsFields) el.alertsFields.querySelectorAll('input, select').forEach(i => { i.disabled = disabled; });
+    if (el.alertsSettingsSaveBtn) el.alertsSettingsSaveBtn.disabled = disabled;
 }
+
 
 // -------------------------------------------------------------
 // Config Editor Mode & Parsing Helpers
@@ -5966,75 +5892,96 @@ function toggleContainer(checkbox, container) {
     }
 }
 
+// Alert settings are LinuxGSM variables; the server sends the services with their fields, the
+// values the user set (secrets masked), LinuxGSM's defaults and the file each value comes from.
+const ALERT_SERVICE_NAMES = {
+    discord: 'Discord', email: 'E-Mail', gotify: 'Gotify', ifttt: 'IFTTT', matrix: 'Matrix', ntfy: 'ntfy',
+    pushbullet: 'Pushbullet', pushover: 'Pushover', rocketchat: 'Rocket.Chat', slack: 'Slack', telegram: 'Telegram'
+};
+const ALERT_FIELD_LABELS = {
+    statusalert: ['Alert on start, stop and restart', 'Bei Start, Stopp und Neustart benachrichtigen'],
+    postalert: ['Attach details (post to termbin.com)', 'Details anhängen (Upload zu termbin.com)'],
+    displayip: ['IP address shown in alerts', 'In Benachrichtigungen angezeigte IP-Adresse'],
+    discordwebhook: ['Webhook URL', 'Webhook-URL'],
+    email: ['Recipient (sent with the local mail command)', 'Empfänger (Versand über den lokalen mail-Befehl)'],
+    emailfrom: ['Sender (optional)', 'Absender (optional)'],
+    gotifytoken: ['App token', 'App-Token'], gotifywebhook: ['Server URL', 'Server-URL'],
+    ifttttoken: ['Webhooks key', 'Webhooks-Key'], iftttevent: ['Event name', 'Event-Name'],
+    matrixhomeserver: ['Homeserver', 'Homeserver'], matrixtoken: ['Access token', 'Access-Token'], matrixroom: ['Room ID', 'Raum-ID'],
+    ntfyserver: ['Server', 'Server'], ntfytopic: ['Topic', 'Topic'], ntfytoken: ['Access token (optional)', 'Access-Token (optional)'],
+    ntfyusername: ['User name (optional)', 'Benutzername (optional)'], ntfypassword: ['Password (optional)', 'Passwort (optional)'],
+    ntfypriority: ['Priority (optional)', 'Priorität (optional)'], ntfytags: ['Tags (optional)', 'Tags (optional)'],
+    pushbullettoken: ['Access token', 'Access-Token'], channeltag: ['Channel tag (optional)', 'Channel-Tag (optional)'],
+    pushovertoken: ['App token', 'App-Token'], pushoveruserkey: ['User key', 'User-Key'],
+    rocketchatwebhook: ['Webhook URL', 'Webhook-URL'], slackwebhook: ['Webhook URL', 'Webhook-URL'],
+    telegramtoken: ['Bot token', 'Bot-Token'], telegramchatid: ['Chat ID', 'Chat-ID'],
+    telegramthreadid: ['Thread ID (optional)', 'Thread-ID (optional)'], telegramapi: ['API host', 'API-Host']
+};
+let alertSettingsLoadedFor = '';
+
+function alertLabel(key) {
+    const l = ALERT_FIELD_LABELS[key];
+    return l ? (state.language === 'de' ? l[1] : l[0]) : key;
+}
+
+// A value from common.cfg applies to every instance in the directory; the file is shown.
+function alertSourceNote(sources, key) {
+    const src = sources[key];
+    if (!src || !src.includes('common')) return '';
+    return ` <small class="text-muted">(${escapeHtml(src)})</small>`;
+}
+
+function alertInputHtml(f, values, defaults, sources) {
+    const id = `alerts-field-${f.key}`;
+    const placeholder = f.secret ? '' : (defaults[f.key] || '');
+    return `<label for="${id}" style="font-size:0.85rem; display:block;" class="mt-2">${escapeHtml(alertLabel(f.key))}${alertSourceNote(sources, f.key)}</label>
+        <input type="${f.secret ? 'password' : 'text'}" id="${id}" data-alert-key="${escapeHtml(f.key)}" class="form-control mt-1"
+            value="${escapeHtml(values[f.key] || '')}" placeholder="${escapeHtml(placeholder)}" autocomplete="off">`;
+}
+
+function renderAlertFields(data) {
+    const values = data.values || {}, defaults = data.defaults || {}, sources = data.sources || {};
+    const isOn = (key) => (values[key] ?? defaults[key]) === 'on';
+    let html = '';
+    (data.services || []).forEach(svc => {
+        const fields = svc.fields || [];
+        const general = svc.id === 'general';
+        html += `<div class="form-group mb-3" data-alert-service="${escapeHtml(svc.id)}">`;
+        if (general) {
+            html += `<div style="font-weight:600; margin-bottom:0.25rem;">${state.language === 'de' ? 'Allgemein' : 'General'}</div>`;
+            fields.forEach(f => {
+                html += f.switch
+                    ? `<label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;"><input type="checkbox" data-alert-key="${escapeHtml(f.key)}" ${isOn(f.key) ? 'checked' : ''}> <span>${escapeHtml(alertLabel(f.key))}</span>${alertSourceNote(sources, f.key)}</label>`
+                    : alertInputHtml(f, values, defaults, sources);
+            });
+        } else if (fields.length) {
+            const sw = fields[0];
+            const name = ALERT_SERVICE_NAMES[svc.id] || svc.id;
+            html += `<label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;"><input type="checkbox" data-alert-key="${escapeHtml(sw.key)}" ${isOn(sw.key) ? 'checked' : ''}> <span>${escapeHtml(name)}${state.language === 'de' ? '-Alerts' : ' alerts'}</span>${alertSourceNote(sources, sw.key)}</label>`;
+            html += `<div class="mt-2${isOn(sw.key) ? '' : ' hidden'}" data-alert-details>`;
+            fields.slice(1).forEach(f => { html += alertInputHtml(f, values, defaults, sources); });
+            html += '</div>';
+        }
+        html += '</div>';
+    });
+    el.alertsFields.innerHTML = html;
+    el.alertsFields.querySelectorAll('[data-alert-service]').forEach(group => {
+        const sw = group.querySelector('input[type=checkbox]');
+        const details = group.querySelector('[data-alert-details]');
+        if (sw && details) sw.addEventListener('change', () => details.classList.toggle('hidden', !sw.checked));
+    });
+}
+
 async function loadAlertSettings() {
     const serverId = el.settingsServerSelect.value;
     if (!serverId) return;
-    
+    alertSettingsLoadedFor = '';
     try {
-        const res = await apiFetch(`/api/servers/${serverId}/alerts`);
-        if (res.status === 200) {
-            const data = await res.json();
-            
-            el.alertsSettingDiscordEnabled.checked = !!data.discord_enabled;
-            el.alertsSettingDiscordWebhook.value = data.discord_webhook || '';
-            toggleContainer(el.alertsSettingDiscordEnabled, el.alertsSettingDiscordContainer);
-            
-            el.alertsSettingTelegramEnabled.checked = !!data.telegram_enabled;
-            el.alertsSettingTelegramToken.value = data.telegram_token || '';
-            el.alertsSettingTelegramChatid.value = data.telegram_chatid || '';
-            toggleContainer(el.alertsSettingTelegramEnabled, el.alertsSettingTelegramContainer);
-            
-            el.alertsSettingEmailEnabled.checked = !!data.email_enabled;
-            el.alertsSettingEmailSmtp.value = data.email_smtp || '';
-            el.alertsSettingEmailPort.value = data.email_port || '';
-            el.alertsSettingEmailUser.value = data.email_user || '';
-            el.alertsSettingEmailPass.value = data.email_pass || '';
-            el.alertsSettingEmailDest.value = data.email_dest || '';
-            toggleContainer(el.alertsSettingEmailEnabled, el.alertsSettingEmailContainer);
-            
-            if (el.alertsSettingNtfyEnabled) {
-                el.alertsSettingNtfyEnabled.checked = !!data.ntfy_enabled;
-                el.alertsSettingNtfyUrl.value = data.ntfy_url || '';
-                el.alertsSettingNtfyTopic.value = data.ntfy_topic || '';
-                el.alertsSettingNtfyToken.value = data.ntfy_authtoken || '';
-                toggleContainer(el.alertsSettingNtfyEnabled, el.alertsSettingNtfyContainer);
-            }
-            if (el.alertsSettingSlackEnabled) {
-                el.alertsSettingSlackEnabled.checked = !!data.slack_enabled;
-                el.alertsSettingSlackWebhook.value = data.slack_webhook || '';
-                toggleContainer(el.alertsSettingSlackEnabled, el.alertsSettingSlackContainer);
-            }
-            if (el.alertsSettingMatrixEnabled) {
-                el.alertsSettingMatrixEnabled.checked = !!data.matrix_enabled;
-                el.alertsSettingMatrixHomeserver.value = data.matrix_homeserver || '';
-                el.alertsSettingMatrixRoomid.value = data.matrix_roomid || '';
-                el.alertsSettingMatrixToken.value = data.matrix_accesstoken || '';
-                toggleContainer(el.alertsSettingMatrixEnabled, el.alertsSettingMatrixContainer);
-            }
-            if (el.alertsSettingPushoverEnabled) {
-                el.alertsSettingPushoverEnabled.checked = !!data.pushover_enabled;
-                el.alertsSettingPushoverToken.value = data.pushover_token || '';
-                el.alertsSettingPushoverUser.value = data.pushover_user || '';
-                toggleContainer(el.alertsSettingPushoverEnabled, el.alertsSettingPushoverContainer);
-            }
-            if (el.alertsSettingPushbulletEnabled) {
-                el.alertsSettingPushbulletEnabled.checked = !!data.pushbullet_enabled;
-                el.alertsSettingPushbulletToken.value = data.pushbullet_token || '';
-                el.alertsSettingPushbulletChannel.value = data.pushbullet_channel || '';
-                toggleContainer(el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletContainer);
-            }
-            if (el.alertsSettingIftttEnabled) {
-                el.alertsSettingIftttEnabled.checked = !!data.ifttt_enabled;
-                el.alertsSettingIftttKey.value = data.ifttt_key || '';
-                el.alertsSettingIftttEvent.value = data.ifttt_event || '';
-                toggleContainer(el.alertsSettingIftttEnabled, el.alertsSettingIftttContainer);
-            }
-            if (el.alertsSettingRocketchatEnabled) {
-                el.alertsSettingRocketchatEnabled.checked = !!data.rocketchat_enabled;
-                el.alertsSettingRocketchatWebhook.value = data.rocketchat_webhook || '';
-                toggleContainer(el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatContainer);
-            }
-        }
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/alerts`);
+        if (res.status !== 200 || el.settingsServerSelect.value !== serverId) return;
+        renderAlertFields(await res.json());
+        alertSettingsLoadedFor = serverId;
+        setAlertFieldsDisabled(serverWriteLocked(serverId));
     } catch (err) {
         console.error('Error loading alert settings:', err);
     }
@@ -6042,82 +5989,33 @@ async function loadAlertSettings() {
 
 async function saveAlertSettings(e) {
     if (e) e.preventDefault();
-    
     const serverId = el.settingsServerSelect.value;
-    if (!serverId) return;
-    
+    // Never save a form that was loaded for another server or did not load at all.
+    if (!serverId || alertSettingsLoadedFor !== serverId) return;
+
     el.alertsSettingsMessage.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
     el.alertsSettingsMessage.className = 'info-message text-muted';
     el.alertsSettingsSaveBtn.disabled = true;
-    
+    const values = {};
+    el.alertsFields.querySelectorAll('[data-alert-key]').forEach(input => {
+        values[input.dataset.alertKey] = input.type === 'checkbox' ? (input.checked ? 'on' : 'off') : input.value.trim();
+    });
     try {
-        const payload = {
-            discord_enabled: el.alertsSettingDiscordEnabled.checked,
-            discord_webhook: el.alertsSettingDiscordWebhook.value.trim(),
-            telegram_enabled: el.alertsSettingTelegramEnabled.checked,
-            telegram_token: el.alertsSettingTelegramToken.value.trim(),
-            telegram_chatid: el.alertsSettingTelegramChatid.value.trim(),
-            email_enabled: el.alertsSettingEmailEnabled.checked,
-            email_smtp: el.alertsSettingEmailSmtp.value.trim(),
-            email_port: el.alertsSettingEmailPort.value.trim(),
-            email_user: el.alertsSettingEmailUser.value.trim(),
-            email_pass: el.alertsSettingEmailPass.value.trim(),
-            email_dest: el.alertsSettingEmailDest.value.trim()
-        };
-
-        if (el.alertsSettingNtfyEnabled) {
-            payload.ntfy_enabled = el.alertsSettingNtfyEnabled.checked;
-            payload.ntfy_url = el.alertsSettingNtfyUrl.value.trim();
-            payload.ntfy_topic = el.alertsSettingNtfyTopic.value.trim();
-            payload.ntfy_authtoken = el.alertsSettingNtfyToken.value.trim();
-        }
-        if (el.alertsSettingSlackEnabled) {
-            payload.slack_enabled = el.alertsSettingSlackEnabled.checked;
-            payload.slack_webhook = el.alertsSettingSlackWebhook.value.trim();
-        }
-        if (el.alertsSettingMatrixEnabled) {
-            payload.matrix_enabled = el.alertsSettingMatrixEnabled.checked;
-            payload.matrix_homeserver = el.alertsSettingMatrixHomeserver.value.trim();
-            payload.matrix_roomid = el.alertsSettingMatrixRoomid.value.trim();
-            payload.matrix_accesstoken = el.alertsSettingMatrixToken.value.trim();
-        }
-        if (el.alertsSettingPushoverEnabled) {
-            payload.pushover_enabled = el.alertsSettingPushoverEnabled.checked;
-            payload.pushover_token = el.alertsSettingPushoverToken.value.trim();
-            payload.pushover_user = el.alertsSettingPushoverUser.value.trim();
-        }
-        if (el.alertsSettingPushbulletEnabled) {
-            payload.pushbullet_enabled = el.alertsSettingPushbulletEnabled.checked;
-            payload.pushbullet_token = el.alertsSettingPushbulletToken.value.trim();
-            payload.pushbullet_channel = el.alertsSettingPushbulletChannel.value.trim();
-        }
-        if (el.alertsSettingIftttEnabled) {
-            payload.ifttt_enabled = el.alertsSettingIftttEnabled.checked;
-            payload.ifttt_key = el.alertsSettingIftttKey.value.trim();
-            payload.ifttt_event = el.alertsSettingIftttEvent.value.trim();
-        }
-        if (el.alertsSettingRocketchatEnabled) {
-            payload.rocketchat_enabled = el.alertsSettingRocketchatEnabled.checked;
-            payload.rocketchat_webhook = el.alertsSettingRocketchatWebhook.value.trim();
-        }
-
-        const res = await apiFetch(`/api/servers/${serverId}/alerts`, {
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/alerts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ values })
         });
-        
         el.alertsSettingsSaveBtn.disabled = false;
         if (res.status === 200) {
             el.alertsSettingsMessage.textContent = state.language === 'de' ? 'Benachrichtigungs-Einstellungen erfolgreich gespeichert.' : 'Alert settings saved successfully.';
             el.alertsSettingsMessage.className = 'info-message text-success';
             setTimeout(() => {
-                if (el.settingsServerSelect.value === serverId) {
-                    el.alertsSettingsMessage.textContent = '';
-                }
+                if (el.settingsServerSelect.value === serverId) el.alertsSettingsMessage.textContent = '';
             }, 3000);
+            loadAlertSettings();
         } else {
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
             el.alertsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || 'Unknown error');
             el.alertsSettingsMessage.className = 'info-message text-danger';
         }
@@ -6130,32 +6028,8 @@ async function saveAlertSettings(e) {
 }
 
 function resetSettingsAlerts() {
-    const alertsFields = [
-        [el.alertsSettingDiscordEnabled, el.alertsSettingDiscordWebhook, el.alertsSettingDiscordContainer],
-        [el.alertsSettingTelegramEnabled, el.alertsSettingTelegramToken, el.alertsSettingTelegramContainer, el.alertsSettingTelegramChatid],
-        [el.alertsSettingEmailEnabled, el.alertsSettingEmailSmtp, el.alertsSettingEmailContainer, el.alertsSettingEmailPort, el.alertsSettingEmailUser, el.alertsSettingEmailPass, el.alertsSettingEmailDest],
-        [el.alertsSettingNtfyEnabled, el.alertsSettingNtfyUrl, el.alertsSettingNtfyContainer, el.alertsSettingNtfyTopic, el.alertsSettingNtfyToken],
-        [el.alertsSettingSlackEnabled, el.alertsSettingSlackWebhook, el.alertsSettingSlackContainer],
-        [el.alertsSettingMatrixEnabled, el.alertsSettingMatrixHomeserver, el.alertsSettingMatrixContainer, el.alertsSettingMatrixRoomid, el.alertsSettingMatrixToken],
-        [el.alertsSettingPushoverEnabled, el.alertsSettingPushoverToken, el.alertsSettingPushoverContainer, el.alertsSettingPushoverUser],
-        [el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletToken, el.alertsSettingPushbulletContainer, el.alertsSettingPushbulletChannel],
-        [el.alertsSettingIftttEnabled, el.alertsSettingIftttKey, el.alertsSettingIftttContainer, el.alertsSettingIftttEvent],
-        [el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatWebhook, el.alertsSettingRocketchatContainer]
-    ];
-
-    alertsFields.forEach(group => {
-        group.forEach(elem => {
-            if (!elem) return;
-            if (elem.tagName === 'INPUT') {
-                elem.disabled = true;
-                if (elem.type === 'checkbox') elem.checked = false;
-                else elem.value = '';
-            } else if (elem.classList && elem.classList.contains('mt-2')) {
-                elem.classList.add('hidden');
-            }
-        });
-    });
-
+    alertSettingsLoadedFor = '';
+    if (el.alertsFields) el.alertsFields.innerHTML = '';
     el.alertsSettingsSaveBtn.disabled = true;
     el.alertsSettingsMessage.textContent = '';
 }

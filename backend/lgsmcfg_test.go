@@ -57,9 +57,7 @@ func TestInstanceSettingsUseLinuxGSMConfigDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	alerts, _ := im.GetAlertSettings("vhserver-2")
-	alerts.DiscordEnabled, alerts.DiscordWebhook = true, "https://new"
-	if err := im.SaveAlertSettings("vhserver-2", alerts); err != nil {
+	if err := im.SaveAlertSettings("vhserver-2", map[string]string{"discordalert": "on", "discordwebhook": "https://new"}); err != nil {
 		t.Fatal(err)
 	}
 

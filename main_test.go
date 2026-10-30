@@ -396,7 +396,7 @@ func TestAlertsPermissionAndSecretMasking(t *testing.T) {
 	if rec := e.do(&operator, http.MethodGet, "/api/servers/srv1/alerts", nil); !isPermissionDenied(rec) {
 		t.Errorf("alerts read without permission: %d", rec.Code)
 	}
-	if rec := e.do(&operator, http.MethodPost, "/api/servers/srv1/alerts", map[string]interface{}{"discord_webhook": "https://evil"}); !isPermissionDenied(rec) {
+	if rec := e.do(&operator, http.MethodPost, "/api/servers/srv1/alerts", map[string]interface{}{"values": map[string]string{"discordwebhook": "https://evil"}}); !isPermissionDenied(rec) {
 		t.Errorf("alerts write without permission: %d", rec.Code)
 	}
 
@@ -405,8 +405,10 @@ func TestAlertsPermissionAndSecretMasking(t *testing.T) {
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "SECRET-WEBHOOK") || !strings.Contains(rec.Body.String(), backend.SecretMask) {
 		t.Fatalf("secret leaked or not masked: %s", rec.Body.String())
 	}
-	if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/alerts", map[string]interface{}{"discord_webhook": `x"; id; "`}); rec.Code != http.StatusBadRequest {
-		t.Errorf("config injection via alerts: %d", rec.Code)
+	for _, bad := range []map[string]string{{"discordwebhook": "x\nid"}, {"evil": "x"}, {"discordalert": "yes"}} {
+		if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/alerts", map[string]interface{}{"values": bad}); rec.Code != http.StatusBadRequest {
+			t.Errorf("invalid alert values %v accepted: %d", bad, rec.Code)
+		}
 	}
 }
 

@@ -833,3 +833,19 @@ func (im *InstanceManager) SetFastDLMode(serverID, mode string) error {
 	}
 	return WriteFileAtomic(filepath.Join(im.configDir, fastdlSettingsFileName), data, 0600)
 }
+
+// writeServerFilePerm is writeServerFile with the mode for a new file; an existing file keeps
+// its mode.
+func writeServerFilePerm(srv GameServerInstance, rel string, data []byte, perm os.FileMode) error {
+	target, err := ResolveInRoot(srv.Dir, rel)
+	if err != nil {
+		return err
+	}
+	if err := mkdirAllForServer(srv, filepath.Dir(target)); err != nil {
+		return err
+	}
+	if target, err = ResolveInRoot(srv.Dir, rel); err != nil {
+		return err
+	}
+	return writeResolvedFile(srv, target, data, perm)
+}

