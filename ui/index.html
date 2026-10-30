@@ -819,35 +819,7 @@
                             <h3 style="margin-top:0; margin-bottom:0.5rem;" data-i18n="cron-builder-title">Visueller Crontab-Scheduler</h3>
                             <p class="text-muted" style="font-size:0.85rem; margin-bottom:1.5rem;" data-i18n="cron-builder-desc">Konfiguriere automatische Intervall-Aufgaben für diesen Server.</p>
                             <form id="cron-builder-form" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem;">
-                                <div>
-                                    <label style="font-size:0.85rem; font-weight:600;" data-i18n="cron-monitor-label">Crash-Monitoring Intervall</label>
-                                    <select id="cron-monitor-select" class="form-control mt-1">
-                                        <option value="5" data-i18n="cron-option-5m">Alle 5 Minuten</option>
-                                        <option value="10" data-i18n="cron-option-10m">Alle 10 Minuten</option>
-                                        <option value="15" data-i18n="cron-option-15m">Alle 15 Minuten</option>
-                                        <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label style="font-size:0.85rem; font-weight:600;" data-i18n="cron-update-label">Auto-Update Check Intervall</label>
-                                    <select id="cron-update-select" class="form-control mt-1">
-                                        <option value="30" data-i18n="cron-option-30m">Alle 30 Minuten</option>
-                                        <option value="60" data-i18n="cron-option-1h">Jede Stunde</option>
-                                        <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label style="font-size:0.85rem; font-weight:600;" data-i18n="cron-restart-label">Täglicher Neustart / Force-Update</label>
-                                    <input type="time" id="cron-restart-time" class="form-control mt-1" value="04:30">
-                                </div>
-                                <div>
-                                    <label style="font-size:0.85rem; font-weight:600;" data-i18n="cron-core-label">Wöchentliches LGSM Update</label>
-                                    <select id="cron-core-select" class="form-control mt-1">
-                                        <option value="0" data-i18n="cron-option-sunday">Sonntags um 00:00 Uhr</option>
-                                        <option value="1" data-i18n="cron-option-monday">Montags um 00:00 Uhr</option>
-                                        <option value="" data-i18n="cron-option-disabled">Deaktiviert</option>
-                                    </select>
-                                </div>
+                                <div id="cron-jobs" style="display: contents;"></div>
                                 <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
                                     <span id="cron-builder-message" class="info-message" style="font-size: 0.8rem;"></span>
                                     <button type="submit" class="btn btn-success" id="btn-save-cron-schedule" data-i18n="btn-save-schedule">Zeitplan in Crontab speichern</button>

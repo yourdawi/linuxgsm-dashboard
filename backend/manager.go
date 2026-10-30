@@ -86,11 +86,11 @@ type BackupSettings struct {
 	AutoBackupCron    string `json:"autobackup_cron"`
 }
 
+// CronSchedule maps LinuxGSM commands (monitor, update, force-update, restart, update-lgsm) to
+// their cron expression; "" means not scheduled. Available lists the commands the game has.
 type CronSchedule struct {
-	MonitorInterval string `json:"monitor_interval"`
-	UpdateInterval  string `json:"update_interval"`
-	RestartTime     string `json:"restart_time"`
-	CoreUpdateDay   string `json:"core_update_day"`
+	Jobs      map[string]string `json:"jobs"`
+	Available []string          `json:"available,omitempty"`
 }
 
 type InstanceManager struct {

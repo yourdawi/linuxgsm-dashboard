@@ -378,14 +378,14 @@ func TestConsoleAndRconRequireConsolePermission(t *testing.T) {
 func TestCronWriteRequiresSchedulePermission(t *testing.T) {
 	e := newTestEnv(t)
 	viewer := e.login("viewer")
-	if rec := e.do(&viewer, http.MethodPost, "/api/servers/srv1/cron", map[string]string{"monitor_interval": "5"}); !isPermissionDenied(rec) {
+	if rec := e.do(&viewer, http.MethodPost, "/api/servers/srv1/cron", map[string]interface{}{"jobs": map[string]string{"monitor": "*/5 * * * *"}}); !isPermissionDenied(rec) {
 		t.Errorf("viewer cron write: %d", rec.Code)
 	}
 	if rec := e.do(&viewer, http.MethodPost, "/api/servers/srv1/cron/install", "{}"); !isPermissionDenied(rec) {
 		t.Errorf("viewer cron install: %d", rec.Code)
 	}
 	full := e.login("full")
-	if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/cron", map[string]string{"monitor_interval": "5 * * * * id #"}); rec.Code != http.StatusBadRequest {
+	if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/cron", map[string]interface{}{"jobs": map[string]string{"monitor": "5 * * * * id #"}}); rec.Code != http.StatusBadRequest {
 		t.Errorf("cron injection: %d", rec.Code)
 	}
 }

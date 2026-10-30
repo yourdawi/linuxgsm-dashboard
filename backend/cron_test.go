@@ -144,14 +144,14 @@ func TestDockerSchedulerRunsDueCommands(t *testing.T) {
 	srv := GameServerInstance{ID: "vh1", Script: "vhserver", Dir: "/srv/lgsm/vh1", Layout: LayoutData, Name: "Valheim"}
 	im := NewStaticInstanceManager(t.TempDir(), srv)
 	im.rt = d
-	if err := im.SaveCronSchedule("vh1", CronSchedule{UpdateInterval: "15", RestartTime: "04:30"}); err != nil {
+	if err := im.SaveCronSchedule("vh1", CronSchedule{Jobs: map[string]string{"update": "*/15 * * * *", "restart": "30 4 * * *"}}); err != nil {
 		t.Fatal(err)
 	}
-	if sched, err := im.GetCronSchedule("vh1"); err != nil || sched.UpdateInterval != "15" || sched.RestartTime != "04:30" || sched.MonitorInterval != "" {
+	if sched, err := im.GetCronSchedule("vh1"); err != nil || sched.Jobs["update"] != "*/15 * * * *" || sched.Jobs["restart"] != "30 4 * * *" || sched.Jobs["monitor"] != "" {
 		t.Fatalf("schedule not read back: %+v %v", sched, err)
 	}
 	content, _ := d.ReadCrontab(srv)
-	if !strings.Contains(content, "*/15 * * * * /app/vhserver update") || !strings.Contains(content, "30 4 * * * /app/vhserver force-update") {
+	if !strings.Contains(content, "*/15 * * * * /app/vhserver update") || !strings.Contains(content, "30 4 * * * /app/vhserver restart") {
 		t.Fatalf("unexpected schedule file:\n%s", content)
 	}
 
@@ -162,7 +162,7 @@ func TestDockerSchedulerRunsDueCommands(t *testing.T) {
 		cmds = append(cmds, c.Container+" "+c.User+" "+c.WorkingDir+" "+strings.Join(c.Cmd, " "))
 	}
 	got := strings.Join(cmds, ",")
-	if got != "vh1 linuxgsm /app ./vhserver update,vh1 linuxgsm /app ./vhserver force-update" {
+	if got != "vh1 linuxgsm /app ./vhserver update,vh1 linuxgsm /app ./vhserver restart" {
 		t.Fatalf("unexpected scheduled commands: %s", got)
 	}
 }

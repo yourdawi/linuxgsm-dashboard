@@ -402,10 +402,7 @@ const el = {
     btnBulkUpdate: document.getElementById('btn-bulk-update'),
     filterTagSelect: document.getElementById('filter-tag-select'),
 
-    cronMonitorSelect: document.getElementById('cron-monitor-select'),
-    cronUpdateSelect: document.getElementById('cron-update-select'),
-    cronRestartTime: document.getElementById('cron-restart-time'),
-    cronCoreSelect: document.getElementById('cron-core-select'),
+    cronJobs: document.getElementById('cron-jobs'),
     cronBuilderForm: document.getElementById('cron-builder-form'),
     cronBuilderMessage: document.getElementById('cron-builder-message'),
 
@@ -3146,10 +3143,7 @@ WantedBy=multi-user.target`;
 # 2. ${isDe ? 'Automatische Updateprüfung (alle 30 Minuten, startet bei Update neu)' : 'Automatic update check (every 30 minutes, restarts on update)'}
 */30 * * * * ${serverDir}/${server.script} update > /dev/null 2>&1
 
-# 3. ${isDe ? 'Täglicher Updatecheck & Neustart um 04:30 Uhr nachts' : 'Daily update check & restart at 04:30 AM'}
-30 4 * * * ${serverDir}/${server.script} force-update > /dev/null 2>&1
-
-# 4. ${isDe ? 'Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)' : 'Weekly update of LinuxGSM itself (every Sunday at 00:00 AM)'}
+# 3. ${isDe ? 'Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)' : 'Weekly update of LinuxGSM itself (every Sunday at 00:00 AM)'}
 0 0 * * 0 ${serverDir}/${server.script} update-lgsm > /dev/null 2>&1`;
 
     if (el.templateSystemd) el.templateSystemd.textContent = systemdCode;
@@ -6350,17 +6344,63 @@ async function sendRconCommand(serverId, command) {
     }
 }
 
+// Scheduler: one cron expression per LinuxGSM command. Presets fill the expression; anything
+// else stays as "custom", so the form never changes a job it cannot show.
+const CRON_JOB_PRESETS = {
+    'monitor': [['*/5 * * * *', 'Every 5 minutes', 'Alle 5 Minuten'], ['*/10 * * * *', 'Every 10 minutes', 'Alle 10 Minuten'], ['*/15 * * * *', 'Every 15 minutes', 'Alle 15 Minuten']],
+    'update': [['*/30 * * * *', 'Every 30 minutes', 'Alle 30 Minuten'], ['0 * * * *', 'Every hour', 'Jede Stunde'], ['0 */6 * * *', 'Every 6 hours', 'Alle 6 Stunden']],
+    'force-update': [['30 4 * * *', 'Daily at 04:30', 'Täglich um 04:30'], ['0 5 * * *', 'Daily at 05:00', 'Täglich um 05:00']],
+    'restart': [['30 4 * * *', 'Daily at 04:30', 'Täglich um 04:30'], ['0 6 * * *', 'Daily at 06:00', 'Täglich um 06:00']],
+    'update-lgsm': [['0 0 * * 0', 'Sundays at 00:00', 'Sonntags um 00:00'], ['0 0 * * 1', 'Mondays at 00:00', 'Montags um 00:00']]
+};
+const CRON_JOB_LABELS = {
+    'monitor': ['Crash monitor (monitor)', 'Absturz-Überwachung (monitor)'],
+    'update': ['Update check (update)', 'Update-Prüfung (update)'],
+    'force-update': ['Forced update and restart (force-update)', 'Erzwungenes Update mit Neustart (force-update)'],
+    'restart': ['Restart (restart)', 'Neustart (restart)'],
+    'update-lgsm': ['LinuxGSM update (update-lgsm)', 'LinuxGSM-Update (update-lgsm)']
+};
+let cronLoaded = { serverId: '', jobs: {} };
+
+function renderCronJobs(data) {
+    const de = state.language === 'de';
+    const jobs = data.jobs || {};
+    let html = '';
+    (data.available || []).forEach(cmd => {
+        const expr = jobs[cmd] || '';
+        const presets = CRON_JOB_PRESETS[cmd] || [];
+        const isPreset = presets.some(p => p[0] === expr);
+        const options = [`<option value="" ${expr === '' ? 'selected' : ''}>${de ? 'Deaktiviert' : 'Disabled'}</option>`]
+            .concat(presets.map(p => `<option value="${escapeHtml(p[0])}" ${p[0] === expr ? 'selected' : ''}>${escapeHtml(de ? p[2] : p[1])}</option>`))
+            .concat([`<option value="custom" ${expr !== '' && !isPreset ? 'selected' : ''}>${de ? 'Eigener Cron-Ausdruck' : 'Custom cron expression'}</option>`]);
+        const label = CRON_JOB_LABELS[cmd] ? CRON_JOB_LABELS[cmd][de ? 1 : 0] : cmd;
+        html += `<div data-cron-job="${escapeHtml(cmd)}">
+            <label style="font-size:0.85rem; font-weight:600;">${escapeHtml(label)}</label>
+            <select class="form-control mt-1" data-cron-select>${options.join('')}</select>
+            <input type="text" class="form-control mt-1${expr !== '' && !isPreset ? '' : ' hidden'}" data-cron-expr value="${escapeHtml(expr)}" placeholder="m h dom mon dow" autocomplete="off">
+        </div>`;
+    });
+    el.cronJobs.innerHTML = html;
+    el.cronJobs.querySelectorAll('[data-cron-job]').forEach(row => {
+        const select = row.querySelector('[data-cron-select]');
+        const input = row.querySelector('[data-cron-expr]');
+        select.addEventListener('change', () => {
+            input.classList.toggle('hidden', select.value !== 'custom');
+            if (select.value !== 'custom') input.value = select.value;
+        });
+    });
+}
+
 async function loadCronSchedule(serverId) {
-    if (!el.cronMonitorSelect) return;
+    if (!el.cronJobs) return;
+    cronLoaded = { serverId: '', jobs: {} };
+    el.cronJobs.innerHTML = '';
     try {
-        const res = await apiFetch(`/api/servers/${serverId}/cron`);
-        if (res.status === 200) {
-            const data = await res.json();
-            el.cronMonitorSelect.value = data.monitor_interval || '';
-            el.cronUpdateSelect.value = data.update_interval || '';
-            el.cronRestartTime.value = data.restart_time || '04:30';
-            el.cronCoreSelect.value = data.core_update_day || '';
-        }
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/cron`);
+        if (res.status !== 200 || el.settingsServerSelect.value !== serverId) return;
+        const data = await res.json();
+        renderCronJobs(data);
+        cronLoaded = { serverId, jobs: data.jobs || {} };
     } catch (e) {
         console.error('Failed to load cron schedule:', e);
     }
@@ -6369,27 +6409,37 @@ async function loadCronSchedule(serverId) {
 async function handleCronBuilderSubmit(e) {
     e.preventDefault();
     const serverId = el.settingsServerSelect.value;
-    if (!serverId) return;
+    // Never save a schedule that was loaded for another server or did not load.
+    if (!serverId || cronLoaded.serverId !== serverId) return;
 
-    const sched = {
-        monitor_interval: el.cronMonitorSelect.value,
-        update_interval: el.cronUpdateSelect.value,
-        restart_time: el.cronRestartTime.value,
-        core_update_day: el.cronCoreSelect.value
-    };
+    // Only the jobs the user changed are sent; the server leaves all others as they are.
+    const jobs = {};
+    el.cronJobs.querySelectorAll('[data-cron-job]').forEach(row => {
+        const cmd = row.dataset.cronJob;
+        const select = row.querySelector('[data-cron-select]');
+        const expr = (select.value === 'custom' ? row.querySelector('[data-cron-expr]').value : select.value).trim();
+        if (expr !== (cronLoaded.jobs[cmd] || '')) jobs[cmd] = expr;
+    });
+    if (Object.keys(jobs).length === 0) {
+        el.cronBuilderMessage.className = 'info-message text-muted';
+        el.cronBuilderMessage.textContent = t('saved');
+        return;
+    }
 
     el.cronBuilderMessage.textContent = t('saving');
     try {
-        const res = await apiFetch(`/api/servers/${serverId}/cron`, {
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/cron`, {
             method: 'POST',
-            body: JSON.stringify(sched)
+            body: JSON.stringify({ jobs })
         });
         if (res.status === 200) {
             el.cronBuilderMessage.className = 'info-message text-success';
             el.cronBuilderMessage.textContent = t('saved');
+            loadCronSchedule(serverId);
         } else {
+            const data = await res.json().catch(() => ({}));
             el.cronBuilderMessage.className = 'info-message text-danger';
-            el.cronBuilderMessage.textContent = t('status-error');
+            el.cronBuilderMessage.textContent = data.error || t('status-error');
         }
     } catch (err) {
         el.cronBuilderMessage.className = 'info-message text-danger';

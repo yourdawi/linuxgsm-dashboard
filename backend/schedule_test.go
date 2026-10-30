@@ -20,25 +20,6 @@ func TestIsValidCronExpr(t *testing.T) {
 	}
 }
 
-func TestValidateCronSchedule(t *testing.T) {
-	if err := ValidateCronSchedule(CronSchedule{MonitorInterval: "5", UpdateInterval: "30", RestartTime: "04:30", CoreUpdateDay: "0"}); err != nil {
-		t.Fatal(err)
-	}
-	bad := []CronSchedule{
-		{MonitorInterval: "5 * * * * /bin/sh -c id #"},
-		{MonitorInterval: "0"},
-		{UpdateInterval: "61"},
-		{RestartTime: "25:00"},
-		{RestartTime: "4:30\n* * * * * id"},
-		{CoreUpdateDay: "8"},
-		{CoreUpdateDay: "1;id"},
-	}
-	for _, s := range bad {
-		if ValidateCronSchedule(s) == nil {
-			t.Errorf("malicious schedule accepted: %+v", s)
-		}
-	}
-}
 
 func TestCronLineCommandExactScriptMatch(t *testing.T) {
 	expr, cmd, ok := cronLineCommand("*/5 * * * * /home/vh/vhserver monitor > /dev/null 2>&1", "/home/vh/vhserver")
