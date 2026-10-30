@@ -24,13 +24,6 @@ const (
 // ErrFileTooLarge is returned when a file exceeds MaxEditableFileSize.
 var ErrFileTooLarge = errors.New("file is too large to be edited in the browser")
 
-// chownToServer hands a file created by root over to the server's Linux user (never follows symlinks).
-func chownToServer(path string, srv GameServerInstance) {
-	if srv.UID > 0 {
-		_ = os.Lchown(path, srv.UID, srv.GID)
-	}
-}
-
 // writeServerFile writes data to rel (relative to the server root) as root without ever following
 // symlinks out of the server directory. Missing parent directories are created and handed to the
 // server user.
@@ -51,35 +44,12 @@ func writeServerFile(srv GameServerInstance, rel string, data []byte) error {
 }
 
 // writeResolvedFile writes data via a temporary file + rename so a symlink planted at target is
-// replaced instead of followed.
+// replaced instead of followed. An existing file keeps its mode.
 func writeResolvedFile(srv GameServerInstance, target string, data []byte, perm os.FileMode) error {
-	if info, err := os.Lstat(target); err == nil {
-		if info.IsDir() {
-			return fmt.Errorf("target is a directory")
-		}
-		perm = info.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".lgsm-dashboard-*")
-	if err != nil {
+	return writeFileNoSymlinks(target, perm, true, srv.UID, srv.GID, func(f *os.File) error {
+		_, err := f.Write(data)
 		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	_ = os.Chmod(tmpName, perm)
-	chownToServer(tmpName, srv)
-	if err := os.Rename(tmpName, target); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	})
 }
 
 // mkdirAllForServer creates dir (which must be inside the server directory) and chowns the newly
@@ -96,20 +66,8 @@ func mkdirAllForServer(srv GameServerInstance, dir string) error {
 	if !IsWithin(root, resolved) {
 		return ErrPathOutsideRoot
 	}
-	var missing []string
-	for p := resolved; p != root && IsWithin(root, p); p = filepath.Dir(p) {
-		if _, err := os.Lstat(p); err == nil {
-			break
-		}
-		missing = append(missing, p)
-	}
-	if err := os.MkdirAll(resolved, 0755); err != nil {
-		return err
-	}
-	for _, p := range missing {
-		chownToServer(p, srv)
-	}
-	return nil
+	// Everything that is missing lies below root, so only directories of the server get created.
+	return mkdirAllNoSymlinks(resolved, 0755, srv.UID, srv.GID)
 }
 
 // readResolvedFileLimited reads an already resolved file with a size limit.
@@ -396,7 +354,7 @@ func (im *InstanceManager) GetServerFiles(serverID string, subPath string) ([]Fi
 		return nil, fmt.Errorf("invalid path")
 	}
 
-	entries, err := os.ReadDir(targetDir)
+	entries, err := readDirNoSymlinks(targetDir)
 	if err != nil {
 		return []FileNode{}, nil
 	}
@@ -528,30 +486,11 @@ func (im *InstanceManager) UploadServerFile(serverID string, subPath string, fil
 
 // streamToResolvedFile copies r into a temp file next to target and renames it into place.
 func streamToResolvedFile(srv GameServerInstance, target string, r io.Reader) error {
-	if info, err := os.Lstat(target); err == nil && info.IsDir() {
-		return fmt.Errorf("target is a directory")
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".lgsm-upload-*")
-	if err != nil {
-		return fmt.Errorf("failed to create file")
-	}
-	tmpName := tmp.Name()
-	if _, err := io.Copy(tmp, r); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+	// Copy errors are returned unchanged: callers recognise a body that exceeded its limit.
+	return writeFileNoSymlinks(target, 0644, false, srv.UID, srv.GID, func(f *os.File) error {
+		_, err := io.Copy(f, r)
 		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	_ = os.Chmod(tmpName, 0644)
-	chownToServer(tmpName, srv)
-	if err := os.Rename(tmpName, target); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("failed to store file")
-	}
-	return nil
+	})
 }
 
 // -------------------------------------------------------------

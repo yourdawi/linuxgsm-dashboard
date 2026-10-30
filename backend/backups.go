@@ -54,26 +54,28 @@ func customBackupDir(srv GameServerInstance) string {
 // backup archives in dir. The backupdir setting is editable by gameserver users, so it must not be
 // able to point at arbitrary system locations: the directory has to be inside the server
 // directory or be owned by the server's Linux user.
-func isAllowedBackupDir(srv GameServerInstance, dir string) bool {
+// The returned directory has its symlinks resolved; it is used with the *NoSymlinks helpers, so
+// swapping it for a symlink after the check makes the access fail.
+func isAllowedBackupDir(srv GameServerInstance, dir string) (string, bool) {
 	if !filepath.IsAbs(dir) {
-		return false
+		return "", false
 	}
 	resolved, err := resolveExisting(filepath.Clean(dir))
 	if err != nil {
-		return false
+		return "", false
 	}
 	if root, err := filepath.EvalSymlinks(srv.Dir); err == nil && IsWithin(root, resolved) {
-		return true
+		return resolved, true
 	}
 	if IsForbiddenServerDir(filepath.ToSlash(resolved)) {
-		return false
+		return "", false
 	}
 	info, err := os.Stat(resolved)
 	if err != nil || !info.IsDir() {
-		return false
+		return "", false
 	}
 	uid, err := fileOwnerUID(resolved)
-	return err == nil && uid >= 0 && uid == srv.UID && srv.UID > 0
+	return resolved, err == nil && uid >= 0 && uid == srv.UID && srv.UID > 0
 }
 
 func (im *InstanceManager) getBackupDirsForServer(srv GameServerInstance) []string {
@@ -93,11 +95,12 @@ func (im *InstanceManager) getBackupDirsForServer(srv GameServerInstance) []stri
 	seen := make(map[string]bool)
 	var uniqueDirs []string
 	for _, d := range dirs {
-		if seen[d] || !isAllowedBackupDir(srv, d) {
+		resolved, ok := isAllowedBackupDir(srv, d)
+		if !ok || seen[resolved] {
 			continue
 		}
-		seen[d] = true
-		uniqueDirs = append(uniqueDirs, d)
+		seen[resolved] = true
+		uniqueDirs = append(uniqueDirs, resolved)
 	}
 	return uniqueDirs
 }
@@ -181,7 +184,7 @@ func (im *InstanceManager) ListBackups(serverID string) ([]BackupFile, error) {
 
 	backups := []BackupFile{}
 	for _, dir := range im.getBackupDirsForServer(srv) {
-		entries, err := os.ReadDir(dir)
+		entries, err := readDirNoSymlinks(dir)
 		if err != nil {
 			continue
 		}
@@ -218,7 +221,7 @@ func (im *InstanceManager) DeleteBackup(serverID, fileName string) error {
 	if err != nil {
 		return err
 	}
-	return os.Remove(filePath)
+	return removeNoSymlinks(filePath)
 }
 
 func (im *InstanceManager) GetBackupPath(serverID, fileName string) (string, error) {
@@ -317,7 +320,7 @@ func ValidateArchive(r io.Reader, format ArchiveFormat, destDir string, limits A
 
 // validateArchive is ValidateArchive with a callback that receives the name of every accepted
 // entry.
-func validateArchive(r io.Reader, format ArchiveFormat, destDir string, limits ArchiveLimits, onEntry func(name string)) error {
+func validateArchive(r io.Reader, format ArchiveFormat, destDir string, limits ArchiveLimits, onEntry func(hdr *tar.Header)) error {
 	var src io.Reader
 	switch format {
 	case ArchiveTarGz:
@@ -384,7 +387,7 @@ func validateArchive(r io.Reader, format ArchiveFormat, destDir string, limits A
 			return fmt.Errorf("%w: invalid size", ErrUnsafeArchive)
 		}
 		if onEntry != nil {
-			onEntry(hdr.Name)
+			onEntry(hdr)
 		}
 		total += hdr.Size
 		if limits.MaxTotalSize > 0 && total > limits.MaxTotalSize {
@@ -452,16 +455,25 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 		sse.exit(1)
 		return
 	}
+	// Only the server data is restored, never dotfiles (.ssh, .bashrc), the LinuxGSM script, its
+	// modules or lock files: the backup permission must not grant a shell as the server user.
 	var members containerRestoreMembers
-	var onEntry func(string)
-	if srv.Layout == LayoutData {
-		onEntry = members.add
+	var skips hostLogSkips
+	if srv.Layout != LayoutData {
+		skips.enabled = isSymlink(filepath.Join(srv.Dir, "log", "server"))
 	}
-	verr := validateArchive(f, format, srv.Dir, DefaultArchiveLimits, onEntry)
-	if verr == nil && srv.Layout == LayoutData && len(members.list) == 0 {
+	verr := validateArchive(f, format, srv.Dir, DefaultArchiveLimits, func(hdr *tar.Header) {
+		members.add(hdr.Name)
+		skips.add(hdr)
+	})
+	if verr == nil && len(members.list) == 0 {
 		verr = fmt.Errorf("the archive contains no server data (serverfiles, log, lgsm/config-lgsm, lgsm/data)")
 	}
 	f.Close()
+	var hostCmds []hostRestoreCommand
+	if verr == nil && srv.Layout != LayoutData {
+		hostCmds, verr = hostRestoreCommands(srv.Dir, format, filePath, members.list, skips.names)
+	}
 	if verr != nil {
 		updateStatus(oldStatus)
 		sse.log(Msg(lang, "Backup archive rejected: ", "Backup-Archiv abgelehnt: ") + verr.Error())
@@ -490,20 +502,22 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 	sse.log(Msg(lang, fmt.Sprintf("Restoring backup archive %s...", fileName), fmt.Sprintf("Stelle Backup-Archiv %s wieder her...", fileName)))
 
 	// Extract with the privileges of the server user (no shell involved on a host).
-	var args []string
 	if srv.Layout == LayoutData {
-		args = members.restoreCommand(format, filePath)
-	} else {
-		args = append([]string{"tar", "--no-same-owner"}, format.tarFlags()...)
-		args = append(args, "-xf", filePath, "-C", srv.Dir)
+		hostCmds = []hostRestoreCommand{{args: members.restoreCommand(format, filePath)}}
 	}
-	var errBuf bytes.Buffer
-	if err := im.rt.RunAsUser(context.Background(), srv, ExecIO{Stderr: &errBuf}, false, args...); err != nil {
-		updateStatus("stopped")
-		sse.log(Msg(lang, "Error during restore: ", "Fehler bei der Wiederherstellung: ") + err.Error())
-		sse.log(stripAnsi(limitString(errBuf.String(), 4000)))
-		sse.exit(1)
-		return
+	for _, c := range hostCmds {
+		var errBuf bytes.Buffer
+		var stdin io.Reader
+		if c.stdin != "" {
+			stdin = strings.NewReader(c.stdin)
+		}
+		if err := im.rt.RunAsUser(context.Background(), srv, ExecIO{Stdin: stdin, Stderr: &errBuf}, false, c.args...); err != nil {
+			updateStatus("stopped")
+			sse.log(Msg(lang, "Error during restore: ", "Fehler bei der Wiederherstellung: ") + err.Error())
+			sse.log(stripAnsi(limitString(errBuf.String(), 4000)))
+			sse.exit(1)
+			return
+		}
 	}
 
 	sse.log(Msg(lang, "Backup files extracted successfully.", "Backup-Dateien erfolgreich entpackt."))
@@ -527,10 +541,102 @@ func limitString(s string, max int) string {
 	return s
 }
 
-// containerRestoreRoots are the parts of a backup made inside a container that hold server
-// data. LinuxGSM archives its root directory (/app in the official images) with symlinks
-// resolved, so the archive also contains the script, modules and node_modules of the image;
-// those are never restored.
+// hostLogSkips collects the members a host restore leaves out. log/server is LinuxGSM's absolute
+// symlink to the game log directory; GNU tar (1.35) refuses to extract through absolute
+// symlinks, and LinuxGSM's tar -h stores those logs a second time there anyway, partly as hard
+// links between both names. So everything below log/server and every hard link to it is left
+// out; only game logs are affected.
+type hostLogSkips struct {
+	enabled bool
+	names   []string
+}
+
+func (h *hostLogSkips) add(hdr *tar.Header) {
+	if !h.enabled || strings.ContainsAny(hdr.Name, "\n\r") {
+		return
+	}
+	if archiveRel(hdr.Name) == "log/server" || underArchiveDir(hdr.Name, "log/server") ||
+		(hdr.Typeflag == tar.TypeLink && underArchiveDir(hdr.Linkname, "log/server")) {
+		h.names = append(h.names, hdr.Name)
+	}
+}
+
+// archiveRel strips the "./" prefixes LinuxGSM's archives use.
+func archiveRel(name string) string {
+	for strings.HasPrefix(name, "./") {
+		name = name[2:]
+	}
+	return strings.TrimSuffix(name, "/")
+}
+
+// underArchiveDir reports whether an archive member name lies below dir.
+func underArchiveDir(name, dir string) bool {
+	return strings.HasPrefix(archiveRel(name), dir+"/")
+}
+
+type hostRestoreCommand struct {
+	args  []string
+	stdin string // exclude list for tar -X -
+}
+
+// hostRestoreCommands builds the tar runs of a host restore. Members whose directory is a
+// symlink on disk (serverfiles on another disk) are extracted into the link target with the
+// prefix stripped, because tar does not extract through absolute symlinks. tar runs as the
+// server user, so it can only write where that user can.
+func hostRestoreCommands(dir string, format ArchiveFormat, archive string, members, excludes []string) ([]hostRestoreCommand, error) {
+	base := append([]string{"tar", "--no-same-owner", "--keep-directory-symlink"}, format.tarFlags()...)
+	stdin := ""
+	if len(excludes) > 0 {
+		// Exact member names: anchored, no wildcards.
+		base = append(base, "--anchored", "--no-wildcards", "-X", "-")
+		stdin = strings.Join(excludes, "\n") + "\n"
+	}
+	var cmds []hostRestoreCommand
+	var direct []string
+	for _, m := range members {
+		rel := archiveRel(m)
+		onDisk := filepath.Join(dir, filepath.FromSlash(rel))
+		if !isSymlink(onDisk) {
+			direct = append(direct, m)
+			continue
+		}
+		target, err := filepath.EvalSymlinks(onDisk)
+		if err != nil {
+			return nil, fmt.Errorf("%s is a symlink that cannot be resolved", rel)
+		}
+		prefix := strings.TrimSuffix(m, rel) // the "./" prefixes of this member
+		expr := "s," + "^" + regexpQuoteSed(prefix+rel) + "/,,"
+		args := append(append([]string{}, base...), "--transform", expr, "-xf", archive, "-C", target, "--", m)
+		cmds = append(cmds, hostRestoreCommand{args: args, stdin: stdin})
+	}
+	if len(direct) > 0 {
+		args := append(append([]string{}, base...), "-xf", archive, "-C", dir, "--")
+		cmds = append([]hostRestoreCommand{{args: append(args, direct...), stdin: stdin}}, cmds...)
+	}
+	return cmds, nil
+}
+
+// regexpQuoteSed escapes a literal for a sed basic regular expression with ',' as delimiter.
+func regexpQuoteSed(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(`\.*[]^$,`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isSymlink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
+// containerRestoreRoots are the parts of a backup that hold server data; hosts and containers
+// restore only these. LinuxGSM archives its whole root directory (the home directory on a host,
+// /app in the official images) with symlinks resolved, so the archive also contains dotfiles,
+// the script, modules and lock files; those are never restored.
 var containerRestoreRoots = []string{"serverfiles", "log", "lgsm/config-lgsm", "lgsm/data", "lgsm/mods"}
 
 // containerRestoreMembers collects the archive names of containerRestoreRoots, including the

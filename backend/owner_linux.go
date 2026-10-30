@@ -43,10 +43,6 @@ func lfileOwnerUID(path string) (int, error) {
 	return -1, nil
 }
 
-func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
-	return os.OpenFile(path, flag|syscall.O_NOFOLLOW, perm)
-}
-
 // diskFreeBytes returns the bytes available to unprivileged users on the filesystem of path.
 func diskFreeBytes(path string) int64 {
 	var st syscall.Statfs_t

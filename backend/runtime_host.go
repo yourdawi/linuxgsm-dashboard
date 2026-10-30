@@ -365,8 +365,22 @@ func ValidateInstallDir(dir string) error {
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("parent directory %s does not exist", parent)
 	}
-	if resolved, err := filepath.EvalSymlinks(parent); err == nil && IsForbiddenServerDir(filepath.ToSlash(filepath.Join(resolved, filepath.Base(dir)))) {
+	resolved, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return fmt.Errorf("parent directory %s does not exist", parent)
+	}
+	if IsForbiddenServerDir(filepath.ToSlash(filepath.Join(resolved, filepath.Base(dir)))) {
 		return fmt.Errorf("installation directory points into a system directory")
+	}
+	// Inside another user's tree that user could swap the new home for a symlink later.
+	if err := checkTrustedAncestors(resolved); err != nil {
+		return fmt.Errorf("installation directory cannot be used: %v", err)
+	}
+	// The uninstaller removes the dashboard directory with everything in it.
+	if exe, err := os.Executable(); err == nil {
+		if exeDir, err := filepath.EvalSymlinks(filepath.Dir(exe)); err == nil && IsWithin(exeDir, resolved) {
+			return fmt.Errorf("installation directory is inside the dashboard directory %s", exeDir)
+		}
 	}
 	return nil
 }
@@ -821,4 +835,3 @@ func (HostRuntime) WriteCrontab(srv GameServerInstance, content string) error {
 	cmd.Stdin = strings.NewReader(trimmed + "\n")
 	return cmd.Run()
 }
-
