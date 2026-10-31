@@ -1001,8 +1001,8 @@
                         <form id="backups-settings-form">
                             <div class="form-group">
                                 <label for="backups-setting-maxbackups" data-i18n="backups-setting-maxbackups-label">Max Backups</label>
-                                <input type="number" id="backups-setting-maxbackups" class="form-control" min="0" data-i18n-placeholder="backups-maxbackups-placeholder" placeholder="z.B. 4" disabled>
-                                <small class="text-muted" data-i18n="backups-setting-maxbackups-help">Maximale Anzahl an Backups, die behalten werden. 0 verhindert das Speichern von Backups.</small>
+                                <input type="number" id="backups-setting-maxbackups" class="form-control" min="1" data-i18n-placeholder="backups-maxbackups-placeholder" placeholder="z.B. 4" disabled>
+                                <small class="text-muted" data-i18n="backups-setting-maxbackups-help">Maximale Anzahl an Backups, die behalten werden (mindestens 1). LinuxGSM löscht ältere Archive im Backup-Ordner, auch die anderer Instanzen im selben Verzeichnis.</small>
                             </div>
                             <div class="form-group mt-3">
                                 <label for="backups-setting-maxbackupdays" data-i18n="backups-setting-maxbackupdays-label">Max Backup-Tage</label>

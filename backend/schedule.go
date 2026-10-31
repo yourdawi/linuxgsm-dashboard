@@ -301,8 +301,10 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 
 // ValidateBackupSettings checks values written into the bash-sourced LinuxGSM config and crontab.
 func ValidateBackupSettings(s BackupSettings) error {
-	if s.MaxBackups != "" && !isIntInRange(s.MaxBackups, 0, 999) {
-		return fmt.Errorf("invalid maxbackups value")
+	// LinuxGSM deletes all but maxbackups archives of the (shared) backup directory after each
+	// backup: 0 would delete every archive there, also uploads and other instances' backups.
+	if s.MaxBackups != "" && !isIntInRange(s.MaxBackups, 1, 999) {
+		return fmt.Errorf("maxbackups must be between 1 and 999")
 	}
 	if s.MaxBackupDays != "" && !isIntInRange(s.MaxBackupDays, 0, 999) {
 		return fmt.Errorf("invalid maxbackupdays value")

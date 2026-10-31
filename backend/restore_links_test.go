@@ -70,3 +70,23 @@ func TestHostRestoreCommands(t *testing.T) {
 		t.Error("dangling symlink accepted")
 	}
 }
+
+func TestCustomBackupDirExpandsLinuxGSMVariables(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "lgsm", "config-lgsm", "vhserver")
+	srv := GameServerInstance{ID: "vhserver", Script: "vhserver", User: "nobody-here", Dir: dir}
+	for value, want := range map[string]string{
+		"${HOME}/backups":            filepath.Join(dir, "backups"),
+		"${serverfiles}/../backups2": filepath.Join(dir, "backups2"),
+		"${lgsmdir}/backup":          filepath.Join(dir, "lgsm", "backup"),
+		"$(id)/x":                    "",
+	} {
+		mustWrite(t, filepath.Join(cfg, "common.cfg"), "backupdir=\""+value+"\"\n")
+		if got := customBackupDir(srv); got != want {
+			t.Errorf("%s: %q want %q", value, got, want)
+		}
+	}
+	if ValidateBackupSettings(BackupSettings{MaxBackups: "0"}) == nil {
+		t.Error("maxbackups=0 accepted, LinuxGSM would delete every archive")
+	}
+}

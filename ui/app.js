@@ -3372,7 +3372,7 @@ function parseConfig(content, path) {
             if (close < 0) return; // value spans several lines: raw view only
             suffix = value.slice(close + 1);
             value = value.slice(1, close);
-            if (quote === '"' && bash) value = value.replace(/\\(["\\`])/g, '$1');
+            if (quote === '"' && bash) value = value.replace(/\\(["\\`$])/g, '$1');
         } else if (gameCfg) {
             // An unquoted game config value ends at a // comment or the ; of Arma configs.
             const word = value.match(/^([^\s;]+)(\s*;?\s*(\/\/.*)?)$/);
@@ -3537,9 +3537,12 @@ function serializeConfigForm(originalContent, items, changes, bash) {
         let value = changes.get(item.id);
         let quote = item.quote;
         if (bash) {
-            // LinuxGSM configs are bash: escape quotes, keep ${variables} working.
-            if (quote === "'" && value.includes("'")) quote = '"';
-            if (quote === '"') value = value.replace(/(["\\`])/g, '\\$1');
+            // LinuxGSM configs are bash. An edited value is always quoted (servername=My Server would
+            // run "Server"). $ is taken literally (passwords) unless it starts a ${variable} reference.
+            if (quote === '' || (quote === "'" && value.includes("'"))) quote = '"';
+            if (quote === '"') {
+                value = value.replace(/(["\\`])/g, '\\$1').replace(/\$(?!\{[A-Za-z_][A-Za-z0-9_]*\})/g, '\\$');
+            }
         }
         lines[item.line] = `${item.prefix}${quote}${value}${quote}${item.suffix}${item.cr}`;
     });
@@ -3950,7 +3953,7 @@ const i18n = {
         "confirm-restore-backup-text": "Are you sure you want to restore this backup? The game server will be stopped and all files will be replaced with the state of this backup.",
         "backups-settings-title": "Backup Settings",
         "backups-setting-maxbackups-label": "Max Backups (maxbackups)",
-        "backups-setting-maxbackups-help": "Set the maximum number of backups to retain. 0 prevents backups from being saved.",
+        "backups-setting-maxbackups-help": "Number of backups to keep (at least 1). LinuxGSM deletes older archives in the backup directory, also those of other instances in the same directory.",
         "backups-setting-maxbackupdays-label": "Max Backup Days (maxbackupdays)",
         "backups-setting-maxbackupdays-help": "Backups older than this number of days will be deleted. 0 retains backup for 24 hours.",
         "backups-setting-stoponbackup-label": "Stop on Backup (stoponbackup)",
@@ -4533,7 +4536,7 @@ const i18n = {
         "confirm-restore-backup-text": "Möchtest du dieses Backup wirklich wiederherstellen? Der Gameserver wird gestoppt und alle Spieldateien werden auf den Stand dieses Backups zurückgesetzt.",
         "backups-settings-title": "Backup-Einstellungen",
         "backups-setting-maxbackups-label": "Max Backups (maxbackups)",
-        "backups-setting-maxbackups-help": "Maximale Anzahl an Backups, die behalten werden. 0 verhindert das Speichern von Backups.",
+        "backups-setting-maxbackups-help": "Maximale Anzahl an Backups, die behalten werden (mindestens 1). LinuxGSM löscht ältere Archive im Backup-Ordner, auch die anderer Instanzen im selben Verzeichnis.",
         "backups-setting-maxbackupdays-label": "Max Backup-Tage (maxbackupdays)",
         "backups-setting-maxbackupdays-help": "Backups, die älter als diese Anzahl an Tagen sind, werden gelöscht. 0 behält das Backup für 24 Stunden.",
         "backups-setting-stoponbackup-label": "Server stoppen bei Backup (stoponbackup)",

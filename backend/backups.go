@@ -27,27 +27,20 @@ import (
 
 // customBackupDir reads backupdir from the LinuxGSM configs of the server, merged like LinuxGSM.
 func customBackupDir(srv GameServerInstance) string {
-	customDir := strings.TrimSpace(lgsmCfgValues(srv, true)["backupdir"])
+	values := lgsmCfgValues(srv, true)
+	customDir := strings.TrimSpace(values["backupdir"])
 	if customDir == "" {
 		return ""
 	}
-	if srv.Layout == LayoutData {
-		// Inside the container: the script lives in /app, the data in /data.
-		replacer := strings.NewReplacer(
-			"${lgsmdir}", "/app/lgsm", "$lgsmdir", "/app/lgsm",
-			"${rootdir}", "/app", "$rootdir", "/app",
-			"${selfname}", srv.Script, "$selfname", srv.Script,
-		)
-		return srv.dashboardPath(replacer.Replace(customDir))
+	// Variables like LinuxGSM expands them (${lgsmdir}, ${rootdir}, ${HOME}, ${serverfiles}, ...).
+	expanded, ok := expandLGSMValue(customDir, values, lgsmBaseVars(srv))
+	if !ok || !filepath.IsAbs(expanded) {
+		return ""
 	}
-	lgsmDir := filepath.Join(srv.Dir, "lgsm")
-	replacer := strings.NewReplacer(
-		"${lgsmdir}", lgsmDir, "$lgsmdir", lgsmDir,
-		"${rootdir}", srv.Dir, "$rootdir", srv.Dir,
-		"${username}", srv.User, "$username", srv.User,
-		"${selfname}", srv.Script, "$selfname", srv.Script,
-	)
-	return filepath.Clean(replacer.Replace(customDir))
+	if srv.Layout == LayoutData {
+		return srv.dashboardPath(expanded)
+	}
+	return filepath.Clean(expanded)
 }
 
 // isAllowedBackupDir decides whether the dashboard (running as root) may list, read and write
@@ -426,6 +419,12 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "Backup file not found", http.StatusNotFound)
 		return
 	}
+	release, ok := im.actionLocks.tryLock(srv.Dir)
+	if !ok {
+		http.Error(w, ErrServerBusy.Error(), http.StatusConflict)
+		return
+	}
+	defer release()
 
 	sse, ok := newSSEWriter(w)
 	if !ok {
@@ -497,6 +496,16 @@ func (im *InstanceManager) RestoreBackup(w http.ResponseWriter, r *http.Request,
 	if oldStatus == "running" {
 		sse.log(Msg(lang, "Stopping game server before restore...", "Stoppe Gameserver vor der Wiederherstellung..."))
 		_ = im.runLGSM(context.Background(), srv, "stop")
+	}
+	// LinuxGSM archives the whole directory: the restore also replaces the files of the other
+	// instances there (vhserver-2 next to vhserver), so they must not run meanwhile.
+	for _, other := range im.runningInstancesIn(srv.Dir, serverID) {
+		sse.log(Msg(lang, "Stopping "+other.ID+", it shares the server directory...", "Stoppe "+other.ID+", es teilt das Serververzeichnis..."))
+		_ = im.runLGSM(context.Background(), other, "stop")
+		defer func(o GameServerInstance) {
+			sse.log(Msg(lang, "Starting "+o.ID+" again...", "Starte "+o.ID+" wieder..."))
+			_ = im.runLGSM(context.Background(), o, "start")
+		}(other)
 	}
 
 	sse.log(Msg(lang, fmt.Sprintf("Restoring backup archive %s...", fileName), fmt.Sprintf("Stelle Backup-Archiv %s wieder her...", fileName)))
@@ -846,4 +855,17 @@ func (im *InstanceManager) SyncCloudBackup(w http.ResponseWriter, r *http.Reques
 
 	sse.log(Msg(lang, "Cloud backup sync completed successfully!", "Cloud-Backup-Synchronisierung erfolgreich abgeschlossen!"))
 	sse.exit(0)
+}
+
+// runningInstancesIn returns the running instances in dir other than except.
+func (im *InstanceManager) runningInstancesIn(dir, except string) []GameServerInstance {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	var out []GameServerInstance
+	for id, inst := range im.instances {
+		if id != except && inst.Dir == dir && inst.Status == "running" {
+			out = append(out, *inst)
+		}
+	}
+	return out
 }
