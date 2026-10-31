@@ -18,6 +18,7 @@
 # Node of another dashboard (agent, see Settings > Nodes in the dashboard):
 #   --agent --join '<pairing command>' [--mode read-only|read-write]
 #     [--fastdl-port <port> --fastdl-url <url>]   (FastDL served by the node itself)
+#     [--insecure-skip-signature]   (only without OpenSSL 3: rely on the checksum of a release)
 
 # Terminal output colors
 RED='\033[0;31m'
@@ -162,7 +163,6 @@ uninstall_package() {
     echo -e "${YELLOW}[SYS] Removing package: $pkg...${NC}"
     if [ "$OS_TYPE" == "debian" ]; then
         apt-get purge -y "$pkg" > /dev/null 2>&1
-        apt-get autoremove -y > /dev/null 2>&1
     elif [ "$OS_TYPE" == "redhat" ]; then
         if command -v dnf &> /dev/null; then
             dnf remove -y "$pkg" > /dev/null 2>&1
@@ -288,9 +288,14 @@ verify_signature() {
         echo -e "${YELLOW}[WARNING] No release signing key configured in this installer, verifying the checksum only.${NC}"
         return 0
     fi
-    if ! command -v openssl &> /dev/null || ! openssl version 2>/dev/null | grep -qE '^OpenSSL 3'; then
-        echo -e "${YELLOW}[WARNING] OpenSSL 3 not available, verifying the checksum only.${NC}"
-        return 0
+    # OpenSSL 3 or later verifies Ed25519 from the command line.
+    if ! command -v openssl &> /dev/null || ! openssl version 2>/dev/null | grep -qE '^OpenSSL ([3-9]|[1-9][0-9])[.]'; then
+        if [ "$INSECURE_SKIP_SIGNATURE" == "true" ]; then
+            echo -e "${YELLOW}[WARNING] OpenSSL 3 not available, verifying the checksum only (--insecure-skip-signature).${NC}"
+            return 0
+        fi
+        echo -e "${RED}[ERROR] OpenSSL 3 or later is needed to verify the release signature. Install it, or run this script with --insecure-skip-signature to rely on the checksum only.${NC}"
+        return 1
     fi
     work=$(mktemp -d)
     # DER header of an Ed25519 SubjectPublicKeyInfo followed by the 32 byte key.
@@ -518,6 +523,22 @@ remove_legacy_source_layout() {
 # Install / update
 # ------------------------------------------------------------------
 
+# Packages the installer adds for LinuxGSM game servers (install_lgsm_dependencies).
+LGSM_GAME_PACKAGES=" bc binutils bsdmainutils bzip2 ca-certificates cpio curl distro-info file gzip hostname jq lib32gcc-s1 lib32stdc++6 netcat-openbsd pigz python3 rclone tmux unzip util-linux uuid-runtime wget xz-utils libxml2-utils libsdl2-2.0-0:i386 libsdl2-2.0-0 libncurses5 libncurses6 libncursesw5 libncursesw6 tar "
+
+is_lgsm_dependency() {
+    [[ "$LGSM_GAME_PACKAGES" == *" $1 "* ]]
+}
+
+# Reports whether LinuxGSM scripts are left in any home directory.
+game_servers_remain() {
+    local f
+    for f in /home/*/*server /home/*/*server-*; do
+        [ -f "$f" ] && head -c 4096 "$f" 2>/dev/null | grep -q "LinuxGSM" && return 0
+    done
+    return 1
+}
+
 install_lgsm_dependencies() {
     local -n deps_ref=$1
 
@@ -719,7 +740,7 @@ PrivateTmp=false
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target
@@ -988,6 +1009,11 @@ do_install_agent() {
             return 1
         fi
     fi
+    if [ -z "$join_cmd" ] && [ -n "$AGENT_MODE_ARG" ]; then
+        # An update without a new pairing: --mode changes the local access mode.
+        echo -e "${CYAN}[SYS] Setting the access mode to $AGENT_MODE_ARG...${NC}"
+        "$BINARY" agent mode "$AGENT_MODE_ARG" --config-dir "$config_dir" || return 1
+    fi
 
     echo -e "${CYAN}[SYS] Writing systemd service...${NC}"
     local exec_start="$BINARY agent run --config-dir $config_dir"
@@ -1099,8 +1125,17 @@ do_uninstall() {
     fi
 
     if [ "$remove_packages" == "true" ] && [ -n "$STATE_INSTALLED_DEPS" ]; then
-        local pkg
+        local pkg keep_game_deps="false"
+        # Game servers stay installed: the packages LinuxGSM needs (tmux, 32-bit libraries, ...)
+        # must stay too.
+        if game_servers_remain; then
+            keep_game_deps="true"
+            echo -e "${YELLOW}[INFO] Game servers remain on this machine, keeping the packages LinuxGSM needs.${NC}"
+        fi
         for pkg in $STATE_INSTALLED_DEPS; do
+            if [ "$keep_game_deps" == "true" ] && is_lgsm_dependency "$pkg"; then
+                continue
+            fi
             uninstall_package "$pkg"
         done
     elif [ "$remove_packages" != "true" ]; then
@@ -1174,9 +1209,22 @@ AGENT_JOIN_ARG=""
 AGENT_MODE_ARG=""
 AGENT_FASTDL_PORT_ARG=""
 AGENT_FASTDL_URL_ARG=""
+INSECURE_SKIP_SIGNATURE="false"
+
+# Options with a value fail instead of looping forever when the value is missing.
+need_value() {
+    if [ "$2" -lt 2 ]; then
+        echo -e "${RED}[ERROR] Option $1 needs a value.${NC}"
+        exit 1
+    fi
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --insecure-skip-signature)
+            INSECURE_SKIP_SIGNATURE="true"
+            shift
+            ;;
         install|--install)
             ACTION="install"
             shift
@@ -1206,23 +1254,28 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --join)
+            need_value "$1" $#
             ROLE_ARG="agent"
             AGENT_JOIN_ARG="${2:-}"
             shift 2
             ;;
         --fastdl-port)
+            need_value "$1" $#
             AGENT_FASTDL_PORT_ARG="${2:-}"
             shift 2
             ;;
         --fastdl-url)
+            need_value "$1" $#
             AGENT_FASTDL_URL_ARG="${2:-}"
             shift 2
             ;;
         --mode)
+            need_value "$1" $#
             AGENT_MODE_ARG="${2:-}"
             shift 2
             ;;
         --port)
+            need_value "$1" $#
             PORT="$2"
             PORT_FROM_ARGS="true"
             shift 2

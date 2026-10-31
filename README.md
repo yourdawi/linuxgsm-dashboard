@@ -128,7 +128,7 @@ Configuration of the LinuxGSM alert channels Discord, Telegram, e-mail (SMTP), M
 
 **Native installation (installer):**
 
-- A 64-bit Linux host with systemd (x86_64; the dashboard also runs on ARM64, but most LinuxGSM game servers need x86_64). The installer supports Debian/Ubuntu, RHEL/CentOS/AlmaLinux/Rocky, Arch and openSUSE; LinuxGSM game dependencies are installed automatically on Debian/Ubuntu and RHEL-based systems, on the others LinuxGSM lists missing packages during the game server installation. Signature checks in the installer need OpenSSL 3 (older systems fall back to the checksum).
+- A 64-bit Linux host with systemd (x86_64; the dashboard also runs on ARM64, but most LinuxGSM game servers need x86_64). The installer supports Debian/Ubuntu, RHEL/CentOS/AlmaLinux/Rocky, Arch and openSUSE; LinuxGSM game dependencies are installed automatically on Debian/Ubuntu and RHEL-based systems, on the others LinuxGSM lists missing packages during the game server installation. Signature checks in the installer need OpenSSL 3 or later; on older systems (Debian 11, Ubuntu 20.04, RHEL 8) install it or pass `--insecure-skip-signature` to rely on the checksum only.
 - Root privileges. The dashboard creates Linux users and runs commands as the game server users via `runuser`.
 - Only for builds from source: Git and Go 1.27 or newer. The installer does not use the distribution's Go package for this: it downloads the current official Go release from go.dev, checks its SHA-256 checksum, builds with it and removes it again.
 

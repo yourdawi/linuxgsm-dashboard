@@ -532,6 +532,11 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 		}
 		// Only users the dashboard created are ever deleted together with their home.
 		recordCreatedUser(username)
+		// useradd leaves the home 0755 on Debian 12 and older Ubuntu; other server users must not
+		// read this one's configs and secrets (LinuxGSM accepts 7xx).
+		if err := os.Chmod(homeDir, 0750); err != nil {
+			logLine(Msg(lang, "[WARNING] Could not restrict the home directory: ", "[WARNUNG] Home-Verzeichnis konnte nicht eingeschränkt werden: ") + err.Error())
+		}
 	}
 
 	// Set the password of a new user. An existing user keeps its password: it may be a login
