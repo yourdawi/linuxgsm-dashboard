@@ -38,12 +38,13 @@ type execEngine struct {
 	server   *httptest.Server
 	nextExec int
 
-	missing map[string]bool // containers that do not exist (404 on inspect)
-	images  []string
-	created map[string]DockerCreateConfig
-	removed []string
-	logs    string // container log returned by /logs
-	image   string // Config.Image reported by inspect
+	missing  map[string]bool // containers that do not exist (404 on inspect)
+	images   []string
+	created  map[string]DockerCreateConfig
+	removed  []string
+	logs     string            // container log returned by /logs
+	policies map[string]string // restart policy per container (POST /update)
+	image    string            // Config.Image reported by inspect
 }
 
 func newExecEngine(t *testing.T, respond func(c execCall) (string, string, int)) *execEngine {
@@ -187,6 +188,18 @@ func (e *execEngine) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"State": map[string]interface{}{"Running": running, "Status": status},
 			"Config": map[string]interface{}{"Image": image}})
+
+	case strings.HasPrefix(path, "/v1.52/containers/") && strings.HasSuffix(path, "/update"):
+		container := strings.TrimSuffix(strings.TrimPrefix(path, "/v1.52/containers/"), "/update")
+		var body struct{ RestartPolicy DockerRestartPolicy }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		e.mu.Lock()
+		if e.policies == nil {
+			e.policies = map[string]string{}
+		}
+		e.policies[container] = body.RestartPolicy.Name
+		e.mu.Unlock()
+		_, _ = w.Write([]byte("{}"))
 
 	case strings.HasPrefix(path, "/v1.52/containers/") && strings.HasSuffix(path, "/start"):
 		container := strings.TrimSuffix(strings.TrimPrefix(path, "/v1.52/containers/"), "/start")
@@ -426,4 +439,28 @@ func wrapContainerList(e *execEngine, list []DockerContainer) http.Handler {
 		}
 		e.handle(w, r)
 	})
+}
+
+// A server stopped in the dashboard must stay stopped after a reboot: the restart policy follows.
+func TestDockerRestartPolicyFollowsStartStop(t *testing.T) {
+	e := newExecEngine(t, func(c execCall) (string, string, int) { return "", "", 0 })
+	d := newTestDockerRuntime(t, e)
+	srv := GameServerInstance{ID: "vh", Script: "vhserver", Dir: "/srv/lgsm/vh", Layout: LayoutData}
+	e.running["vh"] = true
+	policy := func() string { e.mu.Lock(); defer e.mu.Unlock(); return e.policies["vh"] }
+	if err := d.RunLGSM(context.Background(), srv, ExecIO{}, "stop"); err != nil {
+		t.Fatal(err)
+	}
+	if policy() != "no" {
+		t.Fatalf("after stop: %q", policy())
+	}
+	if err := d.RunLGSM(context.Background(), srv, ExecIO{}, "start"); err != nil {
+		t.Fatal(err)
+	}
+	if policy() != "unless-stopped" {
+		t.Fatalf("after start: %q", policy())
+	}
+	if err := d.RunLGSM(context.Background(), srv, ExecIO{}, "backup"); err != nil || policy() != "unless-stopped" {
+		t.Fatalf("backup changed the policy: %q %v", policy(), err)
+	}
 }

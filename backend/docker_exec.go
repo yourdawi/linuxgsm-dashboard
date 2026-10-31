@@ -224,3 +224,9 @@ func (c *DockerClient) ContainerState(ctx context.Context, container string) (Do
 func (c *DockerClient) StartContainer(ctx context.Context, container string) error {
 	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(container)+"/start", nil, nil, nil)
 }
+
+// SetRestartPolicy changes the restart policy of a container.
+func (c *DockerClient) SetRestartPolicy(ctx context.Context, container, policy string) error {
+	body := map[string]interface{}{"RestartPolicy": DockerRestartPolicy{Name: policy}}
+	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(container)+"/update", nil, body, nil)
+}

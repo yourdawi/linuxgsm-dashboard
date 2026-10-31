@@ -198,12 +198,39 @@ func (d *DockerRuntime) RunLGSM(ctx context.Context, srv GameServerInstance, std
 			if stdio.Stdout != nil {
 				fmt.Fprintf(stdio.Stdout, "Container %s is %s, starting it. The container starts %s itself.\n", srv.ID, state.Status, srv.Script)
 			}
-			return d.client.StartContainer(ctx, srv.ID)
+			if err := d.client.StartContainer(ctx, srv.ID); err != nil {
+				return err
+			}
+			d.followServerState(srv, args[0])
+			return nil
 		}
 	}
 	cmd := append([]string{"./" + srv.Script}, args...)
 	_, err := d.client.Exec(ctx, srv.ID, DockerExecConfig{Cmd: cmd, User: dockerServerUser, WorkingDir: dockerScriptDir}, stdio)
+	if len(args) > 0 && (err == nil || ExitCode(err) == 3) {
+		d.followServerState(srv, args[0])
+	}
 	return err
+}
+
+// followServerState keeps the restart policy in line with what the user did: the entrypoint
+// starts the server on every container start, so a stopped server would come back after a
+// reboot. The container itself keeps running, LinuxGSM commands like backup need it.
+func (d *DockerRuntime) followServerState(srv GameServerInstance, command string) {
+	policy := ""
+	switch command {
+	case "stop":
+		policy = "no"
+	case "start", "restart":
+		policy = "unless-stopped"
+	default:
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := d.client.SetRestartPolicy(ctx, srv.ID, policy); err != nil {
+		fmt.Printf("[WARNING] %s: could not set the restart policy to %s: %v\n", srv.ID, policy, err)
+	}
 }
 
 // RunAsUser runs argv as the linuxgsm user inside the container. Paths below the server
@@ -303,6 +330,8 @@ func (d *DockerRuntime) createServerContainer(ctx context.Context, name, gameCmd
 			Binds:         []string{dir + ":" + containerDataDir, dir + "/mods:" + containerModsDir},
 			NetworkMode:   "host",
 			RestartPolicy: DockerRestartPolicy{Name: "unless-stopped"},
+			// The entrypoint copies the whole game console to stdout; without rotation it fills the disk.
+			LogConfig: &DockerLogConfig{Type: "json-file", Config: map[string]string{"max-size": "10m", "max-file": "3"}},
 		},
 	}
 	if _, err := d.client.CreateContainer(ctx, name, cfg); err != nil {
@@ -356,7 +385,12 @@ func (d *DockerRuntime) Install(ctx context.Context, req InstallRequest, logf fu
 	}
 
 	logLine(Msg(lang, "[INSTALL] Creating and starting the container...", "[INSTALL] Erstelle und starte den Container..."))
+	// A schedule left by an earlier server of this name must not run for the new one.
+	_ = d.WriteCrontab(GameServerInstance{ID: name, Script: gameCmd, Dir: dir, Layout: LayoutData}, "")
 	if err := d.createServerContainer(ctx, name, gameCmd, image, dir); err != nil {
+		// Without a running container the directory is invisible and would block the name.
+		_ = d.client.RemoveContainer(context.Background(), name, true)
+		_ = os.RemoveAll(dir)
 		return fail("Failed to create the container: ", "Container konnte nicht erstellt werden: ", err)
 	}
 
@@ -427,7 +461,10 @@ func (d *DockerRuntime) Clone(ctx context.Context, srv GameServerInstance, suffi
 		fmt.Printf("[WARNING] Failed to reset the instance config of %s: %v\n", name, err)
 	}
 
+	_ = d.WriteCrontab(clone, "")
 	if err := d.createServerContainer(ctx, name, srv.Script, info.Config.Image, dir); err != nil {
+		_ = d.client.RemoveContainer(context.Background(), name, true)
+		_ = os.RemoveAll(dir)
 		return "", err
 	}
 	return name, nil
@@ -442,11 +479,12 @@ func (d *DockerRuntime) Delete(ctx context.Context, srv GameServerInstance, _ bo
 	if err := d.client.RemoveContainer(ctx, srv.ID, true); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("container removed, but deleting %s failed: %w", dir, err)
-	}
+	// The schedule goes first: it must not survive a failed removal of the data.
 	if err := d.WriteCrontab(srv, ""); err != nil {
 		fmt.Printf("[WARNING] Failed to remove the schedule of %s: %v\n", srv.ID, err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("container removed, but deleting %s failed: %w", dir, err)
 	}
 	return nil
 }
