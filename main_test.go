@@ -968,7 +968,7 @@ func TestFrontendEscapesUntrustedValues(t *testing.T) {
 			t.Errorf("unsafe pattern present in app.js: %q", f)
 		}
 	}
-	for _, required := range []string{"function jsArg(", "X-CSRF-Token", "jsArg('kick ' + p.name)"} {
+	for _, required := range []string{"function jsArg(", "X-CSRF-Token", "jsArg(playerCommand(server, 'kick', p.name))"} {
 		if !strings.Contains(js, required) {
 			t.Errorf("expected %q in app.js", required)
 		}

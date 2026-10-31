@@ -560,7 +560,8 @@ install_lgsm_dependencies() {
     echo -e "${YELLOW}[SYS] Checking LinuxGSM game server dependencies...${NC}"
     local pkg
     if [ "$OS_TYPE" == "debian" ]; then
-        dpkg --add-architecture i386 > /dev/null 2>&1
+        # 32-bit packages exist on amd64 only (arm64 mirrors have no i386 indices).
+        [ "$(dpkg --print-architecture 2>/dev/null)" == "amd64" ] && dpkg --add-architecture i386 > /dev/null 2>&1
         apt-get update -y > /dev/null 2>&1
         APT_UPDATED="true"
 

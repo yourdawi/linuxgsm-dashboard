@@ -328,13 +328,16 @@ func convertScriptSymlink(dir, scriptPath string, owner passwdEntry) {
 	if uid, err := fileOwnerUID(target); err != nil || (uid >= 0 && uid != owner.UID) {
 		return
 	}
-	if err := os.Remove(scriptPath); err != nil {
-		return
-	}
+	// The copy is made next to the link and renamed over it, so the link stays when copying fails.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = exec.CommandContext(ctx, "runuser", "-u", owner.Name, "--", "cp", "-p", "--", target, scriptPath).Run()
-	_ = exec.CommandContext(ctx, "runuser", "-u", owner.Name, "--", "chmod", "0755", "--", scriptPath).Run()
+	tmp := scriptPath + ".lgsm-dashboard-copy"
+	run := func(args ...string) error {
+		return exec.CommandContext(ctx, "runuser", append([]string{"-u", owner.Name, "--"}, args...)...).Run()
+	}
+	if run("cp", "-p", "--", target, tmp) != nil || run("chmod", "0755", "--", tmp) != nil || run("mv", "-f", "-T", "--", tmp, scriptPath) != nil {
+		_ = run("rm", "-f", "--", tmp)
+	}
 }
 
 func cleanupLeftoverSudoers() {
@@ -481,7 +484,7 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 	runCommandWithLogs := func(name string, args ...string) error {
 		return streamLines(func(w io.Writer) error {
 			return runHostCmd(exec.CommandContext(ctx, name, args...), ExecIO{Stdout: w, Stderr: w})
-		}, func(line string) { logf(stripAnsi(line)) }, nil)
+		}, func(line string) { logf(line) }, nil)
 	}
 	logLine := func(text string) {
 		logf(text + "\n")
@@ -562,7 +565,7 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 		// 2. Download linuxgsm.sh bootstrap script (as the new user, into its own directory)
 		logLine(Msg(lang, "[INSTALL] Downloading LinuxGSM bootstrap script...", "[INSTALL] Lade LinuxGSM Bootstrap-Skript herunter..."))
 		bootstrapPath := filepath.Join(homeDir, "linuxgsm.sh")
-		if err := runCommandWithLogs("runuser", "-u", username, "--", "wget", "-O", bootstrapPath, "https://linuxgsm.sh"); err != nil {
+		if err := runCommandWithLogs("runuser", "-u", username, "--", "curl", "-fsSL", "-o", bootstrapPath, "https://linuxgsm.sh"); err != nil {
 			logLine(Msg(lang, "[ERROR] Failed to download bootstrap script: ", "[FEHLER] Bootstrap-Skript konnte nicht geladen werden: ") + err.Error())
 			return err
 		}

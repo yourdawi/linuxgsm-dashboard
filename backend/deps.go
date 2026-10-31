@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -160,6 +161,10 @@ func installDependencies(ctx context.Context, gameCmd string, withSteamCMD bool,
 		return
 	}
 	base, steam := parseDepsCSV(data, shortnameOf(gameCmd))
+	if runtime.GOARCH != "amd64" {
+		// 32-bit packages exist on amd64 only.
+		base, steam = withoutI386(base), withoutI386(steam)
+	}
 	if !withSteamCMD {
 		steam = nil // like LinuxGSM: only games with a Steam app ID use SteamCMD
 	}
@@ -249,4 +254,14 @@ func usesSteamCMD(ctx context.Context, gameCmd string) bool {
 		}
 	}
 	return false
+}
+
+func withoutI386(pkgs []string) []string {
+	var out []string
+	for _, p := range pkgs {
+		if !strings.HasSuffix(p, ":i386") {
+			out = append(out, p)
+		}
+	}
+	return out
 }

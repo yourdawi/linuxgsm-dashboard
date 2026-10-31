@@ -152,7 +152,10 @@ async function runStreamModal({ title, runningText, url, body, errorText, onExit
         el.modalStreamStatus.className = 'badge badge-warning badge-pulse animate-pulse';
         await streamPost(url, body, (data) => {
             if (data.type === 'log') {
-                appendLine(data.text);
+                // A redrawn line (LinuxGSM status, SteamCMD progress) replaces the previous one.
+                const last = el.modalStreamOutput.lastElementChild;
+                if (data.replace && last) last.textContent = data.text;
+                else appendLine(data.text);
             } else if (data.type === 'exit') {
                 exited = true;
                 // LinuxGSM ends with 3 after warnings: the command itself succeeded.
@@ -1593,7 +1596,9 @@ function createServerCard(server) {
 // extra carries the answers a command needs (mod for mods-install/-remove, password for the TS3
 // change-password).
 function runServerAction(serverId, action, extra = {}) {
-    const tAction = t('btn-' + action) || action.toUpperCase();
+    // t() returns the key itself when there is no text for it.
+    const label = t('btn-' + action);
+    const tAction = label === 'btn-' + action ? action : label;
     runStreamModal({
         title: t('modal-stream-title-run').replace('{action}', tAction).replace('{server}', serverId),
         runningText: t('status-running-action'),
@@ -1862,6 +1867,8 @@ function switchConsoleMode(mode) {
     state.consoleMode = mode;
     el.consoleModeTmux.classList.toggle('active', mode === 'tmux');
     el.consoleModeLog.classList.toggle('active', mode === 'log');
+    if (el.consoleModeScript) el.consoleModeScript.classList.toggle('active', mode === 'script');
+    if (el.consoleModeGame) el.consoleModeGame.classList.toggle('active', mode === 'game');
     
     el.terminalOutput.innerHTML = `<div class="terminal-row text-muted">${t('terminal-loading')}</div>`;
     fetchConsoleData();
@@ -3654,15 +3661,16 @@ const i18n = {
         "btn-offline": "Offline",
         "btn-action": "Actions",
         "btn-details": "Details",
-        "btn-backup": "Backup",
-        "btn-validate": "Validate",
         "btn-update-lgsm": "Update LGSM",
         "btn-force-update": "Force Update",
         "btn-test-alert": "Test Alert",
-        "btn-check-update": "Check Update",
         "btn-mods-install": "Install Mods",
         "btn-mods-update": "Update Mods",
         "btn-mods-remove": "Remove Mods",
+        "btn-map-wipe": "Map Wipe",
+        "btn-full-wipe": "Full Wipe",
+        "btn-install-default-resources": "Install MTA Default Resources",
+        "btn-workshop-update": "Update Workshop Mods",
         "console-no-input": "This game does not accept console commands (LinuxGSM: consoleinteract=no)",
         "status-warning": "Done with warnings",
         "config-game-badge": "Game",
@@ -3747,13 +3755,8 @@ const i18n = {
         "settings-title": "Settings & Info",
         "settings-subtitle": "Your account, dashboard settings and server tools.",
         "settings-pass-card": "Change password",
-        "settings-new-pass": "New Password",
-        "settings-confirm-pass": "Confirm New Password",
         "settings-btn-save": "Update Password",
         "settings-info-card": "Host System Information",
-        "settings-templates-card": "Automation Templates",
-        "settings-btn-systemd": "Generate Systemd Service",
-        "settings-btn-cron": "Generate Cronjobs",
         "overview-title": "Overview & Monitoring",
         "overview-subtitle": "Resource utilization of the host system and active game servers.",
         "overview-cpu": "Host CPU Usage",
@@ -3773,7 +3776,6 @@ const i18n = {
         "settings-tools-cron-desc-docker": "In Docker mode the dashboard runs the schedules itself (times in the time zone set under Settings > General). Recommended: monitor every 5 minutes, update check every 30 minutes, force-update at 04:30 and update-lgsm on Sundays.",
         "settings-info-os": "Operating System",
         "settings-info-mode": "Dashboard Mode",
-        "modal-config-no-file": "Choose a file",
         "config-no-files": "No config files found",
         "username-placeholder": "admin",
         "password-placeholder": "Enter password",
@@ -4058,7 +4060,7 @@ const i18n = {
         "settings-btn-clone": "Clone Instance",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Sync Now",
-        "cloudbackup-desc": "Synchronize created backups automatically or manually to cloud storage (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-desc": "Synchronize created backups to cloud storage with one click (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
         "cloudbackup-enable-label": "Enable Cloud Sync",
         "cloudbackup-remote-label": "rclone Remote Name",
         "cloudbackup-remote-placeholder": "e.g. gdrive or s3",
@@ -4229,15 +4231,16 @@ const i18n = {
         "btn-offline": "Offline",
         "btn-action": "Aktionen",
         "btn-details": "Details",
-        "btn-backup": "Backup",
-        "btn-validate": "Validieren",
         "btn-update-lgsm": "LGSM Updaten",
         "btn-force-update": "Force Update",
         "btn-test-alert": "Alert Testen",
-        "btn-check-update": "Update prüfen",
         "btn-mods-install": "Mods Installieren",
         "btn-mods-update": "Mods Updaten",
         "btn-mods-remove": "Mods entfernen",
+        "btn-map-wipe": "Map-Wipe",
+        "btn-full-wipe": "Full-Wipe",
+        "btn-install-default-resources": "MTA-Standardressourcen installieren",
+        "btn-workshop-update": "Workshop-Mods aktualisieren",
         "console-no-input": "Dieses Spiel nimmt keine Konsolenbefehle an (LinuxGSM: consoleinteract=no)",
         "status-warning": "Fertig mit Warnungen",
         "config-game-badge": "Spiel",
@@ -4326,11 +4329,8 @@ const i18n = {
         "settings-old-pass-label": "Aktuelles Passwort",
         "settings-new-pass-label": "Neues Passwort",
         "settings-confirm-pass-label": "Neues Passwort bestätigen",
-        "settings-btn-save": "Passwort speichern",
         "settings-info-card": "System-Informationen",
-        "settings-info-version": "Dashboard Version",
         "settings-info-os": "Betriebssystem",
-        "settings-info-pid": "Prozess-ID (PID)",
         "settings-info-mode": "Dashboard Modus",
         "settings-tools-card": "Server-Spezifische Hilfsmittel",
         "settings-tools-card-desc": "Wähle einen deiner aktiver Server, um copy-paste Vorlagen für Autostart und geplante Aufgaben (Cronjobs) anzuzeigen.",
@@ -4346,13 +4346,7 @@ const i18n = {
         "overview-cpu": "CPU Auslastung",
         "overview-ram": "Arbeitsspeicher (RAM)",
         "username-placeholder": "admin",
-        "password-placeholder": "Passwort eingeben",
         "console-select-default": "-- Wähle einen Server --",
-        "console-no-server-selected": "Kein Server gewählt",
-        "console-mode-log": "Konsolen-Logdatei",
-        "console-empty-prompt": "Wähle oben einen Server aus, um die Konsole zu laden.",
-        "console-input-placeholder": "Befehl an die Serverkonsole senden...",
-        "btn-send": "Senden",
         "overview-disk": "Festplatte",
         "overview-history": "Ressourcenverlauf (Letzte 5 Minuten)",
         "overview-table": "Ressourcennutzung pro Server",
@@ -4375,14 +4369,9 @@ const i18n = {
         "console-input-placeholder": "Befehl an die Serverkonsole senden...",
         "console-mode-log": "Konsolen-Logdatei",
         "console-no-server-selected": "Kein Server gewählt",
-        "console-no-server-connected": "Kein Server verbunden",
         "console-title": "Live-Konsole & Protokoll",
         "console-subtitle": "Sieh den Live-Bildschirm (tmux) oder Logdateien deines Gameservers ein.",
         "settings-btn-save": "Passwort speichern",
-        "modal-config-btn-save": "Speichern",
-        "config-save-error": "Fehler beim Speichern der Konfiguration.",
-        "terminal-loading": "Lade Konsole...",
-        "config-loading-file": "Lade Inhalt...",
         "modal-config-tab-form": "Formular",
         "modal-config-tab-raw": "Text",
         "modal-config-btn-save": "Speichern",
@@ -4641,7 +4630,7 @@ const i18n = {
         "settings-btn-clone": "Instanz klonen",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Jetzt synchronisieren",
-        "cloudbackup-desc": "Synchronisiere erstellte Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-desc": "Synchronisiere erstellte Backups per Knopfdruck mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
         "cloudbackup-enable-label": "Cloud Sync aktivieren",
         "cloudbackup-remote-label": "rclone Remote Name",
         "cloudbackup-remote-placeholder": "z. B. gdrive oder s3",
@@ -6287,9 +6276,9 @@ function openPlayersModal(serverId) {
                 <td><strong>${escapeHtml(p.name)}</strong></td>
                 <td>${escapeHtml(p.score || 0)}</td>
                 <td>${escapeHtml(p.time || '-')}</td>
-                <td class="text-right">${canKick ? `
-                    <button class="btn btn-secondary btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg('kick ' + p.name)})">Kick</button>
-                    <button class="btn btn-danger btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg('ban ' + p.name)})">Ban</button>` : ''}
+                <td class="text-right">${canKick && playerCommand(server, 'kick', p.name) ? `
+                    <button class="btn btn-secondary btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg(playerCommand(server, 'kick', p.name))})">Kick</button>` : ''}${canKick && playerCommand(server, 'ban', p.name) ? `
+                    <button class="btn btn-danger btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg(playerCommand(server, 'ban', p.name))})">Ban</button>` : ''}
                 </td>
             `;
             el.modalPlayersTbody.appendChild(tr);
@@ -6297,6 +6286,23 @@ function openPlayersModal(serverId) {
     }
 
     el.modalPlayers.classList.remove('hidden');
+}
+
+// playerCommand builds a kick or ban console command for a player, or returns null where the game
+// has no such command or the name cannot be passed safely. Names come from the game query, i.e.
+// from the player: Source consoles run "x;quit" as two commands, so separators are refused and
+// the name is quoted.
+function playerCommand(server, verb, name) {
+    if (!serverHasCommand(server, 'send') || typeof name !== 'string' || name === '') return null;
+    if (/[";\\\u0000-\u001f\u007f]/.test(name)) return null;
+    const game = (server.game || '').toLowerCase();
+    if (game === 'mc' || game === 'pmc') {
+        return /^[A-Za-z0-9_]{1,16}$/.test(name) ? `${verb} ${name}` : null;
+    }
+    if (game === 'rust') return `${verb} "${name}"`;
+    // Source and GoldSrc (the engines with FastDL): kick only, bans need banid or a plugin.
+    if (serverHasCommand(server, 'fastdl') && verb === 'kick') return `kick "${name}"`;
+    return null;
 }
 
 function closePlayersModal() {

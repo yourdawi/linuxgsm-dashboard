@@ -332,6 +332,10 @@ func (d *DockerRuntime) createServerContainer(ctx context.Context, name, gameCmd
 			RestartPolicy: DockerRestartPolicy{Name: "unless-stopped"},
 			// The entrypoint copies the whole game console to stdout; without rotation it fills the disk.
 			LogConfig: &DockerLogConfig{Type: "json-file", Config: map[string]string{"max-size": "10m", "max-file": "3"}},
+			// On the host network, raw sockets would let a compromised game server sniff the host's
+			// traffic; no-new-privileges also disables the image's sudo, which nothing here uses.
+			CapDrop:     []string{"NET_RAW"},
+			SecurityOpt: []string{"no-new-privileges"},
 		},
 	}
 	if _, err := d.client.CreateContainer(ctx, name, cfg); err != nil {

@@ -301,3 +301,27 @@ func TestNoDetailsDuringInstall(t *testing.T) {
 	}
 	t.Error("details did not run after the installation")
 }
+
+// A lone \r ends a line (it is redrawn), \r\n does not split twice; the SSE writer marks the
+// redrawing line.
+func TestStreamLinesRedraw(t *testing.T) {
+	var lines []string
+	_ = streamLines(func(w io.Writer) error {
+		_, _ = io.WriteString(w, "[ .... ] Starting\r\x1b[K[  OK  ] Starting\nwin\r\nprogress 10%\rprogress 50%\rdone\n")
+		return nil
+	}, func(line string) { lines = append(lines, line) }, nil)
+	want := []string{"[ .... ] Starting\r", "\x1b[K[  OK  ] Starting\n", "win\r\n", "progress 10%\r", "progress 50%\r", "done\n"}
+	if strings.Join(lines, "|") != strings.Join(want, "|") {
+		t.Fatalf("lines %q", lines)
+	}
+
+	rec := httptest.NewRecorder()
+	sse, _ := newSSEWriter(rec)
+	for _, l := range lines {
+		sse.log(l)
+	}
+	body := rec.Body.String()
+	if strings.Count(body, `"replace":true`) != 3 || !strings.Contains(body, `"text":"[  OK  ] Starting\n"`) {
+		t.Fatalf("sse %s", body)
+	}
+}

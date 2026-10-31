@@ -325,7 +325,7 @@ func validateArchive(r io.Reader, format ArchiveFormat, destDir string, limits A
 		src = gz
 	case ArchiveTarZst:
 		// One decoder goroutine and a bounded window keep a crafted frame from exhausting memory.
-		zr, err := zstd.NewReader(r, zstd.WithDecoderConcurrency(1), zstd.WithDecoderLowmem(true), zstd.WithDecoderMaxWindow(1<<30))
+		zr, err := zstd.NewReader(r, zstd.WithDecoderConcurrency(1), zstd.WithDecoderLowmem(true), zstd.WithDecoderMaxWindow(128<<20))
 		if err != nil {
 			return fmt.Errorf("%w: not a zstd archive", ErrUnsafeArchive)
 		}
@@ -840,7 +840,7 @@ func (im *InstanceManager) SyncCloudBackup(w http.ResponseWriter, r *http.Reques
 	err = streamLines(func(out io.Writer) error {
 		return im.rt.RunAsUser(r.Context(), srv, ExecIO{Stdout: out, Stderr: out}, true, "rclone", "copy", "-v", "--", backupDir, targetDest)
 	}, func(line string) {
-		sse.log(strings.TrimRight(line, "\r\n"))
+		sse.log(line)
 	}, nil)
 	if isStartError(err) {
 		sse.log(Msg(lang, "Error starting rclone (is rclone installed?): ", "Fehler beim Starten von rclone (ist rclone installiert?): ") + err.Error())

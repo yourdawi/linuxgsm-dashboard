@@ -672,6 +672,7 @@ type sseWriter struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
 	mu      sync.Mutex
+	redraw  bool // the last line ended with a lone \r: the next one replaces it
 }
 
 func newSSEWriter(w http.ResponseWriter) (*sseWriter, bool) {
@@ -695,8 +696,18 @@ func (s *sseWriter) send(data interface{}) {
 	s.flusher.Flush()
 }
 
+// log sends a line of output. A line that ended with a lone \r is redrawn by the next one, which is
+// marked "replace" for the browser. Escape sequences are removed.
 func (s *sseWriter) log(text string) {
-	s.send(map[string]interface{}{"type": "log", "text": text})
+	s.mu.Lock()
+	replace := s.redraw
+	s.redraw = strings.HasSuffix(text, "\r")
+	s.mu.Unlock()
+	msg := map[string]interface{}{"type": "log", "text": stripAnsi(text)}
+	if replace {
+		msg["replace"] = true
+	}
+	s.send(msg)
 }
 
 func (s *sseWriter) exit(code int) {
@@ -816,7 +827,7 @@ func (im *InstanceManager) RunAction(w http.ResponseWriter, r *http.Request, ser
 	err = streamLines(func(out io.Writer) error {
 		return im.rt.RunLGSM(context.Background(), srv, ExecIO{Stdin: strings.NewReader(stdin), Stdout: out, Stderr: out}, action)
 	}, func(line string) {
-		sse.log(stripAnsi(line))
+		sse.log(line)
 	}, func(err error) {
 		sse.log("\n" + Msg(lang, "Error reading output: ", "Fehler beim Lesen des Outputs: ") + err.Error())
 	})

@@ -90,6 +90,8 @@ type DockerHostConfig struct {
 	NetworkMode   string              `json:"NetworkMode,omitempty"`
 	RestartPolicy DockerRestartPolicy `json:"RestartPolicy"`
 	LogConfig     *DockerLogConfig    `json:"LogConfig,omitempty"`
+	CapDrop       []string            `json:"CapDrop,omitempty"`
+	SecurityOpt   []string            `json:"SecurityOpt,omitempty"`
 }
 
 // DockerLogConfig is the log driver of a container.
