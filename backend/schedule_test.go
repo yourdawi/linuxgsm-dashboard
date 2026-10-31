@@ -20,7 +20,6 @@ func TestIsValidCronExpr(t *testing.T) {
 	}
 }
 
-
 func TestCronLineCommandExactScriptMatch(t *testing.T) {
 	expr, cmd, ok := cronLineCommand("*/5 * * * * /home/vh/vhserver monitor > /dev/null 2>&1", "/home/vh/vhserver")
 	if !ok || cmd != "monitor" || expr != "*/5 * * * *" {
