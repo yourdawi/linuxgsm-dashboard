@@ -70,28 +70,29 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 
 ### Console and logs
 
-- Live view of the LinuxGSM tmux session with an input field for console commands.
-- Four log views: tmux pane, console log, script log (`log/script/`) and game log (`log/game/` or common log files in `serverfiles/`).
-- Additional LinuxGSM commands in the console view: `check-update`, `update-lgsm`, `force-update`, `mods-install`, `mods-update`, `fastdl`, `postdetails`, `test-alert` and `debug`.
+- Live view of the LinuxGSM tmux session with an input field for console commands (for games whose console takes input, `consoleinteract` in LinuxGSM).
+- Four log views: tmux pane, console log, script log (`log/script/`) and game log (the newest file in LinuxGSM's `gamelogdir`).
+- Additional LinuxGSM commands in the console view: `check-update`, `update-lgsm`, `force-update`, `validate`, `mods-install`, `mods-update`, `fastdl`, `postdetails` and `test-alert`. The output streams live, including LinuxGSM's status lines and SteamCMD's progress.
+- Only the commands LinuxGSM offers for the game are shown and accepted (the rules of LinuxGSM's `core_getopt.sh`): `validate` and `force-update` only for SteamCMD games, `fastdl` for Source and GoldSrc. One command runs per server directory at a time.
 
 ### Game-specific actions
 
-Shown in the console view depending on the game:
+Shown in the console view where LinuxGSM has the command for the game:
 
-| Game | Actions |
-|------|---------|
-| Rust | Map wipe, full wipe, map compressor, Oxide/uMod install and update |
-| Source engine games (CS2, CS:GO, TF2, CS:S, Garry's Mod, L4D2 and others) | FastDL generation, copyable FastDL URL, Metamod/SourceMod install and update |
-| TeamSpeak 3 | Reset the ServerQuery admin password |
-| Multi Theft Auto | Install the default resources |
-| Unreal Tournament (99, 2004, 3) | Map compressor for redirect downloads |
-| Arma 3, Minecraft, 7 Days to Die, Factorio, ARK, Killing Floor 2, Don't Starve Together, Insurgency: Sandstorm, Valheim, TrackMania | Install and update mods/plugins through LinuxGSM, list of installed mods |
+| Command | Games |
+|---------|-------|
+| Map wipe, full wipe | Rust |
+| Mods and plugins: pick from LinuxGSM's list, install, update, remove | Source engine games, CS2, Rust, 7 Days to Die, Valheim and the other games LinuxGSM has mods for |
+| Workshop update | Arma 3, DayZ, Squad and the other Workshop games of LinuxGSM |
+| FastDL generation, copyable FastDL URL | Source and GoldSrc games |
+| Map compressor for redirect downloads | Unreal engine 1 and 2 games (UT99, UT2004, Killing Floor, Red Orchestra) |
+| Install the default resources | Multi Theft Auto |
 
 The dashboard also serves FastDL content directly under `/fastdl/<server>/`, so the URL can be used for `sv_downloadurl` without a separate web server. For servers of nodes, see [Game servers on nodes](#game-servers-on-nodes).
 
 ### Configuration and files
 
-- Config editor for the LinuxGSM configuration layers (`_default.cfg`, `common.cfg`, instance config and secrets files) and for config files found in `serverfiles/` (`.cfg`, `.ini`, `.properties`, `.conf`, `.json`). Each file can be edited in a form view or as raw text. LinuxGSM restores `_default.cfg` every time the server script runs, so values changed there are saved to the instance config (`<script>.cfg`), which overrides them.
+- Config editor for the game config LinuxGSM starts the game with (`servercfgfullpath`, wherever the game keeps it, also below `Saved/` or in the user's home), the LinuxGSM configuration layers (`_default.cfg`, `common.cfg`, instance config and secrets files; administrators only) and other config files found in `serverfiles/`. Each file can be edited in a form view or as raw text; the form view writes bash values quoted, with `$` taken literally unless it starts a `${variable}`. LinuxGSM restores `_default.cfg` every time the server script runs, so values changed there are saved to the instance config (`<script>.cfg`), which overrides them.
 - Stop mode selection (all 13 LinuxGSM stop modes or the default).
 - File manager for `serverfiles/`: browse, view, edit, upload and download files.
 
@@ -99,19 +100,19 @@ The dashboard also serves FastDL content directly under `/fastdl/<server>/`, so 
 
 - List, create, download, upload, delete and restore backups. The backup directory configured in LinuxGSM (`backupdir`) is taken into account.
 - All archive formats LinuxGSM creates are supported: `.tar.zst` (used when `zstd` is installed), `.tar.gz` and plain `.tar`. Restoring a `.tar.zst` backup needs `zstd` and GNU tar 1.31 or newer on the host.
-- Restores stop a running server first, extract the archive and start the server again. The output is streamed live.
+- Restores stop the server (and every other instance in the same directory) first, extract only the server data (`serverfiles`, LinuxGSM configs, logs; never dotfiles, scripts or lock files) and start the servers again. The output is streamed live.
 - Uploaded archives are handed over to the server's Linux user, so backups can be moved between hosts.
-- Retention settings (`maxbackups`, `maxbackupdays`, `stoponbackup`) and an optional cron schedule for automatic backups.
+- Retention settings (`maxbackups` of at least 1, `maxbackupdays`, `stoponbackup`) and an optional cron schedule for automatic backups.
 - Synchronisation of the backup directory to any rclone remote (Google Drive, S3, Backblaze B2, WebDAV and so on). The rclone remote is configured with `rclone config` as the server's Linux user.
 
 ### Scheduling and automation
 
-- Scheduler for the server user's crontab: crash monitoring every 5, 10 or 15 minutes, update checks, a daily `force-update` at a chosen time and a weekly `update-lgsm`.
+- Scheduler for the server user's crontab: a cron expression (or a preset) for `monitor`, `update`, `force-update`, `restart` and `update-lgsm`, as far as LinuxGSM has the command for the game. Only the jobs you change are written; other lines stay exactly as they are.
 - One-click installation of the recommended LinuxGSM cron jobs and of a systemd service that starts the server at boot. Both are also shown as templates for manual setup.
 
 ### Notifications
 
-Configuration of the LinuxGSM alert channels Discord, Telegram, e-mail (SMTP), Matrix, ntfy, Slack, Pushover, Pushbullet, IFTTT and Rocket.Chat. Stored secrets such as webhook URLs and tokens are never sent back to the browser; they are shown masked and stay unchanged unless a new value is entered.
+Configuration of the LinuxGSM alerts with LinuxGSM's own settings: Discord, e-mail (sent with the machine's local `mail` command, as LinuxGSM does), Gotify, IFTTT, Matrix, ntfy, Pushbullet, Pushover, Rocket.Chat, Slack and Telegram, plus alerts on start, stop and restart. Secrets are stored in `secrets-<server>.cfg`; only changed values are written, and LinuxGSM's defaults are shown as placeholders. Stored secrets such as webhook URLs and tokens are never sent back to the browser; they are shown masked and stay unchanged unless a new value is entered.
 
 ### Users, monitoring and interface
 
@@ -162,7 +163,7 @@ The installer opens a menu:
 | 1. Install / update (latest release) | Downloads the latest release binary, checks its signature (OpenSSL 3) and checksum, and installs it. No Go or Git needed. |
 | 2. Install / update from source: main branch | Clones `main` and compiles it. The result is a development build (`dev-main-<commit>`). |
 | 3. Install / update from source: dev branch | Same with the `dev` branch (`dev-dev-<commit>`). |
-| 4. Uninstall | Removes the service and `/opt/lgsm-dashboard`. Packages are only removed if the installer installed them. Game server users and their files are kept. |
+| 4. Uninstall | Removes the service and `/opt/lgsm-dashboard`. Packages are only removed if the installer installed them, and the packages LinuxGSM needs stay while game servers remain. Game server users and their files are kept. |
 | 5. Status | Service state, installed version and installation log. |
 
 The same can be done without the menu:
@@ -181,7 +182,7 @@ During an installation the installer:
 
 1. checks the architecture and warns if the host has less than 2 GB of RAM,
 2. asks for the port on a new installation (an update keeps the current port) and checks that it is free,
-3. installs missing tools (curl and sudo; Git only for builds from source, which use a temporary official Go release) and the LinuxGSM game dependencies, and records which packages it installed,
+3. installs missing tools (curl; Git only for builds from source, which use a temporary official Go release) and the LinuxGSM game dependencies, and records which packages it installed,
 4. installs the binary to `/opt/lgsm-dashboard/lgsm-dashboard` and keeps the previous one as `lgsm-dashboard.old`,
 5. writes the systemd service `lgsm-dashboard` (with `ProtectSystem=true` and a restricted capability set),
 6. optionally opens the port in an active UFW or firewalld firewall (new installations only),
@@ -273,7 +274,7 @@ The dashboard picks the mode by itself: inside a container it uses Docker mode, 
 | Game servers run as | one Linux user per server, LinuxGSM in its home directory | one container per server from `gameservermanagers/gameserver:<game>` |
 | Server discovery | home directories, users with UID 1000 or higher, additional server directories | containers with the `lgsm-dashboard.*` labels |
 | Install game servers | Yes, Linux user, optional installation directory | Yes, server name; the image is pulled and the data stored in `<LGSM_DATA_DIR>/<name>` |
-| Game dependencies | installed by LinuxGSM during the installation (temporary `sudo`) | included in the image |
+| Game dependencies | installed by the dashboard from LinuxGSM's dependency list before each game server installation | included in the image |
 | Clone instance | Yes, new instance script, shares `serverfiles` | Yes, new container with a copy of `serverfiles` and the configs |
 | Delete server | Yes, including the Linux user if it is not shared | Yes, container and data directory |
 | Start, stop, restart, update, validate and all other LinuxGSM commands, bulk actions | Yes | Yes, through `docker exec` |
@@ -286,7 +287,7 @@ The dashboard picks the mode by itself: inside a container it uses Docker mode, 
 | Backups: create, restore, upload, download, retention | Yes | Yes |
 | Cloud sync with rclone | Yes, rclone on the host | No, rclone is not part of the official images |
 | Notifications, stop mode | Yes | Yes |
-| Scheduler: monitor, update checks, daily `force-update`, weekly `update-lgsm`, automatic backups | Yes, crontab of the server user | Yes, run by the dashboard |
+| Scheduler: monitor, update checks, restarts, `force-update`, weekly `update-lgsm`, automatic backups | Yes, crontab of the server user | Yes, run by the dashboard |
 | Time zone of the schedules | time zone of the host | **Settings > General** (default: `TZ` or UTC) |
 | Restart after a crash | cron job `monitor` | health check of the official images, plus the optional `monitor` schedule |
 | Autostart at boot | systemd service per server | restart policy `unless-stopped` |
@@ -547,7 +548,7 @@ When upgrading from version 1.0.7 or older:
 - Player names are only available where the game reports them (A2S player list, Minecraft player sample). Kick and ban send `kick <name>` / `ban <name>` to the console, which not every game understands.
 - The live query uses the local address or the `Server IP` reported by LinuxGSM (in Docker mode also the Docker host); servers that block queries from the host itself show no player data.
 - The file manager edits files as plain text, without syntax highlighting, and opens files up to 5 MB in the editor.
-- During the installation of a new game server, the new Linux user temporarily gets passwordless `sudo`, because LinuxGSM installs missing system packages itself. The permission is removed when the installation ends and on the next start of the dashboard. The service runs with `ProtectSystem=true` (a read-only `/usr`), so LinuxGSM's `auto-install` runs as a transient systemd unit (`systemd-run`) outside of that sandbox.
+- Before a game server is installed, the dashboard installs the packages LinuxGSM lists for that game itself (from LinuxGSM's dependency list on GitHub, Debian/Ubuntu and RHEL based systems); the game server user never gets `sudo`. Packages LinuxGSM adds from other repositories (Mono, .NET) are not covered; LinuxGSM names them if they are missing. The service runs with `ProtectSystem=true` (a read-only `/usr`), so package installs and LinuxGSM's `auto-install` run as transient systemd units (`systemd-run`) outside of that sandbox.
 - CPU and RAM are measured per Linux user, so instances that share a user show the same values. The same applies to disk usage when instances share a directory (marked in the tooltip).
 
 ## Development

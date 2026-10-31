@@ -678,8 +678,6 @@ install_tools_and_binary() {
     }
 
     command -v curl &> /dev/null || { install_package curl; add_installed curl; }
-    # LinuxGSM's dependency installer needs sudo (granted temporarily during game installation).
-    is_package_installed sudo || command -v sudo &> /dev/null || { install_package sudo; add_installed sudo; }
 
     # Go is not installed as a package: build_from_source uses a temporary official Go release
     # unless the system already has a new enough Go.
@@ -1134,6 +1132,8 @@ do_uninstall() {
             echo -e "${YELLOW}[INFO] Game servers remain on this machine, keeping the packages LinuxGSM needs.${NC}"
         fi
         for pkg in $STATE_INSTALLED_DEPS; do
+            # sudo was installed by versions before 2.0.0; it may be in use by now (and apt refuses).
+            [ "$pkg" == "sudo" ] && continue
             if [ "$keep_game_deps" == "true" ] && is_lgsm_dependency "$pkg"; then
                 continue
             fi
