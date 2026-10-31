@@ -186,7 +186,7 @@ func TestRunActionStreamsRuntimeOutput(t *testing.T) {
 	im := newFakeManager(rt, GameServerInstance{ID: "vhserver", Script: "vhserver", User: "vh", Dir: "/home/vh"})
 
 	rec := httptest.NewRecorder()
-	im.RunAction(rec, httptest.NewRequest("POST", "/", nil), "vhserver", "start", "en")
+	im.RunAction(rec, httptest.NewRequest("POST", "/", nil), "vhserver", "start", ActionInput{}, "en")
 	body := rec.Body.String()
 	for _, want := range []string{`"text":"Starting\n"`, `"text":"OK\n"`, `"type":"exit"`, `"code":5`} {
 		if !strings.Contains(body, want) {
@@ -264,7 +264,13 @@ func TestNoDetailsDuringInstall(t *testing.T) {
 	im.static = false
 	im.rt = discoverRuntime{rt, []GameServerInstance{{ID: "ts3server", Script: "ts3server", User: "ts3", Dir: t.TempDir(), Status: "stopped"}}}
 
-	done := im.beginInstall("ts3")
+	done, ok := im.beginInstall("ts3")
+	if !ok {
+		t.Fatal("install refused")
+	}
+	if _, ok := im.beginInstall("ts3"); ok {
+		t.Fatal("a second installation for the same user was allowed")
+	}
 	im.ScanInstances()
 	if s, _ := im.getServer("ts3server"); s.Status != "installing" {
 		t.Errorf("status during install = %q", s.Status)
@@ -294,4 +300,28 @@ func TestNoDetailsDuringInstall(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Error("details did not run after the installation")
+}
+
+// A lone \r ends a line (it is redrawn), \r\n does not split twice; the SSE writer marks the
+// redrawing line.
+func TestStreamLinesRedraw(t *testing.T) {
+	var lines []string
+	_ = streamLines(func(w io.Writer) error {
+		_, _ = io.WriteString(w, "[ .... ] Starting\r\x1b[K[  OK  ] Starting\nwin\r\nprogress 10%\rprogress 50%\rdone\n")
+		return nil
+	}, func(line string) { lines = append(lines, line) }, nil)
+	want := []string{"[ .... ] Starting\r", "\x1b[K[  OK  ] Starting\n", "win\r\n", "progress 10%\r", "progress 50%\r", "done\n"}
+	if strings.Join(lines, "|") != strings.Join(want, "|") {
+		t.Fatalf("lines %q", lines)
+	}
+
+	rec := httptest.NewRecorder()
+	sse, _ := newSSEWriter(rec)
+	for _, l := range lines {
+		sse.log(l)
+	}
+	body := rec.Body.String()
+	if strings.Count(body, `"replace":true`) != 3 || !strings.Contains(body, `"text":"[  OK  ] Starting\n"`) {
+		t.Fatalf("sse %s", body)
+	}
 }

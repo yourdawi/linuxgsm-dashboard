@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +22,7 @@ import (
 // minute the scheduler runs the due LinuxGSM commands through docker exec.
 
 // scheduledCommands are the LinuxGSM commands a schedule may run.
-var scheduledCommands = map[string]bool{"monitor": true, "update": true, "force-update": true, "update-lgsm": true, "backup": true}
+var scheduledCommands = map[string]bool{"monitor": true, "update": true, "force-update": true, "restart": true, "update-lgsm": true, "backup": true}
 
 // scheduleTimeout bounds a single scheduled command (updates and backups of large servers).
 const scheduleTimeout = 6 * time.Hour
@@ -30,7 +31,7 @@ func (d *DockerRuntime) scheduleFile(srv GameServerInstance) (string, error) {
 	if d.scheduleDir == "" {
 		return "", fmt.Errorf("schedules are not available: no configuration directory")
 	}
-	if !IsValidServerID(srv.ID) {
+	if !IsValidLocalServerID(srv.ID) {
 		return "", fmt.Errorf("invalid server id")
 	}
 	return filepath.Join(d.scheduleDir, srv.ID+".cron"), nil
@@ -85,7 +86,7 @@ func dueJobs(scheduleDir string, t time.Time) []scheduledJob {
 	var jobs []scheduledJob
 	for _, file := range files {
 		id := strings.TrimSuffix(filepath.Base(file), ".cron")
-		if !IsValidServerID(id) {
+		if !IsValidLocalServerID(id) {
 			continue
 		}
 		data, err := os.ReadFile(file)
@@ -197,17 +198,46 @@ func (d *DockerRuntime) SetTimeZone(name string) error {
 	return d.timeZone.set(name)
 }
 
-var scheduleBusy sync.Map // server ID -> struct{}
+// scheduleQueue runs the scheduled commands of one server one after another. Commands that
+// become due while another one runs (a backup can take an hour) wait instead of being dropped;
+// a command already waiting is not queued twice (a monitor every five minutes).
+type scheduleQueue struct {
+	mu      sync.Mutex
+	running bool
+	pending []string
+}
+
+var scheduleQueues sync.Map // server ID -> *scheduleQueue
 
 func (d *DockerRuntime) runJobs(srv GameServerInstance, commands []string) {
 	defer logPanic("scheduled commands of " + srv.ID)
-	if _, busy := scheduleBusy.LoadOrStore(srv.ID, struct{}{}); busy {
-		fmt.Printf("[SCHEDULE] %s: %s skipped, earlier scheduled commands are still running\n", srv.ID, strings.Join(commands, ", "))
+	v, _ := scheduleQueues.LoadOrStore(srv.ID, &scheduleQueue{})
+	q := v.(*scheduleQueue)
+	q.mu.Lock()
+	for _, c := range commands {
+		if !slices.Contains(q.pending, c) {
+			q.pending = append(q.pending, c)
+		}
+	}
+	if q.running {
+		fmt.Printf("[SCHEDULE] %s: %s queued, earlier scheduled commands are still running\n", srv.ID, strings.Join(commands, ", "))
+		q.mu.Unlock()
 		return
 	}
-	defer scheduleBusy.Delete(srv.ID)
+	q.running = true
+	q.mu.Unlock()
 
-	for _, command := range commands {
+	for {
+		q.mu.Lock()
+		if len(q.pending) == 0 {
+			q.running = false
+			q.mu.Unlock()
+			return
+		}
+		command := q.pending[0]
+		q.pending = q.pending[1:]
+		q.mu.Unlock()
+
 		ctx, cancel := context.WithTimeout(context.Background(), scheduleTimeout)
 		start := time.Now()
 		err := d.RunLGSM(ctx, srv, ExecIO{}, command)

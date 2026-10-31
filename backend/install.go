@@ -23,14 +23,20 @@ func (im *InstanceManager) InstallGame(w http.ResponseWriter, r *http.Request, g
 		return
 	}
 
+	done, ok := im.beginInstall(username)
+	if !ok {
+		http.Error(w, "An installation for this user is already running", http.StatusConflict)
+		return
+	}
+
 	sse, ok := newSSEWriter(w)
 	if !ok {
+		done()
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 
 	// The installation keeps running when the browser disconnects.
-	done := im.beginInstall(username)
 	err := im.rt.Install(context.Background(), req, sse.log)
 	done()
 

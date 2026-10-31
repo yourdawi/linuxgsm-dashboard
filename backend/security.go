@@ -170,9 +170,32 @@ func IsValidScriptName(s string) bool {
 	return reScriptName.MatchString(s) && !strings.Contains(s, "..")
 }
 
-// IsValidServerID validates server IDs coming from URLs or JSON bodies.
+// IsValidServerID validates server IDs coming from URLs or JSON bodies. Servers on a node have
+// the global ID "<node>~<local ID>"; '~' never occurs in local IDs.
 func IsValidServerID(id string) bool {
+	if node, local, ok := strings.Cut(id, "~"); ok {
+		return IsValidNodeID(node) && IsValidLocalServerID(local)
+	}
+	return IsValidLocalServerID(id)
+}
+
+// IsValidLocalServerID validates an ID of a server on this machine (no node prefix).
+func IsValidLocalServerID(id string) bool {
 	return reServerID.MatchString(id) && !strings.Contains(id, "..")
+}
+
+// SplitServerID splits a global server ID into node and local ID. node is "" for servers of
+// this machine.
+func SplitServerID(id string) (node, local string) {
+	if n, l, ok := strings.Cut(id, "~"); ok {
+		return n, l
+	}
+	return "", id
+}
+
+// GlobalServerID returns the ID under which the controller shows a server of a node.
+func GlobalServerID(node, local string) string {
+	return node + "~" + local
 }
 
 // IsSafeCfgValue reports whether a value can be written as key="value" into a

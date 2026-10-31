@@ -10,7 +10,7 @@
 # release binaries. The final stages have no RUN instructions, which lets buildx assemble every
 # platform without emulation.
 
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.27
 ARG ALPINE_VERSION=3.22
 
 # ---------------------------------------------------------------- build from source

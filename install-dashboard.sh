@@ -7,11 +7,19 @@
 #
 # Installation modes:
 #   (default)      latest signed release binary from GitHub (no Go or Git needed)
+#                  Source builds use the installed Go if it is new enough, otherwise a temporary
+#                  official Go release from go.dev (checksum verified, removed after the build).
 #   --source       build from the main branch (development build)
 #   --dev          build from the dev branch (development build)
 #   --local        build from the current directory (for developers)
 #
 # Other arguments: install | uninstall | status | --port <port>
+#
+# Node of another dashboard (agent, see Settings > Nodes in the dashboard):
+#   --agent --join '<pairing command>' [--mode read-only|read-write]
+#     (or --join <url> --token <token> --ca-fingerprint <sha256:...>)
+#     [--fastdl-port <port> --fastdl-url <url>]   (FastDL served by the node itself)
+#     [--insecure-skip-signature]   (only without OpenSSL 3: rely on the checksum of a release)
 
 # Terminal output colors
 RED='\033[0;31m'
@@ -26,6 +34,8 @@ INSTALL_DIR="/opt/lgsm-dashboard"
 BINARY="$INSTALL_DIR/lgsm-dashboard"
 STATE_FILE="$INSTALL_DIR/.install-state"
 SERVICE_NAME="lgsm-dashboard"
+# A node of another dashboard runs the same binary as agent under its own service.
+AGENT_SERVICE_NAME="lgsm-dashboard-agent"
 REPO="yourdawi/linuxgsm-dashboard"
 REPO_URL="https://github.com/$REPO.git"
 
@@ -154,7 +164,6 @@ uninstall_package() {
     echo -e "${YELLOW}[SYS] Removing package: $pkg...${NC}"
     if [ "$OS_TYPE" == "debian" ]; then
         apt-get purge -y "$pkg" > /dev/null 2>&1
-        apt-get autoremove -y > /dev/null 2>&1
     elif [ "$OS_TYPE" == "redhat" ]; then
         if command -v dnf &> /dev/null; then
             dnf remove -y "$pkg" > /dev/null 2>&1
@@ -197,6 +206,7 @@ configure_firewall() {
 # Installation state (kept across updates)
 # ------------------------------------------------------------------
 
+STATE_ROLE=""
 STATE_GIT_PREEXISTED=""
 STATE_GO_PREEXISTED=""
 STATE_CURL_PREEXISTED=""
@@ -204,12 +214,15 @@ STATE_SUDO_PREEXISTED=""
 STATE_PORT=""
 STATE_INSTALLED_DEPS=""
 STATE_INSTALL_DATE=""
+STATE_FASTDL_PORT=""
+STATE_FASTDL_URL=""
 
 load_state() {
     [ -f "$STATE_FILE" ] || return 1
-    local GIT_PREEXISTED="" GO_PREEXISTED="" CURL_PREEXISTED="" SUDO_PREEXISTED="" PORT="" INSTALLED_DEPS="" INSTALL_DATE=""
+    local ROLE="" GIT_PREEXISTED="" GO_PREEXISTED="" CURL_PREEXISTED="" SUDO_PREEXISTED="" PORT="" INSTALLED_DEPS="" INSTALL_DATE="" FASTDL_PORT="" FASTDL_URL=""
     # shellcheck disable=SC1090
     source "$STATE_FILE"
+    STATE_ROLE="${ROLE:-dashboard}"
     STATE_GIT_PREEXISTED="$GIT_PREEXISTED"
     STATE_GO_PREEXISTED="$GO_PREEXISTED"
     STATE_CURL_PREEXISTED="$CURL_PREEXISTED"
@@ -217,6 +230,8 @@ load_state() {
     STATE_PORT="$PORT"
     STATE_INSTALLED_DEPS="$INSTALLED_DEPS"
     STATE_INSTALL_DATE="$INSTALL_DATE"
+    STATE_FASTDL_PORT="$FASTDL_PORT"
+    STATE_FASTDL_URL="$FASTDL_URL"
     return 0
 }
 
@@ -234,8 +249,9 @@ track_tool() {
 }
 
 write_state() {
-    local installed_deps="$1" mode="$2" version="$3"
+    local installed_deps="$1" mode="$2" version="$3" role="${4:-dashboard}"
     cat <<EOT > "$STATE_FILE"
+ROLE=$role
 GIT_PREEXISTED=$STATE_GIT_PREEXISTED
 GO_PREEXISTED=$STATE_GO_PREEXISTED
 CURL_PREEXISTED=$STATE_CURL_PREEXISTED
@@ -246,6 +262,8 @@ INSTALL_DATE="${STATE_INSTALL_DATE:-$(date '+%Y-%m-%d %H:%M:%S')}"
 LAST_UPDATE="$(date '+%Y-%m-%d %H:%M:%S')"
 INSTALL_MODE="$mode"
 INSTALLED_VERSION="$version"
+FASTDL_PORT="$STATE_FASTDL_PORT"
+FASTDL_URL="$STATE_FASTDL_URL"
 EOT
     chmod 600 "$STATE_FILE"
 }
@@ -271,9 +289,14 @@ verify_signature() {
         echo -e "${YELLOW}[WARNING] No release signing key configured in this installer, verifying the checksum only.${NC}"
         return 0
     fi
-    if ! command -v openssl &> /dev/null || ! openssl version 2>/dev/null | grep -qE '^OpenSSL 3'; then
-        echo -e "${YELLOW}[WARNING] OpenSSL 3 not available, verifying the checksum only.${NC}"
-        return 0
+    # OpenSSL 3 or later verifies Ed25519 from the command line.
+    if ! command -v openssl &> /dev/null || ! openssl version 2>/dev/null | grep -qE '^OpenSSL ([3-9]|[1-9][0-9])[.]'; then
+        if [ "$INSECURE_SKIP_SIGNATURE" == "true" ]; then
+            echo -e "${YELLOW}[WARNING] OpenSSL 3 not available, verifying the checksum only (--insecure-skip-signature).${NC}"
+            return 0
+        fi
+        echo -e "${RED}[ERROR] OpenSSL 3 or later is needed to verify the release signature. Install it, or run this script with --insecure-skip-signature to rely on the checksum only.${NC}"
+        return 1
     fi
     work=$(mktemp -d)
     # DER header of an Ed25519 SubjectPublicKeyInfo followed by the 32 byte key.
@@ -344,6 +367,92 @@ fetch_release_binary() {
 }
 
 # ------------------------------------------------------------------
+# Go toolchain for builds from source
+# ------------------------------------------------------------------
+
+# Go binary used for the build and the temporary directory of a downloaded Go release.
+GO_BIN=""
+GO_WORK=""
+
+# Prints the minimum Go version from the go directive of $1/go.mod (for example 1.27).
+required_go_version() {
+    sed -n -E 's/^go[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?)[[:space:]]*$/\1/p' "$1/go.mod" | head -n1
+}
+
+# version_at_least <have> <want>
+version_at_least() {
+    [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]
+}
+
+# Sets GO_BIN to a Go of at least version $1: the Go installed on the system when it is new
+# enough, otherwise the current official release from go.dev, checked against the SHA-256
+# checksum go.dev publishes and unpacked into a temporary directory (removed by cleanup_go).
+# Distribution packages are not used because they are often several releases behind.
+prepare_go() {
+    local required=$1 have arch entry version sha file
+    if command -v go &> /dev/null; then
+        have=$(cd / && GOTOOLCHAIN=local go env GOVERSION 2>/dev/null)
+        have=${have#go}
+        if [ -n "$have" ] && version_at_least "$have" "$required"; then
+            GO_BIN=$(command -v go)
+            echo -e "${CYAN}[SYS] Using the installed Go $have.${NC}" >&2
+            return 0
+        fi
+        echo -e "${YELLOW}[SYS] The installed Go ${have:-(unknown version)} is older than $required, using the official Go release instead.${NC}" >&2
+    fi
+
+    arch=$(release_asset_arch)
+    if [ -z "$arch" ]; then
+        echo -e "${RED}[ERROR] No official Go release for architecture $(uname -m).${NC}" >&2
+        return 1
+    fi
+    # The list holds the stable releases, newest first. The first archive for this platform is
+    # the current release.
+    entry=$(download "https://go.dev/dl/?mode=json" /dev/stdout 2>/dev/null | tr -d ' \t\r\n' |
+        grep -o "\"filename\":\"go[0-9.]*\.linux-$arch\.tar\.gz\"[^}]*\"kind\":\"archive\"" | head -n1)
+    version=$(sed -E 's/.*"version":"go([0-9.]+)".*/\1/' <<< "$entry")
+    sha=$(sed -E 's/.*"sha256":"([0-9a-f]{64})".*/\1/' <<< "$entry")
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || ! [[ "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+        echo -e "${RED}[ERROR] Could not determine the current Go release from go.dev.${NC}" >&2
+        return 1
+    fi
+    if ! version_at_least "$version" "$required"; then
+        echo -e "${RED}[ERROR] The current Go release $version is older than the required Go $required.${NC}" >&2
+        return 1
+    fi
+
+    GO_WORK=$(mktemp -d)
+    file="go$version.linux-$arch.tar.gz"
+    echo -e "${CYAN}[SYS] Downloading Go $version ($file)...${NC}" >&2
+    if ! download "https://go.dev/dl/$file" "$GO_WORK/$file"; then
+        echo -e "${RED}[ERROR] Download of Go $version failed.${NC}" >&2
+        cleanup_go
+        return 1
+    fi
+    if ! echo "$sha  $GO_WORK/$file" | sha256sum -c --status -; then
+        echo -e "${RED}[ERROR] Checksum mismatch for $file. Aborting.${NC}" >&2
+        cleanup_go
+        return 1
+    fi
+    if ! tar --no-same-owner -C "$GO_WORK" -xzf "$GO_WORK/$file"; then
+        echo -e "${RED}[ERROR] Unpacking $file failed.${NC}" >&2
+        cleanup_go
+        return 1
+    fi
+    rm -f "${GO_WORK:?}/$file"
+    GO_BIN="$GO_WORK/go/bin/go"
+    echo -e "${GREEN}[OK] Go $version verified.${NC}" >&2
+}
+
+# Removes a downloaded Go release including its module and build cache.
+cleanup_go() {
+    if [ -n "$GO_WORK" ]; then
+        rm -rf "$GO_WORK"
+    fi
+    GO_WORK=""
+}
+
+# ------------------------------------------------------------------
 # Source build
 # ------------------------------------------------------------------
 
@@ -375,9 +484,27 @@ build_from_source() {
         version="dev-$source-$(git -C "$src" rev-parse --short HEAD)"
     fi
 
+    local required
+    required=$(required_go_version "$src")
+    if [ -z "$required" ]; then
+        echo -e "${RED}[ERROR] go.mod of the source has no go directive.${NC}" >&2
+        return 1
+    fi
+    prepare_go "$required" || return 1
+
     echo -e "${YELLOW}[SYS] Compiling $version (this can take a minute)...${NC}" >&2
-    if ! (cd "$src" && go build -trimpath -ldflags "-X main.Version=$version" -o "$target" .) >&2; then
-        echo -e "${RED}[ERROR] Compilation failed. Go $(go env GOVERSION 2>/dev/null) is installed; Go 1.20 or newer is recommended.${NC}" >&2
+    # GOTOOLCHAIN=local: never switch to yet another downloaded toolchain. A downloaded Go keeps
+    # its module and build cache in its temporary directory, so nothing stays behind.
+    local build_ok="true"
+    if [ -n "$GO_WORK" ]; then
+        (cd "$src" && GOTOOLCHAIN=local GOPATH="$GO_WORK/gopath" GOCACHE="$GO_WORK/cache" \
+            "$GO_BIN" build -trimpath -ldflags "-X main.Version=$version" -o "$target" .) >&2 || build_ok="false"
+    else
+        (cd "$src" && GOTOOLCHAIN=local "$GO_BIN" build -trimpath -ldflags "-X main.Version=$version" -o "$target" .) >&2 || build_ok="false"
+    fi
+    cleanup_go
+    if [ "$build_ok" != "true" ]; then
+        echo -e "${RED}[ERROR] Compilation failed.${NC}" >&2
         return 1
     fi
     echo "$version"
@@ -396,6 +523,22 @@ remove_legacy_source_layout() {
 # ------------------------------------------------------------------
 # Install / update
 # ------------------------------------------------------------------
+
+# Packages the installer adds for LinuxGSM game servers (install_lgsm_dependencies).
+LGSM_GAME_PACKAGES=" bc binutils bsdmainutils bzip2 ca-certificates cpio curl distro-info file gzip hostname jq lib32gcc-s1 lib32stdc++6 netcat-openbsd pigz python3 rclone tmux unzip util-linux uuid-runtime wget xz-utils libxml2-utils libsdl2-2.0-0:i386 libsdl2-2.0-0 libncurses5 libncurses6 libncursesw5 libncursesw6 tar "
+
+is_lgsm_dependency() {
+    [[ "$LGSM_GAME_PACKAGES" == *" $1 "* ]]
+}
+
+# Reports whether LinuxGSM scripts are left in any home directory.
+game_servers_remain() {
+    local f
+    for f in /home/*/*server /home/*/*server-*; do
+        [ -f "$f" ] && head -c 4096 "$f" 2>/dev/null | grep -q "LinuxGSM" && return 0
+    done
+    return 1
+}
 
 install_lgsm_dependencies() {
     local -n deps_ref=$1
@@ -418,7 +561,8 @@ install_lgsm_dependencies() {
     echo -e "${YELLOW}[SYS] Checking LinuxGSM game server dependencies...${NC}"
     local pkg
     if [ "$OS_TYPE" == "debian" ]; then
-        dpkg --add-architecture i386 > /dev/null 2>&1
+        # 32-bit packages exist on amd64 only (arm64 mirrors have no i386 indices).
+        [ "$(dpkg --print-architecture 2>/dev/null)" == "amd64" ] && dpkg --add-architecture i386 > /dev/null 2>&1
         apt-get update -y > /dev/null 2>&1
         APT_UPDATED="true"
 
@@ -481,21 +625,10 @@ port_in_use() {
     fi
 }
 
-# $1 = release | main | dev | local
-do_install() {
-    local mode="${1:-release}"
-    local is_update="false"
-    [ -x "$BINARY" ] && is_update="true"
-
-    echo -e "\n${BLUE}==================================================================${NC}"
-    if [ "$is_update" == "true" ]; then
-        echo -e "${MAGENTA}                  Updating installation ($mode)...                ${NC}"
-    else
-        echo -e "${MAGENTA}                  Starting installation ($mode)...                ${NC}"
-    fi
-    echo -e "${BLUE}==================================================================${NC}"
-
-    # 1. Pre-flight checks
+# Architecture, systemd and RAM checks shared by dashboard and agent installations.
+# $1 = "true" for an update (no RAM question).
+preflight_checks() {
+    local is_update=$1
     echo -e "${CYAN}[SYS] Running pre-flight system checks...${NC}"
     local arch
     arch=$(uname -m)
@@ -526,6 +659,125 @@ do_install() {
             fi
         fi
     fi
+}
+
+# Installs the tools, the LinuxGSM game dependencies and the binary (release or build from
+# source). Shared by dashboard and agent installations. $1 = release | main | dev | local.
+# Sets INSTALL_VERSION and INSTALL_PACKAGES (packages installed by this script so far).
+INSTALL_VERSION=""
+INSTALL_PACKAGES=""
+install_tools_and_binary() {
+    local mode=$1
+    STATE_CURL_PREEXISTED=$(track_tool curl "$STATE_CURL_PREEXISTED")
+    STATE_SUDO_PREEXISTED=$(track_tool sudo "$STATE_SUDO_PREEXISTED")
+    # shellcheck disable=SC2206
+    local installed_packages=($STATE_INSTALLED_DEPS)
+    add_installed() {
+        local p
+        for p in "${installed_packages[@]}"; do [ "$p" == "$1" ] && return; done
+        installed_packages+=("$1")
+    }
+
+    command -v curl &> /dev/null || { install_package curl; add_installed curl; }
+
+    # Go is not installed as a package: build_from_source uses a temporary official Go release
+    # unless the system already has a new enough Go.
+    if [ "$mode" != "release" ]; then
+        STATE_GIT_PREEXISTED=$(track_tool git "$STATE_GIT_PREEXISTED")
+        if [ "$mode" != "local" ] && ! command -v git &> /dev/null; then
+            install_package git
+            add_installed git
+        fi
+    fi
+
+    local new_deps=()
+    install_lgsm_dependencies new_deps
+    local p
+    for p in "${new_deps[@]}"; do add_installed "$p"; done
+    INSTALL_PACKAGES="${installed_packages[*]}"
+
+    local new_binary="$INSTALL_DIR/lgsm-dashboard.download" version
+    rm -f "$new_binary"
+    if [ "$mode" == "release" ]; then
+        version=$(fetch_release_binary "$new_binary") || return 1
+    else
+        version=$(build_from_source "$mode" "$new_binary") || return 1
+    fi
+
+    remove_legacy_source_layout
+    [ -f "$BINARY" ] && cp -p "$BINARY" "$BINARY.old"
+    # rename() replaces the binary atomically, even while the old one is running.
+    mv -f "$new_binary" "$BINARY"
+    chmod 0755 "$BINARY"
+    mkdir -p "$INSTALL_DIR/config"
+    chmod 700 "$INSTALL_DIR/config"
+    INSTALL_VERSION="$version"
+    echo -e "${GREEN}[OK] Dashboard $version installed to $BINARY.${NC}"
+}
+
+# Writes a systemd unit with the sandboxing both the dashboard and the agent use (they run the
+# same LinuxGSM operations). $1 = service name, $2 = description, $3 = ExecStart.
+write_service_unit() {
+    cat <<EOT > "/etc/systemd/system/$1.service"
+[Unit]
+Description=$2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$3
+Restart=always
+RestartSec=5
+
+# Security Sandboxing
+ProtectSystem=true
+ProtectHome=false
+# PrivateTmp must be false so tmux sockets can be shared between the daemon and gameserver users
+PrivateTmp=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
+EOT
+}
+
+# A machine is either a dashboard or a node (agent) of another dashboard, never both.
+# $1 = the role about to be installed (dashboard | agent).
+check_role_conflict() {
+    if [ "$1" == "agent" ] && [ -f "/etc/systemd/system/$SERVICE_NAME.service" ]; then
+        echo -e "${RED}[ERROR] This machine runs the dashboard. A machine can be either the dashboard or a node of another dashboard; uninstall the dashboard first.${NC}"
+        return 1
+    fi
+    if [ "$1" == "dashboard" ] && [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ]; then
+        echo -e "${RED}[ERROR] This machine is a node of another dashboard (agent). Uninstall the agent first to install the dashboard here.${NC}"
+        return 1
+    fi
+}
+
+# $1 = release | main | dev | local
+do_install() {
+    local mode="${1:-release}"
+    local is_update="false"
+    [ -x "$BINARY" ] && is_update="true"
+
+    check_role_conflict dashboard || return 1
+
+    echo -e "\n${BLUE}==================================================================${NC}"
+    if [ "$is_update" == "true" ]; then
+        echo -e "${MAGENTA}                  Updating installation ($mode)...                ${NC}"
+    else
+        echo -e "${MAGENTA}                  Starting installation ($mode)...                ${NC}"
+    fi
+    echo -e "${BLUE}==================================================================${NC}"
+
+    # 1. Pre-flight checks
+    preflight_checks "$is_update" || return 1
 
     load_state
     mkdir -p "$INSTALL_DIR"
@@ -553,97 +805,14 @@ do_install() {
         return 1
     fi
 
-    # 3. Tools
-    STATE_CURL_PREEXISTED=$(track_tool curl "$STATE_CURL_PREEXISTED")
-    STATE_SUDO_PREEXISTED=$(track_tool sudo "$STATE_SUDO_PREEXISTED")
-    local go_pkg="golang"
-    if [ "$OS_TYPE" == "arch" ] || [ "$OS_TYPE" == "alpine" ] || [ "$OS_TYPE" == "suse" ]; then
-        go_pkg="go"
-    fi
-
-    # shellcheck disable=SC2206
-    local installed_packages=($STATE_INSTALLED_DEPS)
-    add_installed() {
-        local p
-        for p in "${installed_packages[@]}"; do [ "$p" == "$1" ] && return; done
-        installed_packages+=("$1")
-    }
-
-    command -v curl &> /dev/null || { install_package curl; add_installed curl; }
-    # LinuxGSM's dependency installer needs sudo (granted temporarily during game installation).
-    is_package_installed sudo || command -v sudo &> /dev/null || { install_package sudo; add_installed sudo; }
-
-    if [ "$mode" != "release" ]; then
-        STATE_GIT_PREEXISTED=$(track_tool git "$STATE_GIT_PREEXISTED")
-        STATE_GO_PREEXISTED=$(track_tool go "$STATE_GO_PREEXISTED")
-        if [ "$mode" != "local" ] && ! command -v git &> /dev/null; then
-            install_package git
-            add_installed git
-        fi
-        if ! command -v go &> /dev/null; then
-            install_package "$go_pkg"
-            add_installed "$go_pkg"
-        fi
-        if ! command -v go &> /dev/null; then
-            echo -e "${RED}[ERROR] Go could not be installed. Aborting.${NC}"
-            return 1
-        fi
-    fi
-
-    local new_deps=()
-    install_lgsm_dependencies new_deps
-    local p
-    for p in "${new_deps[@]}"; do add_installed "$p"; done
-
-    # 4. Dashboard binary
-    local new_binary="$INSTALL_DIR/lgsm-dashboard.download" version
-    rm -f "$new_binary"
-    if [ "$mode" == "release" ]; then
-        version=$(fetch_release_binary "$new_binary") || return 1
-    else
-        version=$(build_from_source "$mode" "$new_binary") || return 1
-    fi
-
-    remove_legacy_source_layout
-    [ -f "$BINARY" ] && cp -p "$BINARY" "$BINARY.old"
-    # rename() replaces the binary atomically, even while the old one is running.
-    mv -f "$new_binary" "$BINARY"
-    chmod 0755 "$BINARY"
-    mkdir -p "$INSTALL_DIR/config"
-    chmod 700 "$INSTALL_DIR/config"
-    echo -e "${GREEN}[OK] Dashboard $version installed to $BINARY.${NC}"
-
-    write_state "${installed_packages[*]}" "$mode" "$version"
+    # 3. Tools, game dependencies and binary
+    install_tools_and_binary "$mode" || return 1
+    local version="$INSTALL_VERSION"
+    write_state "$INSTALL_PACKAGES" "$mode" "$version" dashboard
 
     # 5. systemd service (with security sandboxing)
     echo -e "${CYAN}[SYS] Writing systemd service...${NC}"
-    cat <<EOT > "/etc/systemd/system/$SERVICE_NAME.service"
-[Unit]
-Description=LinuxGSM Web Dashboard
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$BINARY -port $PORT -config-dir $INSTALL_DIR/config
-Restart=always
-RestartSec=5
-
-# Security Sandboxing
-ProtectSystem=true
-ProtectHome=false
-# PrivateTmp must be false so tmux sockets can be shared between the daemon and gameserver users
-PrivateTmp=false
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-EOT
+    write_service_unit "$SERVICE_NAME" "LinuxGSM Web Dashboard" "$BINARY -port $PORT -config-dir $INSTALL_DIR/config"
 
     # 6. Firewall (new installations only)
     if [ "$is_update" != "true" ]; then
@@ -718,6 +887,186 @@ EOT
 }
 
 # ------------------------------------------------------------------
+# Node (agent of another dashboard)
+# ------------------------------------------------------------------
+
+# Values of a pairing command, set by parse_join_command.
+JOIN_URL=""
+JOIN_TOKEN=""
+JOIN_FINGERPRINT=""
+JOIN_MODE=""
+
+# Parses the pairing command the dashboard shows under Settings > Nodes, e.g.
+#   /opt/lgsm-dashboard/lgsm-dashboard agent join https://dash.example --token ABCD-... \
+#     --ca-fingerprint sha256:... --mode read-only
+# Only the values are used; the command itself is never executed. Returns 1 if it is invalid.
+parse_join_command() {
+    local words=() i
+    read -r -a words <<< "$1"
+    JOIN_URL="" JOIN_TOKEN="" JOIN_FINGERPRINT="" JOIN_MODE=""
+    for ((i = 0; i < ${#words[@]}; i++)); do
+        case "${words[$i]}" in
+            join) JOIN_URL="${words[$((i + 1))]:-}" ;;
+            --token) JOIN_TOKEN="${words[$((i + 1))]:-}" ;;
+            --ca-fingerprint) JOIN_FINGERPRINT="${words[$((i + 1))]:-}" ;;
+            --mode) JOIN_MODE="${words[$((i + 1))]:-}" ;;
+        esac
+    done
+    # Only the URL (with --token and --ca-fingerprint as options of their own).
+    [ -z "$JOIN_URL" ] && [[ "${words[0]:-}" =~ ^(https?|tls):// ]] && JOIN_URL="${words[0]}"
+    # In a bracket expression "]" must come first to be literal ("[" for IPv6 hosts is plain).
+    local url_re='^(https?|tls)://[][A-Za-z0-9._~:/-]+$'
+    if ! [[ "$JOIN_URL" =~ $url_re ]]; then
+        echo -e "${RED}[ERROR] The pairing command contains no valid dashboard URL.${NC}"
+        return 1
+    fi
+    if ! [[ "$JOIN_TOKEN" =~ ^[A-Za-z2-7-]{16,64}$ ]]; then
+        echo -e "${RED}[ERROR] The pairing command contains no valid token.${NC}"
+        return 1
+    fi
+    if ! [[ "$JOIN_FINGERPRINT" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        echo -e "${RED}[ERROR] The pairing command contains no valid CA fingerprint.${NC}"
+        return 1
+    fi
+    if [ -n "$JOIN_MODE" ] && [ "$JOIN_MODE" != "read-only" ] && [ "$JOIN_MODE" != "read-write" ]; then
+        echo -e "${RED}[ERROR] The pairing command contains an invalid access mode.${NC}"
+        return 1
+    fi
+    JOIN_MODE="${JOIN_MODE:-read-only}"
+}
+
+# Asks for the access mode of this node. The dashboard's choice is the default; this machine
+# can only restrict it further. Sets JOIN_MODE.
+choose_agent_mode() {
+    if [ -n "$AGENT_MODE_ARG" ]; then
+        JOIN_MODE="$AGENT_MODE_ARG"
+        return
+    fi
+    has_tty || return
+    local default=1 answer=""
+    [ "$JOIN_MODE" == "read-write" ] && default=2
+    echo -e "${CYAN}Access the dashboard gets on this machine:${NC}"
+    echo -e "  1) Read only: view servers, consoles, logs and files; start, stop and restart"
+    echo -e "  2) Read and write: everything, including configs, files, backups and installing servers"
+    prompt_user "Choose [1-2, default: $default]: " answer
+    case "${answer:-$default}" in
+        1) JOIN_MODE="read-only" ;;
+        2) JOIN_MODE="read-write" ;;
+        *) echo -e "${YELLOW}[INFO] Invalid choice, keeping $JOIN_MODE.${NC}" ;;
+    esac
+}
+
+# Installs or updates this machine as node of another dashboard. $1 = release | main | dev | local.
+# A new installation needs the pairing command (--join or interactive); an update keeps the
+# existing pairing unless --join is given again.
+do_install_agent() {
+    local mode="${1:-release}"
+    local is_update="false"
+    [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ] && [ -x "$BINARY" ] && is_update="true"
+    local config_dir="$INSTALL_DIR/config"
+
+    check_role_conflict agent || return 1
+
+    echo -e "\n${BLUE}==================================================================${NC}"
+    if [ "$is_update" == "true" ]; then
+        echo -e "${MAGENTA}              Updating node agent ($mode)...                      ${NC}"
+    else
+        echo -e "${MAGENTA}              Installing node agent ($mode)...                    ${NC}"
+    fi
+    echo -e "${BLUE}==================================================================${NC}"
+
+    # The pairing command is checked before anything is installed.
+    local join_cmd="$AGENT_JOIN_ARG" paired="false"
+    [ -f "$config_dir/agent.json" ] && paired="true"
+    if [ -z "$join_cmd" ] && [ "$paired" != "true" ]; then
+        if ! has_tty; then
+            echo -e "${RED}[ERROR] Pass the pairing command from the dashboard (Settings > Nodes) with --join '<command>'.${NC}"
+            return 1
+        fi
+        echo -e "${CYAN}Create a pairing command in the dashboard under Settings > Nodes and paste it here.${NC}"
+        prompt_user "Pairing command: " join_cmd
+    fi
+    if [ -n "$join_cmd" ]; then
+        parse_join_command "$join_cmd" || return 1
+        choose_agent_mode
+    fi
+
+    preflight_checks "$is_update" || return 1
+    load_state
+    mkdir -p "$INSTALL_DIR"
+    install_tools_and_binary "$mode" || return 1
+    local version="$INSTALL_VERSION"
+    PORT=""
+    # FastDL served by the node itself (optional); kept across updates.
+    [ -n "$AGENT_FASTDL_PORT_ARG" ] && STATE_FASTDL_PORT="$AGENT_FASTDL_PORT_ARG"
+    [ -n "$AGENT_FASTDL_URL_ARG" ] && STATE_FASTDL_URL="$AGENT_FASTDL_URL_ARG"
+    [ "$STATE_FASTDL_PORT" == "0" ] && STATE_FASTDL_PORT=""
+    write_state "$INSTALL_PACKAGES" "$mode" "$version" agent
+
+    if [ -n "$join_cmd" ]; then
+        echo -e "${CYAN}[SYS] Pairing with $JOIN_URL ($JOIN_MODE)...${NC}"
+        if ! "$BINARY" agent join "$JOIN_URL" --token "$JOIN_TOKEN" --ca-fingerprint "$JOIN_FINGERPRINT" \
+            --mode "$JOIN_MODE" --config-dir "$config_dir"; then
+            echo -e "${RED}[ERROR] Pairing failed. Create a new pairing command in the dashboard and run this script again.${NC}"
+            return 1
+        fi
+    fi
+    if [ -z "$join_cmd" ] && [ -n "$AGENT_MODE_ARG" ]; then
+        # An update without a new pairing: --mode changes the local access mode.
+        echo -e "${CYAN}[SYS] Setting the access mode to $AGENT_MODE_ARG...${NC}"
+        "$BINARY" agent mode "$AGENT_MODE_ARG" --config-dir "$config_dir" || return 1
+    fi
+
+    echo -e "${CYAN}[SYS] Writing systemd service...${NC}"
+    local exec_start="$BINARY agent run --config-dir $config_dir"
+    [ -n "$STATE_FASTDL_PORT" ] && exec_start+=" --fastdl-port $STATE_FASTDL_PORT"
+    [ -n "$STATE_FASTDL_URL" ] && exec_start+=" --fastdl-url $STATE_FASTDL_URL"
+    write_service_unit "$AGENT_SERVICE_NAME" "LinuxGSM Dashboard node agent" "$exec_start"
+    systemctl daemon-reload
+    systemctl enable "$AGENT_SERVICE_NAME" > /dev/null 2>&1
+    systemctl restart "$AGENT_SERVICE_NAME"
+
+    # The agent logs "Connected to" once the dashboard has used the connection.
+    local i connected="false"
+    for i in $(seq 1 15); do
+        if journalctl -u "$AGENT_SERVICE_NAME" --since "-30s" --no-pager 2>/dev/null | grep -q "Connected to"; then
+            connected="true"
+            break
+        fi
+        systemctl is-active --quiet "$AGENT_SERVICE_NAME" || break
+        sleep 1
+    done
+
+    echo -e "\n${BLUE}==================================================================${NC}"
+    if ! systemctl is-active --quiet "$AGENT_SERVICE_NAME"; then
+        echo -e "${RED}[ERROR] The agent did not start. Check: journalctl -u $AGENT_SERVICE_NAME -n 50${NC}"
+        echo -e "${BLUE}==================================================================${NC}"
+        return 1
+    fi
+    if [ "$is_update" == "true" ]; then
+        echo -e "${GREEN}      Node agent updated to $version${NC}"
+    else
+        echo -e "${GREEN}      Node agent installed ($version)${NC}"
+    fi
+    echo -e "${BLUE}==================================================================${NC}"
+    "$BINARY" agent status --config-dir "$config_dir" 2>&1 | sed 's/^/  /'
+    if [ "$connected" == "true" ]; then
+        echo -e "  ${GREEN}Connected to the dashboard.${NC}"
+    else
+        echo -e "  ${YELLOW}Not connected yet. Check: journalctl -u $AGENT_SERVICE_NAME -n 50${NC}"
+    fi
+    if [ -n "$STATE_FASTDL_PORT" ]; then
+        echo -e "  FastDL of servers set to \"the node itself\" is served on port $STATE_FASTDL_PORT (${STATE_FASTDL_URL:-no --fastdl-url set})."
+        echo -e "  Open that port in the firewall if game clients should download from it."
+    else
+        echo -e "  No port is opened on this machine; the agent connects to the dashboard."
+    fi
+    echo -e "  Change the access mode later with: $BINARY agent mode read-only|read-write --config-dir $config_dir"
+    echo -e "  (then: systemctl restart $AGENT_SERVICE_NAME)"
+    echo -e "${BLUE}==================================================================${NC}"
+}
+
+# ------------------------------------------------------------------
 # Uninstall
 # ------------------------------------------------------------------
 
@@ -746,15 +1095,24 @@ do_uninstall() {
     PORT="$(installed_service_port)"
     PORT="${PORT:-${STATE_PORT:-8080}}"
 
-    # 1. Stop and remove systemd service
+    # 1. Stop and remove the systemd services (dashboard or node agent)
+    local is_agent="false"
+    if [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ] || [ "$STATE_ROLE" == "agent" ]; then
+        is_agent="true"
+    fi
     echo -e "${CYAN}[SYS] Stopping and removing systemd service...${NC}"
-    systemctl stop "$SERVICE_NAME" > /dev/null 2>&1
-    systemctl disable "$SERVICE_NAME" > /dev/null 2>&1
-    rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+    local svc
+    for svc in "$SERVICE_NAME" "$AGENT_SERVICE_NAME"; do
+        systemctl stop "$svc" > /dev/null 2>&1
+        systemctl disable "$svc" > /dev/null 2>&1
+        rm -f "/etc/systemd/system/$svc.service"
+    done
     systemctl daemon-reload
+    # Temporary sudo rules of installs by versions before 2.0.0 that were interrupted.
+    rm -f /etc/sudoers.d/lgsm-*
 
-    # 2. Remove firewall rules
-    configure_firewall "remove"
+    # 2. Remove firewall rules (a node agent opens no port)
+    [ "$is_agent" != "true" ] && configure_firewall "remove"
 
     # 3. Clean up system packages if requested
     local remove_packages="false"
@@ -769,8 +1127,19 @@ do_uninstall() {
     fi
 
     if [ "$remove_packages" == "true" ] && [ -n "$STATE_INSTALLED_DEPS" ]; then
-        local pkg
+        local pkg keep_game_deps="false"
+        # Game servers stay installed: the packages LinuxGSM needs (tmux, 32-bit libraries, ...)
+        # must stay too.
+        if game_servers_remain; then
+            keep_game_deps="true"
+            echo -e "${YELLOW}[INFO] Game servers remain on this machine, keeping the packages LinuxGSM needs.${NC}"
+        fi
         for pkg in $STATE_INSTALLED_DEPS; do
+            # sudo was installed by versions before 2.0.0; it may be in use by now (and apt refuses).
+            [ "$pkg" == "sudo" ] && continue
+            if [ "$keep_game_deps" == "true" ] && is_lgsm_dependency "$pkg"; then
+                continue
+            fi
             uninstall_package "$pkg"
         done
     elif [ "$remove_packages" != "true" ]; then
@@ -785,6 +1154,9 @@ do_uninstall() {
 
     echo -e "\n${GREEN}[OK] LinuxGSM Web Dashboard has been completely removed.${NC}"
     echo -e "${YELLOW}[INFO] Game server users and their files were not touched.${NC}"
+    if [ "$is_agent" == "true" ]; then
+        echo -e "${YELLOW}[INFO] Remove the node in the dashboard as well (Settings > Nodes).${NC}"
+    fi
 }
 
 # Status and diagnosis information
@@ -793,17 +1165,27 @@ show_status() {
     echo -e "${CYAN}                  Status & System Information                     ${NC}"
     echo -e "${BLUE}==================================================================${NC}"
 
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-        echo -e "Service Status:    ${GREEN}ACTIVE (Running)${NC}"
-    else
-        echo -e "Service Status:    ${RED}INACTIVE (Stopped / Not installed)${NC}"
-    fi
+    local svc label
+    for svc in "$SERVICE_NAME" "$AGENT_SERVICE_NAME"; do
+        [ "$svc" == "$AGENT_SERVICE_NAME" ] && [ ! -f "/etc/systemd/system/$svc.service" ] && continue
+        label="Service Status:   "
+        [ "$svc" == "$AGENT_SERVICE_NAME" ] && label="Agent Status:     "
+        if systemctl is-active --quiet "$svc"; then
+            echo -e "$label ${GREEN}ACTIVE (Running)${NC}"
+        else
+            echo -e "$label ${RED}INACTIVE (Stopped / Not installed)${NC}"
+        fi
+    done
 
     if [ -x "$BINARY" ]; then
         echo -e "Installation Path: ${GREEN}$INSTALL_DIR${NC}"
         echo -e "Version:           ${GREEN}$("$BINARY" -version 2>/dev/null)${NC}"
     else
         echo -e "Installation Path: ${RED}Not installed${NC}"
+    fi
+    if [ -f "$INSTALL_DIR/config/agent.json" ] && [ -x "$BINARY" ]; then
+        echo -e "\n${YELLOW}Node agent:${NC}"
+        "$BINARY" agent status --config-dir "$INSTALL_DIR/config" 2>&1 | sed 's/^/  /'
     fi
 
     echo -e "\n${YELLOW}System Load:${NC}"
@@ -826,9 +1208,29 @@ ACTION=""
 PORT="8080"
 PORT_FROM_ARGS="false"
 MODE="release"
+ROLE_ARG=""
+AGENT_JOIN_ARG=""
+AGENT_TOKEN_ARG=""
+AGENT_FINGERPRINT_ARG=""
+AGENT_MODE_ARG=""
+AGENT_FASTDL_PORT_ARG=""
+AGENT_FASTDL_URL_ARG=""
+INSECURE_SKIP_SIGNATURE="false"
+
+# Options with a value fail instead of looping forever when the value is missing.
+need_value() {
+    if [ "$2" -lt 2 ]; then
+        echo -e "${RED}[ERROR] Option $1 needs a value.${NC}"
+        exit 1
+    fi
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --insecure-skip-signature)
+            INSECURE_SKIP_SIGNATURE="true"
+            shift
+            ;;
         install|--install)
             ACTION="install"
             shift
@@ -853,7 +1255,45 @@ while [[ $# -gt 0 ]]; do
             MODE="local"
             shift
             ;;
+        agent|--agent)
+            ROLE_ARG="agent"
+            shift
+            ;;
+        --join)
+            need_value "$1" $#
+            ROLE_ARG="agent"
+            AGENT_JOIN_ARG="${2:-}"
+            shift 2
+            ;;
+        # The parts of the pairing command may also be passed as separate options:
+        # --join <url> --token <token> --ca-fingerprint <sha256:...>
+        --token)
+            need_value "$1" $#
+            AGENT_TOKEN_ARG="$2"
+            shift 2
+            ;;
+        --ca-fingerprint)
+            need_value "$1" $#
+            AGENT_FINGERPRINT_ARG="$2"
+            shift 2
+            ;;
+        --fastdl-port)
+            need_value "$1" $#
+            AGENT_FASTDL_PORT_ARG="${2:-}"
+            shift 2
+            ;;
+        --fastdl-url)
+            need_value "$1" $#
+            AGENT_FASTDL_URL_ARG="${2:-}"
+            shift 2
+            ;;
+        --mode)
+            need_value "$1" $#
+            AGENT_MODE_ARG="${2:-}"
+            shift 2
+            ;;
         --port)
+            need_value "$1" $#
             PORT="$2"
             PORT_FROM_ARGS="true"
             shift 2
@@ -867,16 +1307,46 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+[ -n "$AGENT_TOKEN_ARG" ] && AGENT_JOIN_ARG+=" --token $AGENT_TOKEN_ARG"
+[ -n "$AGENT_FINGERPRINT_ARG" ] && AGENT_JOIN_ARG+=" --ca-fingerprint $AGENT_FINGERPRINT_ARG"
+
+if [ -n "$AGENT_MODE_ARG" ] && [ "$AGENT_MODE_ARG" != "read-only" ] && [ "$AGENT_MODE_ARG" != "read-write" ]; then
+    echo -e "${RED}[ERROR] Invalid access mode: $AGENT_MODE_ARG (read-only or read-write).${NC}"
+    exit 1
+fi
+# Both values end up in the systemd unit and in the state file, which is sourced.
+if [ -n "$AGENT_FASTDL_PORT_ARG" ] && { ! [[ "$AGENT_FASTDL_PORT_ARG" =~ ^[0-9]+$ ]] || [ "$AGENT_FASTDL_PORT_ARG" -gt 65535 ]; }; then
+    echo -e "${RED}[ERROR] Invalid FastDL port: $AGENT_FASTDL_PORT_ARG (0 turns it off).${NC}"
+    exit 1
+fi
+fastdl_url_re='^https?://[][A-Za-z0-9._~:/-]+$'
+if [ -n "$AGENT_FASTDL_URL_ARG" ] && ! [[ "$AGENT_FASTDL_URL_ARG" =~ $fastdl_url_re ]]; then
+    echo -e "${RED}[ERROR] Invalid FastDL URL: $AGENT_FASTDL_URL_ARG (e.g. http://203.0.113.5:8090/fastdl/).${NC}"
+    exit 1
+fi
+
+# An installation request on an existing node updates the agent, also without --agent. That
+# covers "install", the source build flags and runs without a terminal; interactive runs without
+# arguments still show the menu.
+if [ -z "$ROLE_ARG" ] && [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ] &&
+   { [ "${ACTION:-}" == "install" ] || [ "$MODE" != "release" ] || { [ -z "$ACTION" ] && ! has_tty; }; }; then
+    ROLE_ARG="agent"
+fi
+
 # Validate port format
 if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
     echo -e "${RED}[ERROR] Invalid port: $PORT. Must be a number between 1 and 65535.${NC}"
     exit 1
 fi
 
-if [ -n "$ACTION" ] || [ "$MODE" != "release" ]; then
+if [ -n "$ACTION" ] || [ "$MODE" != "release" ] || [ "$ROLE_ARG" == "agent" ]; then
     case ${ACTION:-install} in
         install)
-            do_install "$MODE"
+            if [ "$ROLE_ARG" == "agent" ]; then
+                do_install_agent "$MODE"
+            else
+                do_install "$MODE"
+            fi
             exit $?
             ;;
         uninstall)
@@ -889,7 +1359,7 @@ if [ -n "$ACTION" ] || [ "$MODE" != "release" ]; then
             ;;
         *)
             echo -e "${RED}[ERROR] Unknown argument: $ACTION${NC}"
-            echo -e "Usage: $0 [install|uninstall|status] [--port <port>] [--source|--dev|--local]"
+            echo -e "Usage: $0 [install|uninstall|status] [--port <port>] [--source|--dev|--local] [--agent [--join '<pairing command>' | --join <url> --token <token> --ca-fingerprint <fp>] [--mode read-only|read-write] [--fastdl-port <port>] [--fastdl-url <url>]]"
             exit 1
             ;;
     esac
@@ -911,11 +1381,12 @@ while true; do
     echo -e "  1) Install / update (latest release)"
     echo -e "  2) Install / update from source: main branch (development build)"
     echo -e "  3) Install / update from source: dev branch (development build)"
-    echo -e "  4) Completely uninstall dashboard"
-    echo -e "  5) Show status & system info"
-    echo -e "  6) Exit"
+    echo -e "  4) Install / update as node of another dashboard (agent)"
+    echo -e "  5) Completely uninstall dashboard or agent"
+    echo -e "  6) Show status & system info"
+    echo -e "  7) Exit"
     echo -e "${BLUE}==================================================================${NC}"
-    if ! prompt_user "Please choose an option [1-6]: " choice; then
+    if ! prompt_user "Please choose an option [1-7]: " choice; then
         echo -e "${RED}[ERROR] Input stream closed. Exiting...${NC}"
         exit 1
     fi
@@ -924,14 +1395,15 @@ while true; do
         1) do_install release ;;
         2) do_install main ;;
         3) do_install dev ;;
-        4) do_uninstall ;;
-        5) show_status ;;
-        6)
+        4) do_install_agent release ;;
+        5) do_uninstall ;;
+        6) show_status ;;
+        7)
             echo -e "${GREEN}Goodbye!${NC}"
             exit 0
             ;;
         *)
-            echo -e "${RED}[ERROR] Invalid option. Please choose 1-6.${NC}"
+            echo -e "${RED}[ERROR] Invalid option. Please choose 1-7.${NC}"
             ;;
     esac
 done

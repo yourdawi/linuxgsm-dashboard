@@ -18,9 +18,10 @@ import (
 type User struct {
 	Username     string   `json:"username"`
 	PasswordHash string   `json:"password_hash"`
-	Role         string   `json:"role"`        // "admin" or "user"
-	Servers      []string `json:"servers"`     // list of ServerIDs (e.g. ["arkserver"])
-	Permissions  []string `json:"permissions"` // e.g. ["start", "stop", "restart", "console", "config"]
+	Role         string   `json:"role"`            // "admin" or "user"
+	Servers      []string `json:"servers"`         // list of ServerIDs (e.g. ["arkserver", "lxc-1~vhserver"])
+	Nodes        []string `json:"nodes,omitempty"` // nodes whose servers the user may access (multi-node)
+	Permissions  []string `json:"permissions"`     // e.g. ["start", "stop", "restart", "console", "config"]
 
 	// Two-factor authentication (see twofactor.go). Each user has an independent secret and
 	// independent recovery codes (stored as hashes bound to the username).
@@ -101,6 +102,22 @@ func NewAuthManager(configDir string) (*AuthManager, error) {
 	go am.cleanupSessionsLoop()
 
 	return am, nil
+}
+
+// NewAuditOnlyAuthManager is used by agents: they have no users and no logins, but keep their
+// own audit log (audit_log.json in configDir) of what the controller did on the node.
+func NewAuditOnlyAuthManager(configDir string) (*AuthManager, error) {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return nil, err
+	}
+	_ = os.Chmod(configDir, 0700)
+	return &AuthManager{
+		configPath: filepath.Join(configDir, "config.json"),
+		sessions:   make(map[string]Session),
+		challenges: make(map[string]loginChallenge),
+		setups:     make(map[string]pendingSetup),
+		now:        time.Now,
+	}, nil
 }
 
 func (am *AuthManager) GetPort() int {
@@ -524,6 +541,53 @@ func (am *AuthManager) RemoveServerFromUsers(serverID string) error {
 	return am.saveConfigLocked()
 }
 
+// SetUserNodes replaces the nodes a user is assigned to (all servers of those nodes).
+func (am *AuthManager) SetUserNodes(username string, nodes []string) error {
+	for _, n := range nodes {
+		if !IsValidNodeID(n) {
+			return errors.New("invalid node")
+		}
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	for i, u := range am.config.Users {
+		if u.Username == username {
+			am.config.Users[i].Nodes = append([]string(nil), nodes...)
+			return am.saveConfigLocked()
+		}
+	}
+	return errors.New("user not found")
+}
+
+// RemoveNodeFromUsers removes a deleted node and all of its servers from every user.
+func (am *AuthManager) RemoveNodeFromUsers(nodeID string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	changed := false
+	for i, u := range am.config.Users {
+		servers := make([]string, 0, len(u.Servers))
+		for _, s := range u.Servers {
+			if node, _ := SplitServerID(s); node != nodeID {
+				servers = append(servers, s)
+			}
+		}
+		nodes := make([]string, 0, len(u.Nodes))
+		for _, n := range u.Nodes {
+			if n != nodeID {
+				nodes = append(nodes, n)
+			}
+		}
+		if len(servers) != len(u.Servers) || len(nodes) != len(u.Nodes) {
+			am.config.Users[i].Servers, am.config.Users[i].Nodes = servers, nodes
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return am.saveConfigLocked()
+}
+
 func (am *AuthManager) DeleteUser(username string) error {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -722,9 +786,7 @@ func (am *AuthManager) LogAudit(username, ip, action, details, serverID string) 
 	}
 
 	entries = append([]AuditEntry{newEntry}, entries...)
-	if len(entries) > 1000 {
-		entries = entries[:1000]
-	}
+	entries = trimAuditLog(entries)
 
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err == nil {
@@ -748,4 +810,35 @@ func (am *AuthManager) GetAuditLogs() []AuditEntry {
 		entries = []AuditEntry{}
 	}
 	return entries
+}
+
+// Audit log size: failed logins need no account, so they may only use part of it; a burst of
+// them must not push out what logged-in users did.
+const (
+	maxAuditEntries      = 1000
+	maxAuditFailedLogins = 200
+)
+
+func isFailedLoginAudit(action string) bool {
+	return action == "LOGIN_FAILED" || action == "LOGIN_2FA_FAILED"
+}
+
+// trimAuditLog keeps the newest entries (entries are newest first), at most maxAuditFailedLogins
+// of them failed logins.
+func trimAuditLog(entries []AuditEntry) []AuditEntry {
+	out := entries[:0]
+	failed := 0
+	for _, e := range entries {
+		if isFailedLoginAudit(e.Action) {
+			if failed >= maxAuditFailedLogins {
+				continue
+			}
+			failed++
+		}
+		out = append(out, e)
+		if len(out) >= maxAuditEntries {
+			break
+		}
+	}
+	return out
 }

@@ -43,6 +43,8 @@ const state = {
     configMode: 'form', // form or raw
     parsedConfigItems: [],
     formBaseContent: '', // text the config form was built from
+    configLoadSeq: 0, // increases with every list or file load of the config editor
+    configFileEntries: [], // {path, name, li} of the listed config files
     gridColumns: {}, // column choice per card grid (see COLUMN_GRIDS)
     theme: 'dark', // dark or light
     language: 'en', // en or de
@@ -150,11 +152,16 @@ async function runStreamModal({ title, runningText, url, body, errorText, onExit
         el.modalStreamStatus.className = 'badge badge-warning badge-pulse animate-pulse';
         await streamPost(url, body, (data) => {
             if (data.type === 'log') {
-                appendLine(data.text);
+                // A redrawn line (LinuxGSM status, SteamCMD progress) replaces the previous one.
+                const last = el.modalStreamOutput.lastElementChild;
+                if (data.replace && last) last.textContent = data.text;
+                else appendLine(data.text);
             } else if (data.type === 'exit') {
                 exited = true;
-                el.modalStreamStatus.textContent = data.code === 0 ? t('status-success') : t('status-error');
-                el.modalStreamStatus.className = data.code === 0 ? 'badge badge-success' : 'badge badge-danger';
+                // LinuxGSM ends with 3 after warnings: the command itself succeeded.
+                const outcome = data.code === 0 ? ['status-success', 'badge-success'] : data.code === 3 ? ['status-warning', 'badge-warning'] : ['status-error', 'badge-danger'];
+                el.modalStreamStatus.textContent = t(outcome[0]);
+                el.modalStreamStatus.className = 'badge ' + outcome[1];
                 el.modalStreamClose.disabled = false;
                 if (onExit) onExit(data.code);
             }
@@ -375,58 +382,7 @@ const el = {
     btnCloseModalMods: document.getElementById('btn-close-modal-mods'),
     btnCloseModsModalFooter: document.getElementById('btn-close-mods-modal-footer'),
     
-    alertsSettingDiscordEnabled: document.getElementById('alerts-setting-discord-enabled'),
-    alertsSettingDiscordWebhook: document.getElementById('alerts-setting-discord-webhook'),
-    alertsSettingDiscordContainer: document.getElementById('alerts-setting-discord-container'),
-    
-    alertsSettingTelegramEnabled: document.getElementById('alerts-setting-telegram-enabled'),
-    alertsSettingTelegramToken: document.getElementById('alerts-setting-telegram-token'),
-    alertsSettingTelegramChatid: document.getElementById('alerts-setting-telegram-chatid'),
-    alertsSettingTelegramContainer: document.getElementById('alerts-setting-telegram-container'),
-    
-    alertsSettingEmailEnabled: document.getElementById('alerts-setting-email-enabled'),
-    alertsSettingEmailSmtp: document.getElementById('alerts-setting-email-smtp'),
-    alertsSettingEmailPort: document.getElementById('alerts-setting-email-port'),
-    alertsSettingEmailUser: document.getElementById('alerts-setting-email-user'),
-    alertsSettingEmailPass: document.getElementById('alerts-setting-email-pass'),
-    alertsSettingEmailDest: document.getElementById('alerts-setting-email-dest'),
-    alertsSettingEmailContainer: document.getElementById('alerts-setting-email-container'),
-    
-    alertsSettingNtfyEnabled: document.getElementById('alerts-setting-ntfy-enabled'),
-    alertsSettingNtfyUrl: document.getElementById('alerts-setting-ntfy-url'),
-    alertsSettingNtfyTopic: document.getElementById('alerts-setting-ntfy-topic'),
-    alertsSettingNtfyToken: document.getElementById('alerts-setting-ntfy-token'),
-    alertsSettingNtfyContainer: document.getElementById('alerts-setting-ntfy-container'),
-    
-    alertsSettingSlackEnabled: document.getElementById('alerts-setting-slack-enabled'),
-    alertsSettingSlackWebhook: document.getElementById('alerts-setting-slack-webhook'),
-    alertsSettingSlackContainer: document.getElementById('alerts-setting-slack-container'),
-    
-    alertsSettingMatrixEnabled: document.getElementById('alerts-setting-matrix-enabled'),
-    alertsSettingMatrixHomeserver: document.getElementById('alerts-setting-matrix-homeserver'),
-    alertsSettingMatrixRoomid: document.getElementById('alerts-setting-matrix-roomid'),
-    alertsSettingMatrixToken: document.getElementById('alerts-setting-matrix-token'),
-    alertsSettingMatrixContainer: document.getElementById('alerts-setting-matrix-container'),
-    
-    alertsSettingPushoverEnabled: document.getElementById('alerts-setting-pushover-enabled'),
-    alertsSettingPushoverToken: document.getElementById('alerts-setting-pushover-token'),
-    alertsSettingPushoverUser: document.getElementById('alerts-setting-pushover-user'),
-    alertsSettingPushoverContainer: document.getElementById('alerts-setting-pushover-container'),
-    
-    alertsSettingPushbulletEnabled: document.getElementById('alerts-setting-pushbullet-enabled'),
-    alertsSettingPushbulletToken: document.getElementById('alerts-setting-pushbullet-token'),
-    alertsSettingPushbulletChannel: document.getElementById('alerts-setting-pushbullet-channel'),
-    alertsSettingPushbulletContainer: document.getElementById('alerts-setting-pushbullet-container'),
-    
-    alertsSettingIftttEnabled: document.getElementById('alerts-setting-ifttt-enabled'),
-    alertsSettingIftttKey: document.getElementById('alerts-setting-ifttt-key'),
-    alertsSettingIftttEvent: document.getElementById('alerts-setting-ifttt-event'),
-    alertsSettingIftttContainer: document.getElementById('alerts-setting-ifttt-container'),
-    
-    alertsSettingRocketchatEnabled: document.getElementById('alerts-setting-rocketchat-enabled'),
-    alertsSettingRocketchatWebhook: document.getElementById('alerts-setting-rocketchat-webhook'),
-    alertsSettingRocketchatContainer: document.getElementById('alerts-setting-rocketchat-container'),
-    
+    alertsFields: document.getElementById('alerts-fields'),
     alertsSettingsPanel: document.getElementById('alerts-settings-panel'),
     alertsSettingsSaveBtn: document.getElementById('alerts-settings-save-btn'),
     alertsSettingsMessage: document.getElementById('alerts-settings-message'),
@@ -451,14 +407,10 @@ const el = {
     btnBulkUpdate: document.getElementById('btn-bulk-update'),
     filterTagSelect: document.getElementById('filter-tag-select'),
 
-    cronMonitorSelect: document.getElementById('cron-monitor-select'),
-    cronUpdateSelect: document.getElementById('cron-update-select'),
-    cronRestartTime: document.getElementById('cron-restart-time'),
-    cronCoreSelect: document.getElementById('cron-core-select'),
+    cronJobs: document.getElementById('cron-jobs'),
     cronBuilderForm: document.getElementById('cron-builder-form'),
     cronBuilderMessage: document.getElementById('cron-builder-message'),
 
-    consoleBtnDebug: document.getElementById('console-btn-debug'),
     consoleBtnMapCompressor: document.getElementById('console-btn-map-compressor'),
     settingsStopmodeSelect: document.getElementById('settings-stopmode-select'),
     settingsStopmodeSaveBtn: document.getElementById('settings-stopmode-save-btn'),
@@ -529,12 +481,14 @@ function initApp() {
     if (el.consoleBtnCheckUpdate) el.consoleBtnCheckUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'check-update'));
     el.consoleBtnUpdateLgsm.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'update-lgsm'));
     el.consoleBtnForceUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'force-update'));
-    if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'mods-install'));
+    if (el.consoleBtnModsInstall) el.consoleBtnModsInstall.addEventListener('click', () => {
+        const server = state.servers.find(s => s.id === state.selectedConsoleServer);
+        if (server) openModsModal(server);
+    });
     if (el.consoleBtnModsUpdate) el.consoleBtnModsUpdate.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'mods-update'));
     if (el.consoleBtnFastdl) el.consoleBtnFastdl.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'fastdl'));
     if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'postdetails'));
     el.consoleBtnTestAlert.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'test-alert'));
-    if (el.consoleBtnDebug) el.consoleBtnDebug.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'debug'));
     if (el.consoleBtnMapCompressor) el.consoleBtnMapCompressor.addEventListener('click', () => runServerAction(state.selectedConsoleServer, 'map-compressor'));
     
     el.consoleModeTmux.addEventListener('click', () => switchConsoleMode('tmux'));
@@ -557,6 +511,7 @@ function initApp() {
     // Settings listeners
     el.settingsPasswordForm.addEventListener('submit', changePassword);
     el.settingsServerSelect.addEventListener('change', handleSettingsServerChange);
+    watchSettingsWriteLock();
     if (el.settingsServerTagSaveBtn) el.settingsServerTagSaveBtn.addEventListener('click', saveServerTagFromSettings);
     if (el.settingsStopmodeSaveBtn) el.settingsStopmodeSaveBtn.addEventListener('click', saveServerStopModeFromSettings);
     if (el.settingsBtnOpenClone) el.settingsBtnOpenClone.addEventListener('click', () => {
@@ -567,14 +522,15 @@ function initApp() {
     el.settingsToolsBtnCron.addEventListener('click', installCronjobs);
     
     // Settings sub-tab navigation
-    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security'];
+    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes'];
     settingsSubtabs.forEach(tab => {
         const btn = document.getElementById(`settings-tab-btn-${tab}`);
         if (btn) {
             btn.addEventListener('click', () => switchSettingsSubtab(tab));
         }
     });
-    
+    initNodesPanel();
+
     // Backups listeners
     el.backupsServerSelect.addEventListener('change', handleBackupsServerChange);
     el.backupsBtnCreate.addEventListener('click', handleBackupsBtnCreateClick);
@@ -594,16 +550,6 @@ function initApp() {
     
     // Alerts listeners
     el.alertsSettingsForm.addEventListener('submit', saveAlertSettings);
-    el.alertsSettingDiscordEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingDiscordEnabled, el.alertsSettingDiscordContainer));
-    el.alertsSettingTelegramEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingTelegramEnabled, el.alertsSettingTelegramContainer));
-    el.alertsSettingEmailEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingEmailEnabled, el.alertsSettingEmailContainer));
-    if (el.alertsSettingNtfyEnabled) el.alertsSettingNtfyEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingNtfyEnabled, el.alertsSettingNtfyContainer));
-    if (el.alertsSettingSlackEnabled) el.alertsSettingSlackEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingSlackEnabled, el.alertsSettingSlackContainer));
-    if (el.alertsSettingMatrixEnabled) el.alertsSettingMatrixEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingMatrixEnabled, el.alertsSettingMatrixContainer));
-    if (el.alertsSettingPushoverEnabled) el.alertsSettingPushoverEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingPushoverEnabled, el.alertsSettingPushoverContainer));
-    if (el.alertsSettingPushbulletEnabled) el.alertsSettingPushbulletEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletContainer));
-    if (el.alertsSettingIftttEnabled) el.alertsSettingIftttEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingIftttEnabled, el.alertsSettingIftttContainer));
-    if (el.alertsSettingRocketchatEnabled) el.alertsSettingRocketchatEnabled.addEventListener('change', () => toggleContainer(el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatContainer));
     
     el.backupsSettingAutoBackupEnabled.addEventListener('change', () => {
         if (el.backupsSettingAutoBackupEnabled.checked) {
@@ -776,7 +722,9 @@ function handleRouting() {
         refreshMetrics();
         startMetricsPolling();
     } else if (viewName === 'console') {
-        ensureServersLoaded().then(() => {
+        // Fresh statuses: the console buttons and the input depend on them.
+        fetchServers().then(() => {
+            if (state.lastActiveView !== 'console') return;
             populateConsoleDropdown();
             if (state.selectedConsoleServer) {
                 startConsolePolling();
@@ -799,6 +747,7 @@ function handleRouting() {
                 currentFilesServer = state.servers[0].id;
                 if (el.filesServerSelect) el.filesServerSelect.value = currentFilesServer;
             }
+            applyFilesUploadLock();
             loadFilesTree();
         });
     } else if (viewName === 'audit') {
@@ -807,15 +756,21 @@ function handleRouting() {
 }
 
 async function ensureServersLoaded() {
-    if (!state.servers || state.servers.length === 0) {
-        try {
-            const res = await apiFetch('/api/servers');
-            if (res.status === 200) {
-                state.servers = await res.json();
-            }
-        } catch (e) {
-            console.error('Failed to fetch servers:', e);
-        }
+    if (!state.servers || state.servers.length === 0) await fetchServers();
+}
+
+// fetchServers reloads the server list; an error answer never replaces it.
+async function fetchServers() {
+    try {
+        const res = await apiFetch('/api/servers');
+        if (!res.ok) return false;
+        const list = await res.json();
+        if (!Array.isArray(list)) return false;
+        state.servers = list;
+        return true;
+    } catch (e) {
+        console.error('Failed to fetch servers:', e);
+        return false;
     }
 }
 
@@ -842,8 +797,8 @@ async function checkAuthStatus() {
     try {
         const res = await fetch('/api/servers');
         if (res.status === 200) {
-            // Logged in!
-            hideLogin();
+            // Logged in! The role must be known before routing checks it.
+            await hideLogin();
             handleRouting();
         } else {
             showLogin();
@@ -859,6 +814,8 @@ function showLogin() {
     stopConsolePolling();
     stopMetricsPolling();
     stopDashboardPolling();
+    clearInterval(state.nodesInterval);
+    state.nodesInterval = null;
 }
 
 async function hideLogin() {
@@ -986,9 +943,9 @@ async function handleLogin(e) {
     }
 }
 
-function completeLogin() {
+async function completeLogin() {
     el.passwordInput.value = '';
-    hideLogin();
+    await hideLogin();
     window.location.hash = '#dashboard';
     handleRouting();
 }
@@ -1270,8 +1227,7 @@ function stopDashboardPolling() {
 async function refreshDashboard() {
     el.btnRefreshDashboard.classList.add('animate-spin');
     try {
-        const res = await apiFetch('/api/servers');
-        state.servers = await res.json();
+        if (!(await fetchServers())) return;
         updateStatsOverview();
         renderServersGrid();
     } catch (e) {
@@ -1356,13 +1312,18 @@ function renderServersGridQuiet() {
         return matchesText && matchesTag;
     });
 
+    // A server that appeared or vanished (deleted elsewhere, node removed) needs a full redraw,
+    // also for the tag filter.
+    const shown = [...el.serversContainer.querySelectorAll('.server-card')].map(c => c.id).sort().join('|');
+    const wanted = filtered.map(s => `server-card-${s.id}`).sort().join('|');
+    if (shown !== wanted) {
+        renderServersGrid();
+        return;
+    }
+
     filtered.forEach(server => {
         const card = document.getElementById(`server-card-${server.id}`);
-        if (!card) {
-            // Server was newly detected, full redraw
-            renderServersGrid();
-            return;
-        }
+        if (!card) return;
         const menuOpen = card.querySelector('.sc-menu[open]');
         if (card.dataset.status !== server.status && !menuOpen) {
             // Status changed: the available actions differ, so rebuild this card only.
@@ -1380,6 +1341,91 @@ function hasUserPermission(permission) {
     if (!state.currentUser) return false;
     if (state.currentUser.role === 'admin') return true;
     return state.currentUser.permissions && state.currentUser.permissions.includes(permission);
+}
+
+function fastdlUrl(server) {
+    return `${window.location.protocol}//${window.location.host}/fastdl/${encodeURIComponent(server.id)}/`;
+}
+
+// loadFastDLInfo fills the FastDL panel: who serves the files (dashboard, the node itself or
+// nobody), the resulting URL, and for administrators the choice.
+async function loadFastDLInfo(server) {
+    const box = document.getElementById('game-fastdl-info');
+    if (!box || box.dataset.server !== server.id) return;
+    let info = { mode: 'dashboard' };
+    try {
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(server.id)}/fastdl`);
+        if (res.ok) info = await res.json();
+    } catch (e) {
+        // keep the default
+    }
+    if (box.dataset.server !== server.id) return;
+    // For servers on nodes the answer comes from the node: only known modes are used.
+    if (!['dashboard', 'node', 'off'].includes(info.mode)) info.mode = 'dashboard';
+    let url = '';
+    let note = '';
+    if (info.mode === 'dashboard') url = fastdlUrl(server);
+    else if (info.mode === 'node') {
+        url = info.node_url || '';
+        if (!url) note = t('fastdl-node-no-url');
+    } else note = t('fastdl-off');
+
+    const isAdmin = state.currentUser && state.currentUser.role === 'admin';
+    const writable = !isReadOnlyNodeServer(server) && !server.node_offline;
+    const opt = (value) => `<option value="${value}" ${info.mode === value ? 'selected' : ''}>${t('fastdl-mode-' + value)}</option>`;
+    const select = isAdmin && writable
+        ? `<select class="form-control form-control-sm" style="max-width: 16rem;" onchange="setFastDLMode(${jsArg(server.id)}, this.value)" aria-label="${t('fastdl-mode-label')}">
+               ${opt('dashboard')}${server.node ? opt('node') : ''}${opt('off')}
+           </select>`
+        : `<span class="text-muted" style="font-size: 0.8rem;">${t('fastdl-mode-' + (info.mode || 'dashboard'))}</span>`;
+    const urlPart = url
+        ? `<span style="font-size: 0.8rem; color: var(--text-secondary);"><strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${escapeHtml(url)}</code></span>
+           <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText(${jsArg(url)}); alert(t('fastdl-copied'));">${t('nodes-copy')}</button>`
+        : `<span class="text-muted" style="font-size: 0.8rem;">${escapeHtml(note)}</span>`;
+    box.innerHTML = `<span style="font-size: 0.8rem; color: var(--text-secondary);">${t('fastdl-mode-label')}:</span> ${select} ${urlPart}`;
+}
+
+async function setFastDLMode(serverId, mode) {
+    try {
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/fastdl`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    const server = state.servers.find(s => s.id === serverId);
+    if (server) loadFastDLInfo(server);
+}
+
+// serverWriteLocked reports whether nothing may be changed on a server (by ID): it runs on a
+// read-only node or its node is offline. The node refuses such changes anyway; the views hide
+// or disable the controls so the user does not run into that error.
+function serverWriteLocked(serverId) {
+    const server = state.servers.find(s => s.id === serverId);
+    return !!(server && (server.node_offline || isReadOnlyNodeServer(server)));
+}
+
+function serverWriteLockedText(serverId) {
+    const server = state.servers.find(s => s.id === serverId);
+    return server && server.node_offline ? t('card-node-offline') : t('card-node-read-only');
+}
+
+// isReadOnlyNodeServer reports whether a server runs on a node that only allows reading plus
+// start, stop and restart.
+function isReadOnlyNodeServer(server) {
+    return !!(server && server.node && server.node_mode !== 'read-write');
+}
+
+// serverLabel names a server in dropdowns; servers of nodes carry the node name.
+function serverLabel(server) {
+    const base = `${server.name} (${server.user})`;
+    return server.node ? `${base} · ${server.node_name || server.node}` : base;
 }
 
 function serverStatusInfo(server) {
@@ -1447,11 +1493,14 @@ function createServerCard(server) {
     const status = serverStatusInfo(server);
     const card = document.createElement('article');
     card.id = `server-card-${server.id}`;
-    card.className = `server-card ${status.cls}`;
+    card.className = `server-card ${status.cls}${server.node_offline ? ' is-node-offline' : ''}`;
     card.dataset.status = server.status;
 
     const id = jsArg(server.id);
-    const dis = status.busy ? 'disabled' : '';
+    // Servers of an offline node show their last known state; nothing can be run on them.
+    const dis = status.busy || server.node_offline ? 'disabled' : '';
+    // A read-only node allows reading plus start, stop and restart; it refuses everything else.
+    const readOnlyNode = isReadOnlyNodeServer(server);
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
     const canStart = hasUserPermission('start');
     const canStop = hasUserPermission('stop');
@@ -1479,20 +1528,24 @@ function createServerCard(server) {
     const menuItems = [];
     if (canConfig) menuItems.push(`<button class="btn-server-action" onclick="openConfigEditor(${id})" ${dis}>${t('btn-configs')}</button>`);
     if (canBackup) {
-        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'backup')" ${dis}>${t('btn-backup')}</button>`);
+        if (!readOnlyNode) menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'backup')" ${dis}>${t('btn-backup')}</button>`);
         menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'details')" ${dis}>${t('btn-details')}</button>`);
     }
     if (isAdmin) {
         menuItems.push('<hr>');
-        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'update')" ${dis}>${t('btn-update')}</button>`);
-        menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'validate')" ${dis}>${t('btn-validate')}</button>`);
-        menuItems.push(`<button onclick="checkServerPorts(${id})">${t('btn-portcheck')}</button>`);
-        if (isRust) {
+        if (!readOnlyNode) {
+            menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'update')" ${dis}>${t('btn-update')}</button>`);
+            menuItems.push(`<button class="btn-server-action" onclick="runServerAction(${id}, 'validate')" ${dis}>${t('btn-validate')}</button>`);
+        }
+        menuItems.push(`<button onclick="checkServerPorts(${id})" ${server.node_offline ? 'disabled' : ''}>${t('btn-portcheck')}</button>`);
+        if (isRust && !readOnlyNode) {
             menuItems.push(`<button class="btn-server-action" onclick="openRustWipeModal(state.servers.find(s => s.id === ${id}))" ${dis}>${t('btn-wipe-server')}</button>`);
         }
         menuItems.push(`<button onclick="editServerTag(${id}, ${jsArg(server.tag || '')})">${t('card-edit-tag')}</button>`);
-        menuItems.push('<hr>');
-        menuItems.push(`<button class="is-danger btn-server-action" onclick="openDeleteServerModal(${id})" ${dis}>${t('btn-delete-server')}</button>`);
+        if (!readOnlyNode) {
+            menuItems.push('<hr>');
+            menuItems.push(`<button class="is-danger btn-server-action" onclick="openDeleteServerModal(${id})" ${dis}>${t('btn-delete-server')}</button>`);
+        }
     }
     const menu = menuItems.length ? `
         <details class="sc-menu">
@@ -1501,6 +1554,10 @@ function createServerCard(server) {
         </details>` : '';
 
     const tag = server.tag ? `<span class="tag-chip">${escapeHtml(server.tag)}</span>` : '';
+    const nodeTitle = readOnlyNode ? ` title="${escapeHtml(t('card-node-read-only'))}"` : '';
+    const nodeChip = server.node ? `<span class="node-chip${readOnlyNode ? ' is-read-only' : ''}"${nodeTitle}>${escapeHtml(server.node_name || server.node)}</span>` : '';
+    const statusDot = server.node_offline ? 'status-offline' : status.dot;
+    const statusText = server.node_offline ? t('card-node-offline') : status.text;
     const dirTitle = server.dir ? ` title="${escapeHtml(server.dir)}"` : '';
 
     card.innerHTML = `
@@ -1512,10 +1569,11 @@ function createServerCard(server) {
                     <span class="mono">${escapeHtml(server.script)}</span>
                     <span>${escapeHtml(server.user)}</span>
                     ${server.port ? `<span class="mono">:${escapeHtml(server.port)}</span>` : ''}
+                    ${nodeChip}
                     ${tag}
                 </div>
             </div>
-            <span class="status-pill"><span class="status-dot ${status.dot}"></span>${status.text}</span>
+            <span class="status-pill"><span class="status-dot ${statusDot}"></span>${statusText}</span>
         </header>
         <dl class="sc-stats">
             <div><dt>${t('card-players')}</dt><dd><button type="button" class="link-btn" data-field="players" onclick="openPlayersModal(${id})">-</button></dd></div>
@@ -1535,18 +1593,22 @@ function createServerCard(server) {
 
 // -------------------------------------------------------------
 // Action Logs Live Stream Handler
-function runServerAction(serverId, action) {
-    const tAction = t('btn-' + action) || action.toUpperCase();
+// extra carries the answers a command needs (mod for mods-install/-remove, password for the TS3
+// change-password).
+function runServerAction(serverId, action, extra = {}) {
+    // t() returns the key itself when there is no text for it.
+    const label = t('btn-' + action);
+    const tAction = label === 'btn-' + action ? action : label;
     runStreamModal({
         title: t('modal-stream-title-run').replace('{action}', tAction).replace('{server}', serverId),
         runningText: t('status-running-action'),
         url: `/api/servers/${encodeURIComponent(serverId)}/action`,
-        body: { action, lang: state.language },
+        body: { ...extra, action, lang: state.language },
         errorText: t('modal-stream-err-run'),
         onExit: () => {
             // If in console tab, refresh console button states
             if (state.lastActiveView === 'console' && state.selectedConsoleServer === serverId) {
-                setTimeout(updateConsoleViewButtons, 1000);
+                fetchServers().then(updateConsoleViewButtons);
             }
         }
     });
@@ -1557,30 +1619,34 @@ function runServerAction(serverId, action) {
 // -------------------------------------------------------------
 
 function populateConsoleDropdown() {
-    // Keep current selection if valid
-    const current = el.consoleServerSelect.value;
+    // The server chosen on a card (openConsole) wins over the previous selection.
+    const current = state.selectedConsoleServer || el.consoleServerSelect.value;
     
     el.consoleServerSelect.innerHTML = `<option value="">${t('console-select-default')}</option>`;
     
     state.servers.forEach(server => {
         const opt = document.createElement('option');
         opt.value = server.id;
-        opt.textContent = `${server.name} (${server.user})`;
+        opt.textContent = serverLabel(server);
         el.consoleServerSelect.appendChild(opt);
     });
     
     if (current && state.servers.find(s => s.id === current)) {
         el.consoleServerSelect.value = current;
+        if (state.selectedConsoleServer !== current) el.terminalOutput.innerHTML = '';
+        state.selectedConsoleServer = current;
     } else {
         state.selectedConsoleServer = '';
-        updateConsoleViewButtons();
     }
+    updateConsoleViewButtons();
 }
 
 function openConsole(serverId) {
+    if (state.selectedConsoleServer !== serverId) el.terminalOutput.innerHTML = '';
     state.selectedConsoleServer = serverId;
-    window.location.hash = '#console';
-    handleRouting();
+    // The hashchange event routes; only an unchanged hash needs routing here.
+    if (window.location.hash === '#console') handleRouting();
+    else window.location.hash = '#console';
 }
 
 function handleConsoleServerChange() {
@@ -1649,15 +1715,10 @@ function updateConsoleViewButtons() {
     const canBackup = hasUserPermission('backup');
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
     
-    if (isAdmin || canBackup) {
-        el.consoleBtnDetails.classList.remove('hidden');
-        el.consoleBtnBackup.classList.remove('hidden');
-        if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.classList.remove('hidden');
-    } else {
-        el.consoleBtnDetails.classList.add('hidden');
-        el.consoleBtnBackup.classList.add('hidden');
-        if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.classList.add('hidden');
-    }
+    // details prints the server passwords, so it needs the config permission like the editor.
+    el.consoleBtnDetails.classList.toggle('hidden', !(isAdmin || hasUserPermission('config')));
+    el.consoleBtnBackup.classList.toggle('hidden', !(isAdmin || canBackup));
+    if (el.consoleBtnPostdetails) el.consoleBtnPostdetails.classList.toggle('hidden', !isAdmin);
     
     if (isAdmin) {
         el.consoleBtnValidate.classList.remove('hidden');
@@ -1678,7 +1739,25 @@ function updateConsoleViewButtons() {
         if (el.consoleBtnFastdl) el.consoleBtnFastdl.classList.add('hidden');
         el.consoleBtnTestAlert.classList.add('hidden');
     }
-    
+    // Only commands LinuxGSM offers for this game (validate needs SteamCMD, fastdl Source, ...).
+    if (Array.isArray(server.commands)) {
+        [[el.consoleBtnValidate, 'validate'], [el.consoleBtnCheckUpdate, 'check-update'], [el.consoleBtnForceUpdate, 'force-update'],
+            [el.consoleBtnUpdateLgsm, 'update-lgsm'], [el.consoleBtnModsInstall, 'mods-install'], [el.consoleBtnModsUpdate, 'mods-update'],
+            [el.consoleBtnFastdl, 'fastdl'], [el.consoleBtnMapCompressor, 'map-compressor']]
+            .forEach(([btn, cmd]) => { if (btn && !server.commands.includes(cmd)) btn.classList.add('hidden'); });
+        // consoleinteract="no": the game reads nothing typed into its console.
+        if (!server.commands.includes('send')) {
+            el.consoleInputField.disabled = true;
+            el.consoleInputSubmit.disabled = true;
+            if (el.consoleInputField.dataset.defaultPlaceholder === undefined) {
+                el.consoleInputField.dataset.defaultPlaceholder = el.consoleInputField.placeholder;
+            }
+            el.consoleInputField.placeholder = t('console-no-input');
+        } else if (el.consoleInputField.dataset.defaultPlaceholder !== undefined && !isReadOnlyNodeServer(server)) {
+            el.consoleInputField.placeholder = el.consoleInputField.dataset.defaultPlaceholder;
+        }
+    }
+
     if (isRunning) {
         el.consoleStatusDot.className = 'status-dot status-online';
         el.consoleStatusText.textContent = t('modal-stream-running');
@@ -1689,8 +1768,31 @@ function updateConsoleViewButtons() {
         el.consoleStatusDot.className = 'status-dot status-offline';
         el.consoleStatusText.textContent = t('status-offline');
     }
-    
-    renderConsoleGameActions(server);
+
+    // Servers on nodes: nothing works while the node is offline, and a read-only node only
+    // allows start, stop and restart (the node refuses everything else anyway).
+    if (server.node_offline || isReadOnlyNodeServer(server)) {
+        const writes = [el.consoleBtnBackup, el.consoleBtnValidate, el.consoleBtnCheckUpdate, el.consoleBtnUpdateLgsm,
+            el.consoleBtnForceUpdate, el.consoleBtnModsInstall, el.consoleBtnModsUpdate, el.consoleBtnFastdl,
+            el.consoleBtnPostdetails, el.consoleBtnTestAlert, el.consoleInputField, el.consoleInputSubmit];
+        writes.forEach(b => { if (b) b.disabled = true; });
+        if (server.node_offline) {
+            [el.consoleBtnStart, el.consoleBtnStop, el.consoleBtnRestart, el.consoleBtnConfig, el.consoleBtnDetails]
+                .forEach(b => { if (b) b.disabled = true; });
+            el.consoleStatusDot.className = 'status-dot status-offline';
+            el.consoleStatusText.textContent = t('card-node-offline');
+        } else {
+            if (el.consoleInputField.dataset.defaultPlaceholder === undefined) {
+                el.consoleInputField.dataset.defaultPlaceholder = el.consoleInputField.placeholder;
+            }
+            el.consoleInputField.placeholder = t('card-node-read-only');
+        }
+    } else if (el.consoleInputField.dataset.defaultPlaceholder !== undefined && !(Array.isArray(server.commands) && !server.commands.includes('send'))) {
+        el.consoleInputField.placeholder = el.consoleInputField.dataset.defaultPlaceholder;
+        delete el.consoleInputField.dataset.defaultPlaceholder;
+    }
+
+    renderConsoleGameActions(isReadOnlyNodeServer(server) || server.node_offline ? null : server);
 }
 
 function startConsolePolling() {
@@ -1701,6 +1803,10 @@ function startConsolePolling() {
     
     // Poll every 1.5 seconds
     state.consoleInterval = setInterval(fetchConsoleData, 1500);
+    // The status decides which buttons work and whether commands can be sent.
+    state.consoleStatusInterval = setInterval(() => {
+        fetchServers().then(ok => { if (ok && state.lastActiveView === 'console') updateConsoleViewButtons(); });
+    }, 5000);
 }
 
 function stopConsolePolling() {
@@ -1708,14 +1814,19 @@ function stopConsolePolling() {
         clearInterval(state.consoleInterval);
         state.consoleInterval = null;
     }
+    clearInterval(state.consoleStatusInterval);
+    state.consoleStatusInterval = null;
 }
 
 async function fetchConsoleData() {
     if (!state.selectedConsoleServer) return;
+    const serverId = state.selectedConsoleServer, mode = state.consoleMode;
     
     try {
-        const res = await apiFetch(`/api/servers/${state.selectedConsoleServer}/console?mode=${state.consoleMode}`);
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/console?mode=${mode}`);
         const data = await res.json();
+        // A late answer for another server or mode must not overwrite the terminal.
+        if (serverId !== state.selectedConsoleServer || mode !== state.consoleMode) return;
         
         if (data.lines) {
             // Rendering the whole buffer or tailing
@@ -1756,6 +1867,8 @@ function switchConsoleMode(mode) {
     state.consoleMode = mode;
     el.consoleModeTmux.classList.toggle('active', mode === 'tmux');
     el.consoleModeLog.classList.toggle('active', mode === 'log');
+    if (el.consoleModeScript) el.consoleModeScript.classList.toggle('active', mode === 'script');
+    if (el.consoleModeGame) el.consoleModeGame.classList.toggle('active', mode === 'game');
     
     el.terminalOutput.innerHTML = `<div class="terminal-row text-muted">${t('terminal-loading')}</div>`;
     fetchConsoleData();
@@ -1766,12 +1879,14 @@ function switchConsoleMode(mode) {
 // -------------------------------------------------------------
 
 async function openConfigEditor(serverId, selectPath) {
+    const seq = ++state.configLoadSeq;
     state.activeConfigServer = serverId;
     state.activeConfigFile = null;
     state.activeConfigContent = '';
-    state.configMode = 'form';
     state.parsedConfigItems = [];
-    
+    state.formBaseContent = '';
+    state.configFileEntries = [];
+
     const server = state.servers.find(s => s.id === serverId);
     el.modalConfigSubtitle.textContent = server ? `${server.name} (${server.user})` : serverId;
     el.configFilesList.innerHTML = `<li class="config-file-item">${t('config-loading-files')}</li>`;
@@ -1783,17 +1898,18 @@ async function openConfigEditor(serverId, selectPath) {
     
     // Reset view toggle states
     el.configModeToggle.style.display = 'none';
-    el.editorFormWrapper.classList.add('hidden');
-    el.editorTextWrapper.classList.remove('hidden');
-    el.btnConfigForm.classList.add('active');
-    el.btnConfigRaw.classList.remove('active');
-    
+    el.configFormBuilder.innerHTML = '';
+    setConfigView('raw');
+
     el.modalConfig.classList.remove('hidden');
     
     try {
         const res = await apiFetch(`/api/servers/${serverId}/configs`);
         const files = await res.json();
-        
+        // Another server or file was opened while the list was loading.
+        if (seq !== state.configLoadSeq) return;
+        if (!res.ok || !Array.isArray(files)) throw new Error(files && files.error);
+
         el.configFilesList.innerHTML = '';
         if (files.length === 0) {
             el.configFilesList.innerHTML = `<li class="config-file-item text-muted">${t('config-no-files')}</li>`;
@@ -1808,6 +1924,7 @@ async function openConfigEditor(serverId, selectPath) {
             if (file.layer === 'default') layerBadge = `<span class="badge badge-secondary" style="font-size:0.65rem; margin-left:auto;">Default</span>`;
             else if (file.layer === 'common') layerBadge = `<span class="badge badge-info" style="font-size:0.65rem; margin-left:auto;">Common</span>`;
             else if (file.layer === 'secrets') layerBadge = `<span class="badge badge-warning" style="font-size:0.65rem; margin-left:auto;">Secrets</span>`;
+            else if (file.layer === 'game') layerBadge = `<span class="badge badge-success" style="font-size:0.65rem; margin-left:auto;" title="${escapeHtml(t('config-game-badge-title'))}">${escapeHtml(t('config-game-badge'))}</span>`;
             else layerBadge = `<span class="badge badge-primary" style="font-size:0.65rem; margin-left:auto;">Instance</span>`;
 
             li.style.display = 'flex';
@@ -1816,50 +1933,71 @@ async function openConfigEditor(serverId, selectPath) {
             li.innerHTML = `<span>${escapeHtml(file.name)}</span>${layerBadge}`;
             li.addEventListener('click', () => loadConfigFile(file.path, file.name, li));
             el.configFilesList.appendChild(li);
+            state.configFileEntries.push({ path: file.path, name: file.name, li: li });
             if (file.path === selectPath) loadConfigFile(file.path, file.name, li);
         });
     } catch (e) {
+        if (seq !== state.configLoadSeq) return;
         el.configFilesList.innerHTML = `<li class="config-file-item text-danger">${t('config-load-error')}</li>`;
     }
 }
 
 async function loadConfigFile(path, name, liElement) {
+    // Responses of files clicked before this one must not overwrite it.
+    const seq = ++state.configLoadSeq;
+    const serverId = state.activeConfigServer;
+
     // Highlight list item
     el.configFilesList.querySelectorAll('.config-file-item').forEach(li => li.classList.remove('active'));
     liElement.classList.add('active');
-    
+
     el.editorActiveFile.textContent = name;
     el.editorTextarea.value = t('config-loading-file');
     el.editorTextarea.disabled = true;
     el.btnConfigSave.disabled = true;
-    
+
+    // Nothing of the previous file may remain until this one is loaded: no form, no save base.
     state.activeConfigFile = path;
-    
+    state.activeConfigContent = '';
+    state.parsedConfigItems = [];
+    state.formBaseContent = '';
+    el.configFormBuilder.innerHTML = '';
+    el.configModeToggle.style.display = 'none';
+    setConfigView('raw');
+
     try {
-        const res = await apiFetch(`/api/servers/${state.activeConfigServer}/configs/file?path=${encodeURIComponent(path)}`);
-        const data = await res.json();
-        
+        const res = await apiFetch(`/api/servers/${serverId}/configs/file?path=${encodeURIComponent(path)}`);
+        const data = await res.json().catch(() => ({}));
+        if (seq !== state.configLoadSeq) return;
+        if (!res.ok || typeof data.content !== 'string') {
+            el.editorTextarea.value = data.error ? `${t('config-load-file-error')} (${data.error})` : t('config-load-file-error');
+            return;
+        }
+
         state.activeConfigContent = data.content;
         el.editorTextarea.value = data.content;
+        // Configs of a read-only or offline node can be read, not saved.
+        const locked = serverWriteLocked(serverId);
         el.editorTextarea.disabled = false;
-        el.btnConfigSave.disabled = false;
+        el.editorTextarea.readOnly = locked;
+        el.btnConfigSave.disabled = locked;
+        el.btnConfigSave.title = locked ? serverWriteLockedText(serverId) : '';
         updateEditorLineNumbers();
-        
-        // Parse config and build form
+
+        // Parse config and build form. LinuxGSM configs that set nothing yet (common.cfg and the
+        // instance config by default) still get the form, which explains where values come from.
         state.parsedConfigItems = parseConfig(data.content, path);
         state.formBaseContent = data.content;
-        if (state.parsedConfigItems.length > 0) {
+        if (state.parsedConfigItems.length > 0 || isLgsmConfigPath(path)) {
             el.configModeToggle.style.display = 'flex';
             buildConfigForm(state.parsedConfigItems);
-            // Show default form view
-            switchConfigMode('form');
+            setConfigView('form');
         } else {
-            // Force raw mode if not parseable
-            el.configModeToggle.style.display = 'none';
-            switchConfigMode('raw');
+            // Nothing the form could show: text view only
+            setConfigView('raw');
         }
     } catch (e) {
-        el.editorTextarea.value = t('config-load-file-error');
+        if (seq === state.configLoadSeq) el.editorTextarea.value = t('config-load-file-error');
     }
 }
 
@@ -1991,7 +2129,8 @@ function selectGameForInstall(game, cardElement) {
     el.installUsername.value = `${game.id}server`.replace(/[^a-z0-9_]/g, '');
     el.installPassword.value = '';
     applyInstallerMode();
-    
+    populateInstallTargets();
+
     el.installFormContainer.classList.remove('hidden');
     
     // Smooth scroll down to form on mobile
@@ -2010,10 +2149,11 @@ function setI18n(node, key) {
 // Autostart and schedule tools: in Docker mode the container restart policy replaces systemd,
 // and the dashboard runs the schedules itself (no crontab lines to copy).
 function applyToolsMode() {
+    const srv = state.servers.find(s => s.id === el.settingsServerSelect.value);
     const systemdCard = el.templateSystemd ? el.templateSystemd.closest('.tool-subcard') : null;
-    if (systemdCard) systemdCard.classList.toggle('hidden', !capable('autostart'));
+    if (systemdCard) systemdCard.classList.toggle('hidden', !capable('autostart', srv));
     if (!el.templateCron) return;
-    const dashboardScheduler = !capable('linux_users') && capable('cron');
+    const dashboardScheduler = !capable('linux_users', srv) && capable('cron', srv);
     el.templateCron.classList.toggle('hidden', dashboardScheduler);
     const card = el.templateCron.closest('.tool-subcard');
     if (!card) return;
@@ -2021,10 +2161,57 @@ function applyToolsMode() {
     setI18n(card.querySelector('#settings-tools-btn-cron span'), dashboardScheduler ? 'settings-tools-btn-cron-docker' : 'settings-tools-btn-cron');
 }
 
+// installTarget returns the node selected in the installer ("" for this machine) and its
+// capabilities, so the form matches the runtime of the target.
+function installTarget() {
+    const select = document.getElementById('install-target');
+    const nodeId = select ? select.value : '';
+    const node = nodeId ? (state.installNodes || []).find(n => n.id === nodeId) : null;
+    return { nodeId: node ? node.id : '', server: node ? { node: node.id, capabilities: node.hello && node.hello.capabilities } : null };
+}
+
+// populateInstallTargets offers this machine and every connected read-write node (administrators
+// only; the installer is an administrator feature).
+async function populateInstallTargets() {
+    const group = document.getElementById('install-target-group');
+    const select = document.getElementById('install-target');
+    if (!group || !select) return;
+    let nodes = [];
+    if (state.currentUser && state.currentUser.role === 'admin') {
+        try {
+            const res = await apiFetch('/api/admin/nodes');
+            if (res.ok) nodes = (await res.json()).nodes || [];
+        } catch (e) {
+            nodes = [];
+        }
+    }
+    state.installNodes = nodes.filter(n => n.online && n.compatible && n.effective_mode === 'read-write');
+    const previous = select.value;
+    select.innerHTML = '';
+    const here = document.createElement('option');
+    here.value = '';
+    here.textContent = t('inst-target-here');
+    select.appendChild(here);
+    state.installNodes.forEach(n => {
+        const opt = document.createElement('option');
+        opt.value = n.id;
+        opt.textContent = `${n.name} (${n.id})`;
+        select.appendChild(opt);
+    });
+    if (state.installNodes.some(n => n.id === previous)) select.value = previous;
+    group.classList.toggle('hidden', nodes.length === 0);
+    if (!select.dataset.bound) {
+        select.addEventListener('change', applyInstallerMode);
+        select.dataset.bound = '1';
+    }
+    applyInstallerMode();
+}
+
 // In Docker mode the installer creates a container: the name field names the server and its
-// container, a Linux password and a custom directory do not exist there.
+// container, a Linux password and a custom directory do not exist there. With a node selected,
+// the node's runtime decides.
 function applyInstallerMode() {
-    const docker = !capable('linux_users');
+    const docker = !capable('linux_users', installTarget().server);
     const label = document.querySelector('label[for="install-username"]');
     const help = label ? label.parentElement.querySelector('small') : null;
     setI18n(label, docker ? 'inst-name-label' : 'inst-user-label');
@@ -2055,7 +2242,7 @@ function handleGameInstall(e) {
         title: t('modal-stream-title-install').replace('{game}', game.name),
         runningText: t('status-installing-action'),
         url: '/api/games/install',
-        body: { game: game.cmd, user: username, password, install_dir: installDir, lang: state.language },
+        body: { game: game.cmd, user: username, password, install_dir: installDir, lang: state.language, node: installTarget().nodeId },
         errorText: t('modal-stream-err-install')
     });
 }
@@ -2313,7 +2500,8 @@ async function loadSettingsInfo() {
         // Ensure active subtab is visible
         switchSettingsSubtab(state.settingsSubtab || 'general');
 
-        // Populate tools dropdown
+        // Populate tools dropdown (the page may have been opened directly on #settings)
+        await ensureServersLoaded();
         populateSettingsServerSelect();
 
         applySettingsPermissions();
@@ -2452,7 +2640,12 @@ async function saveServerPaths() {
 
 // Optional features of the server runtime (host or Docker), reported by /api/system/info.
 // Unknown features count as available, which matches the host runtime.
-function capable(feature) {
+// capable reports whether a runtime feature exists. With a server of a node, the node's runtime
+// decides (a Docker node under a host dashboard has no Linux users, for example).
+function capable(feature, server) {
+    if (server && server.node) {
+        return !server.capabilities || server.capabilities[feature] !== false;
+    }
     const caps = state.lastSettingsData && state.lastSettingsData.capabilities;
     return !caps || caps[feature] !== false;
 }
@@ -2467,6 +2660,7 @@ function allowedSettingsSubtabs() {
         cron: hasPerm('schedule') && capable('cron'),
         alerts: hasPerm('alerts'),
         security: isAdmin && capable('firewall'),
+        nodes: isAdmin,
     };
 }
 
@@ -2492,7 +2686,7 @@ function applySettingsPermissions() {
 function switchSettingsSubtab(subtabName) {
     if (!allowedSettingsSubtabs()[subtabName]) subtabName = 'general';
     state.settingsSubtab = subtabName;
-    const subtabs = ['general', 'server', 'cron', 'alerts', 'security'];
+    const subtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes'];
     subtabs.forEach(tab => {
         const btn = document.getElementById(`settings-tab-btn-${tab}`);
         const panel = document.getElementById(`settings-subtab-panel-${tab}`);
@@ -2504,6 +2698,279 @@ function switchSettingsSubtab(subtabName) {
         const isServerTab = ['server', 'cron', 'alerts'].includes(subtabName);
         el.settingsServerSelectBar.classList.toggle('hidden', !isServerTab);
     }
+
+    // The node list refreshes itself while it is visible.
+    clearInterval(state.nodesInterval);
+    state.nodesInterval = null;
+    if (subtabName === 'nodes') {
+        loadNodes();
+        state.nodesInterval = setInterval(() => {
+            if (state.lastActiveView === 'settings' && state.settingsSubtab === 'nodes') loadNodes();
+        }, 5000);
+    }
+}
+
+// -------------------------------------------------------------
+// Nodes (game servers on other machines)
+// -------------------------------------------------------------
+
+function initNodesPanel() {
+    const form = document.getElementById('nodes-add-form');
+    if (!form) return;
+    form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const name = document.getElementById('nodes-add-name').value.trim();
+        const mode = document.getElementById('nodes-add-mode').value;
+        if (!name) return;
+        if (await createNodePairing({ name, mode })) form.reset();
+    });
+    document.getElementById('nodes-refresh').addEventListener('click', loadNodes);
+    document.getElementById('nodes-upgrade-all').addEventListener('click', upgradeAllNodes);
+    const copy = (btnId, codeId) => {
+        document.getElementById(btnId).addEventListener('click', async () => {
+            const text = document.getElementById(codeId).textContent;
+            try {
+                await navigator.clipboard.writeText(text);
+                const btn = document.getElementById(btnId);
+                btn.textContent = t('nodes-copied');
+                setTimeout(() => { btn.textContent = t('nodes-copy'); }, 1500);
+            } catch (e) {
+                // Clipboard access needs HTTPS; the command is selectable as fallback.
+                window.getSelection().selectAllChildren(document.getElementById(codeId));
+            }
+        });
+    };
+    copy('nodes-command-copy', 'nodes-command');
+    copy('nodes-command-direct-copy', 'nodes-command-direct');
+}
+
+// createNodePairing asks for a pairing command (new node or re-pairing) and shows it.
+async function createNodePairing(payload) {
+    try {
+        const res = await apiFetch('/api/admin/nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+            return false;
+        }
+        const ticket = data.ticket || {};
+        const minutes = Math.max(1, Math.round((new Date(ticket.expires) - Date.now()) / 60000));
+        document.getElementById('nodes-command-intro').textContent = t('nodes-command-intro')
+            .replace('{name}', ticket.name || ticket.node_id || '')
+            .replace('{minutes}', minutes);
+        document.getElementById('nodes-command').textContent = data.command || '';
+        const directRow = document.getElementById('nodes-command-direct-row');
+        directRow.classList.toggle('hidden', !data.command_direct);
+        document.getElementById('nodes-command-direct').textContent = data.command_direct || '';
+        document.getElementById('nodes-command-hint').textContent = t('nodes-command-hint');
+        const box = document.getElementById('nodes-command-box');
+        box.classList.remove('hidden');
+        box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        loadNodes();
+        return true;
+    } catch (e) {
+        alert(t('connection-error'));
+        return false;
+    }
+}
+
+function nodeStatusBadge(node) {
+    if (node.online && node.compatible) return `<span class="badge badge-success">${t('nodes-status-online')}</span>`;
+    if (node.online) return `<span class="badge badge-warning">${t('nodes-status-update')}</span>`;
+    if (node.problem) return `<span class="badge badge-danger">${t('nodes-status-problem')}</span>`;
+    return `<span class="badge badge-secondary">${t('nodes-status-offline')}</span>`;
+}
+
+// nodeLoad shows CPU, RAM and free disk space of a connected node.
+function nodeLoad(node) {
+    const h = node.host;
+    if (!h) return '-';
+    const num = v => Number(v) || 0;
+    const ram = `RAM ${num(h.ramUsed).toFixed(1)} / ${num(h.ramTotal).toFixed(1)} GB`;
+    const disk = `${t('overview-free')}: ${num(h.diskFree).toFixed(0)} / ${num(h.diskTotal).toFixed(0)} GB`;
+    return `CPU ${num(h.cpu).toFixed(0)} %<div class="node-sub">${escapeHtml(ram)}</div><div class="node-sub">${escapeHtml(disk)}</div>`;
+}
+
+function formatNodeTime(value) {
+    if (!value || String(value).startsWith('0001-')) return '-';
+    const d = new Date(value);
+    return isNaN(d) ? '-' : d.toLocaleString(state.language === 'de' ? 'de-DE' : 'en-GB');
+}
+
+async function loadNodes() {
+    const list = document.getElementById('nodes-list');
+    if (!list) return;
+    let data;
+    try {
+        const res = await apiFetch('/api/admin/nodes');
+        if (!res.ok) return;
+        data = await res.json();
+    } catch (e) {
+        return;
+    }
+    state.nodes = data.nodes || [];
+    const upgradeAll = document.getElementById('nodes-upgrade-all');
+    if (upgradeAll) upgradeAll.classList.toggle('hidden', !state.nodes.some(n => n.update && n.update.possible));
+    // Do not rebuild the table while a mode select is open.
+    if (list.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return;
+    if (state.nodes.length === 0) {
+        list.innerHTML = `<p class="text-muted mb-0">${t('nodes-empty')}</p>`;
+        return;
+    }
+    const modeOption = (value, current) =>
+        `<option value="${value}" ${value === current ? 'selected' : ''}>${t('nodes-mode-' + value)}</option>`;
+    const rows = state.nodes.map(node => {
+        const id = jsArg(node.id);
+        const hello = node.hello || {};
+        const effective = node.effective_mode && node.effective_mode !== node.mode
+            ? `<div class="node-sub">${escapeHtml(t('nodes-effective').replace('{mode}', t('nodes-mode-' + node.effective_mode)))}</div>` : '';
+        const problem = node.problem ? `<div class="node-problem">${escapeHtml(node.problem)}</div>` : '';
+        return `
+            <tr>
+                <td><strong>${escapeHtml(node.name)}</strong><div class="node-sub mono">${escapeHtml(node.id)}</div></td>
+                <td>${nodeStatusBadge(node)}${problem}</td>
+                <td>
+                    <select class="form-control form-control-sm" onchange="updateNodeMode(${id}, this.value)" aria-label="${t('nodes-col-mode')}">
+                        ${modeOption('read-only', node.mode)}${modeOption('read-write', node.mode)}
+                    </select>
+                    ${effective}
+                </td>
+                <td>${escapeHtml(node.version || '-')}<div class="node-sub">${escapeHtml(hello.capabilities ? hello.capabilities.runtime : '')}</div>${nodeUpdateCell(node)}</td>
+                <td>${escapeHtml(node.hostname || '-')}<div class="node-sub">${escapeHtml(formatNodeTime(node.last_seen))}</div></td>
+                <td class="node-load">${nodeLoad(node)}</td>
+                <td>
+                    <div class="node-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="renameNode(${id})">${t('nodes-rename')}</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="repairNode(${id})">${t('nodes-repair')}</button>
+                        <button type="button" class="btn btn-danger btn-sm" onclick="removeNode(${id})">${t('nodes-remove')}</button>
+                    </div>
+                </td>
+            </tr>`;
+    }).join('');
+    list.innerHTML = `
+        <div class="nodes-list-scroll">
+            <table>
+                <thead><tr>
+                    <th>${t('nodes-col-node')}</th><th>${t('nodes-col-status')}</th><th>${t('nodes-col-mode')}</th>
+                    <th>${t('nodes-col-version')}</th><th>${t('nodes-col-host')}</th><th>${t('nodes-col-load')}</th><th></th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>`;
+}
+
+function findNode(nodeId) {
+    return (state.nodes || []).find(n => n.id === nodeId);
+}
+
+async function updateNode(nodeId, name, mode) {
+    try {
+        const res = await apiFetch('/api/admin/nodes/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: nodeId, name, mode }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    loadNodes();
+}
+
+function updateNodeMode(nodeId, mode) {
+    const node = findNode(nodeId);
+    if (node) updateNode(nodeId, node.name, mode);
+}
+
+function renameNode(nodeId) {
+    const node = findNode(nodeId);
+    if (!node) return;
+    const name = prompt(t('nodes-rename-prompt'), node.name);
+    if (name && name.trim() && name.trim() !== node.name) updateNode(nodeId, name.trim(), node.mode);
+}
+
+function repairNode(nodeId) {
+    const node = findNode(nodeId);
+    if (!node) return;
+    if (!confirm(t('nodes-repair-confirm').replace('{name}', node.name))) return;
+    createNodePairing({ repair_id: nodeId, mode: node.mode });
+}
+
+// nodeUpdateCell shows whether a node runs the dashboard's version and offers the update.
+function nodeUpdateCell(node) {
+    const u = node.update || {};
+    if (u.possible) {
+        return `<button type="button" class="btn btn-primary btn-xs mt-1" onclick="upgradeNode(${jsArg(node.id)})">${escapeHtml(t('nodes-upgrade-btn').replace('{version}', u.target))}</button>`;
+    }
+    if (!u.reason || u.reason === 'offline' || u.reason === 'current' || u.reason === 'dashboard-dev') return '';
+    return `<div class="node-sub">${escapeHtml(t('nodes-upgrade-' + u.reason))}</div>`;
+}
+
+// upgradeNode asks the node to install the dashboard's release; the node verifies the release
+// itself and restarts, so it is briefly offline.
+async function upgradeNode(nodeId, quiet) {
+    const node = findNode(nodeId);
+    if (!node) return false;
+    if (!quiet && !confirm(t('nodes-upgrade-confirm').replace('{name}', node.name).replace('{version}', (node.update || {}).target || ''))) return false;
+    try {
+        const res = await apiFetch('/api/admin/nodes/upgrade', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: nodeId }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${node.name}: ${data.error || res.status}`);
+            return false;
+        }
+        return true;
+    } catch (e) {
+        alert(t('connection-error'));
+        return false;
+    } finally {
+        setTimeout(loadNodes, 3000);
+    }
+}
+
+async function upgradeAllNodes() {
+    const nodes = (state.nodes || []).filter(n => n.update && n.update.possible);
+    if (nodes.length === 0) return;
+    const target = nodes[0].update.target;
+    if (!confirm(t('nodes-upgrade-all-confirm').replace('{count}', nodes.length).replace('{version}', target))) return;
+    const btn = document.getElementById('nodes-upgrade-all');
+    if (btn) btn.disabled = true;
+    // One after the other, so a broken release does not take every node down at once.
+    for (const n of nodes) {
+        if (!(await upgradeNode(n.id, true))) break;
+    }
+    if (btn) btn.disabled = false;
+    loadNodes();
+}
+
+async function removeNode(nodeId) {
+    const node = findNode(nodeId);
+    if (!node || !confirm(t('nodes-remove-confirm').replace('{name}', node.name))) return;
+    try {
+        const res = await apiFetch('/api/admin/nodes/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: nodeId }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    loadNodes();
 }
 
 async function loadFirewallStatus() {
@@ -2623,7 +3090,7 @@ function populateSettingsServerSelect() {
     state.servers.forEach(server => {
         const opt = document.createElement('option');
         opt.value = server.id;
-        opt.textContent = `${server.name} (${server.user})`;
+        opt.textContent = serverLabel(server);
         el.settingsServerSelect.appendChild(opt);
     });
     
@@ -2633,8 +3100,48 @@ function populateSettingsServerSelect() {
     handleSettingsServerChange();
 }
 
+// applySettingsWriteLock disables the server tools, schedule and alert controls while the selected
+// server runs on a read-only or offline node (the node would refuse the changes). Tags stay
+// editable: the dashboard keeps them itself. Controls added later by the loaders are caught by
+// the observer installed in watchSettingsWriteLock.
+function applySettingsWriteLock(allowLock = true) {
+    const serverId = el.settingsServerSelect ? el.settingsServerSelect.value : '';
+    const locked = allowLock && !!serverId && serverWriteLocked(serverId);
+    [el.settingsToolsArea, el.settingsCronArea, el.alertsSettingsPanel].forEach(container => {
+        if (!container) return;
+        container.querySelectorAll('input, select, textarea, button').forEach(c => {
+            if (c.dataset.keepEnabled) return;
+            if (locked) {
+                if (!c.disabled) {
+                    c.disabled = true;
+                    c.dataset.nodeLocked = '1';
+                }
+            } else if (c.dataset.nodeLocked) {
+                c.disabled = false;
+                delete c.dataset.nodeLocked;
+            }
+        });
+    });
+    const note = document.getElementById('settings-node-lock-note');
+    if (note) {
+        note.textContent = locked ? serverWriteLockedText(serverId) : '';
+        note.classList.toggle('hidden', !locked);
+    }
+}
+
+function watchSettingsWriteLock() {
+    const observer = new MutationObserver(() => applySettingsWriteLock());
+    [el.settingsToolsArea, el.settingsCronArea, el.alertsSettingsPanel].forEach(container => {
+        if (container) observer.observe(container, { childList: true, subtree: true });
+    });
+}
+
 function handleSettingsServerChange() {
     if (!el.settingsServerSelect) return;
+    // First give back what an earlier lock disabled, so the permission checks below decide alone;
+    // the lock for the new server follows once the controls are set up.
+    applySettingsWriteLock(false);
+    setTimeout(applySettingsWriteLock, 0);
     const serverID = el.settingsServerSelect.value;
     const hasServer = !!serverID;
     
@@ -2661,20 +3168,24 @@ function handleSettingsServerChange() {
     loadCronSchedule(serverID);
     loadServerStopMode(serverID);
     
-    // 1. Generate Systemd template
+    // 1. Generate Systemd template (same as backend/autostart.go)
     const serverDir = server.dir || `/home/${server.user}`;
-    const systemdCode = `[Unit]
+    const systemdCode = `# /etc/systemd/system/linuxgsm-${server.user}-${server.script}.service
+[Unit]
 Description=LinuxGSM ${server.name} Server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=simple
+Type=forking
 User=${server.user}
 WorkingDirectory=${serverDir}
+RemainAfterExit=yes
 ExecStart=${serverDir}/${server.script} start
-ExecStop=${serverDir}/${server.script} stop
-Restart=always
-RestartSec=10
+ExecStop=-${serverDir}/${server.script} stop
+Restart=no
+TimeoutStartSec=15min
+TimeoutStopSec=5min
 
 [Install]
 WantedBy=multi-user.target`;
@@ -2688,10 +3199,7 @@ WantedBy=multi-user.target`;
 # 2. ${isDe ? 'Automatische Updateprüfung (alle 30 Minuten, startet bei Update neu)' : 'Automatic update check (every 30 minutes, restarts on update)'}
 */30 * * * * ${serverDir}/${server.script} update > /dev/null 2>&1
 
-# 3. ${isDe ? 'Täglicher Updatecheck & Neustart um 04:30 Uhr nachts' : 'Daily update check & restart at 04:30 AM'}
-30 4 * * * ${serverDir}/${server.script} force-update > /dev/null 2>&1
-
-# 4. ${isDe ? 'Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)' : 'Weekly update of LinuxGSM itself (every Sunday at 00:00 AM)'}
+# 3. ${isDe ? 'Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)' : 'Weekly update of LinuxGSM itself (every Sunday at 00:00 AM)'}
 0 0 * * 0 ${serverDir}/${server.script} update-lgsm > /dev/null 2>&1`;
 
     if (el.templateSystemd) el.templateSystemd.textContent = systemdCode;
@@ -2721,57 +3229,39 @@ function hasPerm(permission) {
 }
 
 function setAlertFieldsDisabled(disabled) {
-    const alertElements = [
-        el.alertsSettingDiscordEnabled, el.alertsSettingDiscordWebhook,
-        el.alertsSettingTelegramEnabled, el.alertsSettingTelegramToken, el.alertsSettingTelegramChatid,
-        el.alertsSettingEmailEnabled, el.alertsSettingEmailSmtp, el.alertsSettingEmailPort, el.alertsSettingEmailUser, el.alertsSettingEmailPass, el.alertsSettingEmailDest,
-        el.alertsSettingNtfyEnabled, el.alertsSettingNtfyUrl, el.alertsSettingNtfyTopic, el.alertsSettingNtfyToken,
-        el.alertsSettingSlackEnabled, el.alertsSettingSlackWebhook,
-        el.alertsSettingMatrixEnabled, el.alertsSettingMatrixHomeserver, el.alertsSettingMatrixRoomid, el.alertsSettingMatrixToken,
-        el.alertsSettingPushoverEnabled, el.alertsSettingPushoverToken, el.alertsSettingPushoverUser,
-        el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletToken, el.alertsSettingPushbulletChannel,
-        el.alertsSettingIftttEnabled, el.alertsSettingIftttKey, el.alertsSettingIftttEvent,
-        el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatWebhook,
-        el.alertsSettingsSaveBtn
-    ];
-    alertElements.forEach(elem => {
-        if (elem) elem.disabled = disabled;
-    });
+    if (el.alertsFields) el.alertsFields.querySelectorAll('input, select').forEach(i => { i.disabled = disabled; });
+    if (el.alertsSettingsSaveBtn) el.alertsSettingsSaveBtn.disabled = disabled;
 }
+
 
 // -------------------------------------------------------------
 // Config Editor Mode & Parsing Helpers
 // -------------------------------------------------------------
 
-function switchConfigMode(mode) {
+// setConfigView shows the form or the text view without converting between them.
+function setConfigView(mode) {
     state.configMode = mode;
+    el.btnConfigForm.classList.toggle('active', mode === 'form');
+    el.btnConfigRaw.classList.toggle('active', mode !== 'form');
+    el.editorFormWrapper.classList.toggle('hidden', mode !== 'form');
+    el.editorTextWrapper.classList.toggle('hidden', mode === 'form');
+}
 
+function switchConfigMode(mode) {
+    if (!state.activeConfigFile || mode === state.configMode) return;
     if (mode === 'form') {
-        el.btnConfigForm.classList.add('active');
-        el.btnConfigRaw.classList.remove('active');
-
-        el.editorFormWrapper.classList.remove('hidden');
-        el.editorTextWrapper.classList.add('hidden');
-
-        // Rebuild form with the latest textarea text in case they modified it in raw view
+        // Rebuild the form from the text, which may have been edited. The form always matches the
+        // text, even when no values are left: a stale form would save the old text on top.
         const currentText = el.editorTextarea.value;
-        const parsed = parseConfig(currentText, state.activeConfigFile);
-        if (parsed.length > 0) {
-            state.parsedConfigItems = parsed;
-            state.formBaseContent = currentText;
-            buildConfigForm(parsed);
-        }
+        state.parsedConfigItems = parseConfig(currentText, state.activeConfigFile);
+        state.formBaseContent = currentText;
+        buildConfigForm(state.parsedConfigItems);
     } else {
-        el.btnConfigForm.classList.remove('active');
-        el.btnConfigRaw.classList.add('active');
-
-        el.editorFormWrapper.classList.add('hidden');
-        el.editorTextWrapper.classList.remove('hidden');
-
         // Serialize form values back to text in case they modified them in the form
         el.editorTextarea.value = configFormContent();
         updateEditorLineNumbers();
     }
+    setConfigView(mode);
 }
 
 // configFormContent applies the changed form fields to the text the form was built from. Fields
@@ -2791,7 +3281,7 @@ function configFormContent() {
     if (changes.size === 0) return base;
     const ext = state.activeConfigFile.split('.').pop().toLowerCase();
     return ext === 'json' ? serializeJsonForm(base, state.parsedConfigItems, changes)
-                          : serializeConfigForm(base, state.parsedConfigItems, changes, ext);
+                          : serializeConfigForm(base, state.parsedConfigItems, changes, ext === 'cfg' && isLgsmConfigPath(state.activeConfigFile));
 }
 
 // Keeps the spelling of the original value (true/True/TRUE).
@@ -2842,8 +3332,13 @@ function parseConfig(content, path) {
         }
     }
 
+    // LinuxGSM configs are bash; other .cfg files are game configs (Source: `hostname "x"`,
+    // Arma: `hostname = "x";`).
+    const bash = ext === 'cfg' && isLgsmConfigPath(path);
+    const gameCfg = ext === 'cfg' && !bash;
     const lines = content.split('\n');
     const kvRegex = /^(\s*([\w\.\-]+)\s*[=:]\s*)(.*)$/;
+    const cvarRegex = /^(\s*([A-Za-z_][\w\.\-]*)\s+)(\S.*)$/;
     let accumulatedComments = [];
     let section = '';
 
@@ -2870,7 +3365,9 @@ function parseConfig(content, path) {
             return;
         }
 
-        const match = line.match(kvRegex);
+        let match = line.match(kvRegex);
+        const cvar = !match && gameCfg;
+        if (cvar) match = line.match(cvarRegex);
         if (!match) return;
         const rest = match[3];
         let value = rest.trim();
@@ -2878,11 +3375,20 @@ function parseConfig(content, path) {
         let suffix = '';
         if (value[0] === '"' || value[0] === "'") {
             quote = value[0];
-            const close = findClosingQuote(value, quote, ext === 'cfg');
+            const close = findClosingQuote(value, quote, bash);
             if (close < 0) return; // value spans several lines: raw view only
             suffix = value.slice(close + 1);
             value = value.slice(1, close);
-            if (quote === '"' && ext === 'cfg') value = value.replace(/\\(["\\`])/g, '$1');
+            if (quote === '"' && bash) value = value.replace(/\\(["\\`$])/g, '$1');
+        } else if (gameCfg) {
+            // An unquoted game config value ends at a // comment or the ; of Arma configs.
+            const word = value.match(/^([^\s;]+)(\s*;?\s*(\/\/.*)?)$/);
+            if (!word) {
+                if (cvar) return; // `class Missions {` and other commands are no values
+            } else {
+                value = word[1];
+                suffix = word[2];
+            }
         }
 
         const type = typed(value);
@@ -2907,6 +3413,11 @@ function parseConfig(content, path) {
     return items;
 }
 
+// isLgsmConfigPath reports whether path is one of the LinuxGSM configs in config-lgsm/<game>.
+function isLgsmConfigPath(path) {
+    return /\/config-lgsm\/[^/]+\/[^/]+\.cfg$/.test(path || '');
+}
+
 // Index of the quote that closes value[0], or -1. In bash configs \" does not close the string.
 function findClosingQuote(value, quote, bashEscapes) {
     for (let i = 1; i < value.length; i++) {
@@ -2921,6 +3432,28 @@ function findClosingQuote(value, quote, bashEscapes) {
 
 function buildConfigForm(items) {
     el.configFormBuilder.innerHTML = '';
+    // Values of read-only or offline nodes can be looked at, not changed.
+    const locked = serverWriteLocked(state.activeConfigServer);
+
+    if (items.length === 0) {
+        const path = state.activeConfigFile || '';
+        const lgsm = isLgsmConfigPath(path);
+        const hint = document.createElement('div');
+        hint.className = 'text-muted';
+        hint.textContent = t(lgsm ? 'config-form-empty-lgsm' : 'config-form-empty');
+        el.configFormBuilder.appendChild(hint);
+        const dir = path.slice(0, path.lastIndexOf('/') + 1);
+        const def = lgsm && !path.endsWith('/_default.cfg') && state.configFileEntries.find(f => f.path === dir + '_default.cfg');
+        if (def) {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-secondary btn-sm';
+            btn.style.alignSelf = 'flex-start';
+            btn.textContent = t('config-form-open-default');
+            btn.addEventListener('click', () => loadConfigFile(def.path, def.name, def.li));
+            el.configFormBuilder.appendChild(btn);
+        }
+        return;
+    }
 
     items.forEach(item => {
         const formItem = document.createElement('div');
@@ -2974,6 +3507,7 @@ function buildConfigForm(items) {
             check.type = 'checkbox';
             check.id = `config-form-val-${item.id}`;
             check.checked = item.checked;
+            check.disabled = locked;
             switchEl.appendChild(check);
 
             const slider = document.createElement('span');
@@ -2994,6 +3528,7 @@ function buildConfigForm(items) {
                 input.style.minWidth = '280px';
             }
             input.value = item.value;
+            input.readOnly = locked;
             container.appendChild(input);
         }
 
@@ -3002,16 +3537,19 @@ function buildConfigForm(items) {
     });
 }
 
-function serializeConfigForm(originalContent, items, changes, ext) {
+function serializeConfigForm(originalContent, items, changes, bash) {
     const lines = originalContent.split('\n');
     items.forEach(item => {
         if (!changes.has(item.id)) return;
         let value = changes.get(item.id);
         let quote = item.quote;
-        if (ext === 'cfg') {
-            // LinuxGSM configs are bash: escape quotes, keep ${variables} working.
-            if (quote === "'" && value.includes("'")) quote = '"';
-            if (quote === '"') value = value.replace(/(["\\`])/g, '\\$1');
+        if (bash) {
+            // LinuxGSM configs are bash. An edited value is always quoted (servername=My Server would
+            // run "Server"). $ is taken literally (passwords) unless it starts a ${variable} reference.
+            if (quote === '' || (quote === "'" && value.includes("'"))) quote = '"';
+            if (quote === '"') {
+                value = value.replace(/(["\\`])/g, '\\$1').replace(/\$(?!\{[A-Za-z_][A-Za-z0-9_]*\})/g, '\\$');
+            }
         }
         lines[item.line] = `${item.prefix}${quote}${value}${quote}${item.suffix}${item.cr}`;
     });
@@ -3123,14 +3661,23 @@ const i18n = {
         "btn-offline": "Offline",
         "btn-action": "Actions",
         "btn-details": "Details",
-        "btn-backup": "Backup",
-        "btn-validate": "Validate",
         "btn-update-lgsm": "Update LGSM",
         "btn-force-update": "Force Update",
         "btn-test-alert": "Test Alert",
-        "btn-check-update": "Check Update",
         "btn-mods-install": "Install Mods",
         "btn-mods-update": "Update Mods",
+        "btn-mods-remove": "Remove Mods",
+        "btn-map-wipe": "Map Wipe",
+        "btn-full-wipe": "Full Wipe",
+        "btn-install-default-resources": "Install MTA Default Resources",
+        "btn-workshop-update": "Update Workshop Mods",
+        "console-no-input": "This game does not accept console commands (LinuxGSM: consoleinteract=no)",
+        "status-warning": "Done with warnings",
+        "config-game-badge": "Game",
+        "config-game-badge-title": "The config file LinuxGSM starts the game with (servercfgfullpath)",
+        "delete-force-confirm": "The server is still running after the stop command (for example players are online and LinuxGSM only stops empty servers). End its session and delete it anyway?",
+        "delete-installing": "The server is still being installed. Delete it when the installation has finished.",
+        "btn-change-password": "Set ServerAdmin password",
         "btn-fastdl": "FastDL Sync",
         "btn-postdetails": "Support Log (Termbin)",
         "files-btn-upload": "Upload File",
@@ -3170,9 +3717,26 @@ const i18n = {
         "audit-title": "Security Audit Log",
         "audit-subtitle": "Unfiltered log of administrative actions and user logins.",
         "audit-empty": "No audit entries recorded.",
-        "modal-mods-title": "Installed mods and plugins",
-        "modal-mods-desc": "Manage installed addons and plugins for this server.",
+        "modal-mods-title": "Mods and plugins",
+        "modal-mods-desc": "Install or remove the addons and plugins LinuxGSM offers for this game.",
         "mods-loading": "Loading mods list...",
+        "mods-installed": "Installed",
+        "mods-available": "Available",
+        "mods-none-installed": "No mods installed (lgsm/mods/installed-mods.txt).",
+        "mods-none-available": "LinuxGSM offers no mods for this game.",
+        "mods-load-error": "The mod list could not be loaded.",
+        "mods-btn-install": "Install",
+        "mods-btn-reinstall": "Reinstall",
+        "mods-btn-remove": "Remove",
+        "mods-confirm-remove": "Remove {mod}? LinuxGSM deletes the files it installed for this mod.",
+        "modal-ts3pw-title": "Set ServerAdmin password",
+        "modal-ts3pw-desc": "LinuxGSM restarts the TeamSpeak 3 server with the new ServerQuery password for serveradmin.",
+        "ts3pw-password": "New password",
+        "ts3pw-confirm": "Repeat password",
+        "ts3pw-hint": "8 to 64 characters: letters, digits and . _ + = @ # % ^ * ! ? : , ~ -",
+        "ts3pw-mismatch": "The passwords do not match.",
+        "ts3pw-invalid": "The password needs 8 to 64 characters: letters, digits and . _ + = @ # % ^ * ! ? : , ~ -",
+        "ts3pw-submit": "Set password",
         "alerts-settings-title": "Notification Alerts Settings",
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Install & Enable Service",
@@ -3191,13 +3755,8 @@ const i18n = {
         "settings-title": "Settings & Info",
         "settings-subtitle": "Your account, dashboard settings and server tools.",
         "settings-pass-card": "Change password",
-        "settings-new-pass": "New Password",
-        "settings-confirm-pass": "Confirm New Password",
         "settings-btn-save": "Update Password",
         "settings-info-card": "Host System Information",
-        "settings-templates-card": "Automation Templates",
-        "settings-btn-systemd": "Generate Systemd Service",
-        "settings-btn-cron": "Generate Cronjobs",
         "overview-title": "Overview & Monitoring",
         "overview-subtitle": "Resource utilization of the host system and active game servers.",
         "overview-cpu": "Host CPU Usage",
@@ -3217,7 +3776,6 @@ const i18n = {
         "settings-tools-cron-desc-docker": "In Docker mode the dashboard runs the schedules itself (times in the time zone set under Settings > General). Recommended: monitor every 5 minutes, update check every 30 minutes, force-update at 04:30 and update-lgsm on Sundays.",
         "settings-info-os": "Operating System",
         "settings-info-mode": "Dashboard Mode",
-        "modal-config-no-file": "Choose a file",
         "config-no-files": "No config files found",
         "username-placeholder": "admin",
         "password-placeholder": "Enter password",
@@ -3284,6 +3842,9 @@ const i18n = {
         "config-loading-file": "Loading content...",
         "config-load-error": "Load error",
         "config-load-file-error": "Error loading file.",
+        "config-form-empty": "No values found that the form can show. Edit this file in the text view.",
+        "config-form-empty-lgsm": "This file does not set any values yet, so LinuxGSM uses the values from _default.cfg. Values you change in the form of _default.cfg are saved here; in the text view you can add settings directly.",
+        "config-form-open-default": "Open _default.cfg",
         "saving": "Saving...",
         "saved": "Saved!",
         "config-save-error": "Error saving configuration.",
@@ -3394,7 +3955,7 @@ const i18n = {
         "confirm-restore-backup-text": "Are you sure you want to restore this backup? The game server will be stopped and all files will be replaced with the state of this backup.",
         "backups-settings-title": "Backup Settings",
         "backups-setting-maxbackups-label": "Max Backups (maxbackups)",
-        "backups-setting-maxbackups-help": "Set the maximum number of backups to retain. 0 prevents backups from being saved.",
+        "backups-setting-maxbackups-help": "Number of backups to keep (at least 1). LinuxGSM deletes older archives in the backup directory, also those of other instances in the same directory.",
         "backups-setting-maxbackupdays-label": "Max Backup Days (maxbackupdays)",
         "backups-setting-maxbackupdays-help": "Backups older than this number of days will be deleted. 0 retains backup for 24 hours.",
         "backups-setting-stoponbackup-label": "Stop on Backup (stoponbackup)",
@@ -3499,7 +4060,7 @@ const i18n = {
         "settings-btn-clone": "Clone Instance",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Sync Now",
-        "cloudbackup-desc": "Synchronize created backups automatically or manually to cloud storage (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-desc": "Synchronize created backups to cloud storage with one click (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
         "cloudbackup-enable-label": "Enable Cloud Sync",
         "cloudbackup-remote-label": "rclone Remote Name",
         "cloudbackup-remote-placeholder": "e.g. gdrive or s3",
@@ -3531,6 +4092,61 @@ const i18n = {
         "settings-subtab-cron": "Crontab & Scheduler",
         "settings-subtab-alerts": "Alerts",
         "settings-subtab-security": "Firewall & Security",
+        "settings-subtab-nodes": "Nodes",
+        "nodes-add-title": "Add node",
+        "nodes-add-desc": "A node is another machine (for example an LXC container or a VPS) whose game servers are managed here as well. The node connects to this dashboard; the connection is encrypted end to end.",
+        "nodes-add-name": "Name",
+        "nodes-add-mode": "Access",
+        "nodes-mode-read-only": "Read only (start/stop allowed)",
+        "nodes-mode-read-write": "Read and write",
+        "nodes-add-btn": "Create pairing command",
+        "nodes-command-intro": "Run this command as root on the node \"{name}\". It is valid once, for {minutes} minutes.",
+        "nodes-command-direct": "Alternatively via the direct agent port:",
+        "nodes-command-hint": "Afterwards start the agent on the node with \"/opt/lgsm-dashboard/lgsm-dashboard agent run\". The node appears below as soon as it is connected.",
+        "nodes-copy": "Copy",
+        "nodes-copied": "Copied",
+        "nodes-list-title": "Nodes",
+        "nodes-refresh": "Refresh",
+        "nodes-empty": "No nodes yet.",
+        "nodes-col-node": "Node",
+        "nodes-col-status": "Status",
+        "nodes-col-mode": "Access",
+        "nodes-col-version": "Version",
+        "nodes-col-host": "Host / last seen",
+        "nodes-col-load": "Load",
+        "nodes-upgrade-all": "Update all nodes",
+        "nodes-upgrade-btn": "Update to {version}",
+        "nodes-upgrade-confirm": "Update the node \"{name}\" to {version}? It downloads and verifies the release itself and restarts the agent.",
+        "nodes-upgrade-all-confirm": "Update {count} node(s) to {version}, one after the other? Each agent restarts briefly.",
+        "nodes-upgrade-node-newer": "Newer than the dashboard: update the dashboard",
+        "nodes-upgrade-no-self-update": "Docker: update with docker compose pull && docker compose up -d",
+        "nodes-upgrade-disabled": "Updates from the dashboard are disabled on the node (allow_self_update)",
+        "nodes-upgrade-unknown": "Build from source: update on the node",
+        "nodes-status-online": "Online",
+        "nodes-status-offline": "Offline",
+        "nodes-status-update": "Update required",
+        "nodes-status-problem": "Problem",
+        "nodes-effective": "Effective: {mode} (restricted on the node)",
+        "nodes-rename": "Rename",
+        "nodes-rename-prompt": "New name of the node:",
+        "nodes-repair": "Pair again",
+        "nodes-repair-confirm": "Create a new pairing command for \"{name}\"? Once it is used, the current installation of the node can no longer connect. Assignments and tags are kept.",
+        "nodes-remove": "Remove",
+        "nodes-remove-confirm": "Remove the node \"{name}\"? It is disconnected at once, and its user assignments and tags are deleted. The game servers on the node are not touched.",
+        "nodes-error": "Error",
+        "card-node-offline": "Node offline",
+        "card-node-read-only": "Read-only node: start, stop and restart only",
+        "users-nodes-label": "Nodes (all servers of the node, including new ones)",
+        "inst-target-label": "Install on",
+        "inst-target-help": "Read-only nodes and nodes that are not connected are not offered.",
+        "inst-target-here": "This machine (dashboard)",
+        "fastdl-mode-label": "FastDL served by",
+        "fastdl-mode-dashboard": "This dashboard",
+        "fastdl-mode-node": "The node itself",
+        "fastdl-mode-off": "Off",
+        "fastdl-off": "FastDL is off for this server.",
+        "fastdl-node-no-url": "The node serves no FastDL yet: start its agent with --fastdl-port and --fastdl-url, or serve public_html/fastdl with your own web server and set --fastdl-url.",
+        "fastdl-copied": "FastDL URL copied to clipboard!",
         "settings-server-select-hint": "Settings apply to the selected server instance.",
         "settings-select-server-prompt": "Please select a server above to view server tools and instance settings.",
         "settings-select-server-prompt-cron": "Please select a server above to manage scheduled maintenance tasks.",
@@ -3615,14 +4231,23 @@ const i18n = {
         "btn-offline": "Offline",
         "btn-action": "Aktionen",
         "btn-details": "Details",
-        "btn-backup": "Backup",
-        "btn-validate": "Validieren",
         "btn-update-lgsm": "LGSM Updaten",
         "btn-force-update": "Force Update",
         "btn-test-alert": "Alert Testen",
-        "btn-check-update": "Update prüfen",
         "btn-mods-install": "Mods Installieren",
         "btn-mods-update": "Mods Updaten",
+        "btn-mods-remove": "Mods entfernen",
+        "btn-map-wipe": "Map-Wipe",
+        "btn-full-wipe": "Full-Wipe",
+        "btn-install-default-resources": "MTA-Standardressourcen installieren",
+        "btn-workshop-update": "Workshop-Mods aktualisieren",
+        "console-no-input": "Dieses Spiel nimmt keine Konsolenbefehle an (LinuxGSM: consoleinteract=no)",
+        "status-warning": "Fertig mit Warnungen",
+        "config-game-badge": "Spiel",
+        "config-game-badge-title": "Die Konfigurationsdatei, mit der LinuxGSM das Spiel startet (servercfgfullpath)",
+        "delete-force-confirm": "Der Server läuft nach dem Stopp-Befehl noch (zum Beispiel sind Spieler online und LinuxGSM stoppt nur leere Server). Sitzung beenden und trotzdem löschen?",
+        "delete-installing": "Der Server wird noch installiert. Lösche ihn, wenn die Installation abgeschlossen ist.",
+        "btn-change-password": "ServerAdmin-Passwort setzen",
         "btn-fastdl": "FastDL Sync",
         "btn-postdetails": "Support Log (Termbin)",
         "files-btn-upload": "Datei hochladen",
@@ -3662,9 +4287,26 @@ const i18n = {
         "audit-title": "Sicherheits Audit-Log",
         "audit-subtitle": "Ungefiltertes Protokoll aller administrativen Aktionen und System-Anmeldungen.",
         "audit-empty": "Keine Audit-Einträge vorhanden.",
-        "modal-mods-title": "Installierte Mods und Plugins",
-        "modal-mods-desc": "Verwalte installierte Addons und Plugins für diesen Server.",
+        "modal-mods-title": "Mods und Plugins",
+        "modal-mods-desc": "Installiere oder entferne die Addons und Plugins, die LinuxGSM für dieses Spiel anbietet.",
         "mods-loading": "Lade Mod-Liste...",
+        "mods-installed": "Installiert",
+        "mods-available": "Verfügbar",
+        "mods-none-installed": "Keine Mods installiert (lgsm/mods/installed-mods.txt).",
+        "mods-none-available": "LinuxGSM bietet für dieses Spiel keine Mods an.",
+        "mods-load-error": "Die Mod-Liste konnte nicht geladen werden.",
+        "mods-btn-install": "Installieren",
+        "mods-btn-reinstall": "Neu installieren",
+        "mods-btn-remove": "Entfernen",
+        "mods-confirm-remove": "{mod} entfernen? LinuxGSM löscht die Dateien, die es für diese Mod installiert hat.",
+        "modal-ts3pw-title": "ServerAdmin-Passwort setzen",
+        "modal-ts3pw-desc": "LinuxGSM startet den TeamSpeak-3-Server mit dem neuen ServerQuery-Passwort für serveradmin neu.",
+        "ts3pw-password": "Neues Passwort",
+        "ts3pw-confirm": "Passwort wiederholen",
+        "ts3pw-hint": "8 bis 64 Zeichen: Buchstaben, Ziffern und . _ + = @ # % ^ * ! ? : , ~ -",
+        "ts3pw-mismatch": "Die Passwörter stimmen nicht überein.",
+        "ts3pw-invalid": "Das Passwort braucht 8 bis 64 Zeichen: Buchstaben, Ziffern und . _ + = @ # % ^ * ! ? : , ~ -",
+        "ts3pw-submit": "Passwort setzen",
         "alerts-settings-title": "Benachrichtigungs-Einstellungen",
         "alerts-discord-webhook-label": "Discord Webhook URL",
         "settings-tools-btn-systemd": "Dienst automatisch installieren & aktivieren",
@@ -3687,11 +4329,8 @@ const i18n = {
         "settings-old-pass-label": "Aktuelles Passwort",
         "settings-new-pass-label": "Neues Passwort",
         "settings-confirm-pass-label": "Neues Passwort bestätigen",
-        "settings-btn-save": "Passwort speichern",
         "settings-info-card": "System-Informationen",
-        "settings-info-version": "Dashboard Version",
         "settings-info-os": "Betriebssystem",
-        "settings-info-pid": "Prozess-ID (PID)",
         "settings-info-mode": "Dashboard Modus",
         "settings-tools-card": "Server-Spezifische Hilfsmittel",
         "settings-tools-card-desc": "Wähle einen deiner aktiver Server, um copy-paste Vorlagen für Autostart und geplante Aufgaben (Cronjobs) anzuzeigen.",
@@ -3707,13 +4346,7 @@ const i18n = {
         "overview-cpu": "CPU Auslastung",
         "overview-ram": "Arbeitsspeicher (RAM)",
         "username-placeholder": "admin",
-        "password-placeholder": "Passwort eingeben",
         "console-select-default": "-- Wähle einen Server --",
-        "console-no-server-selected": "Kein Server gewählt",
-        "console-mode-log": "Konsolen-Logdatei",
-        "console-empty-prompt": "Wähle oben einen Server aus, um die Konsole zu laden.",
-        "console-input-placeholder": "Befehl an die Serverkonsole senden...",
-        "btn-send": "Senden",
         "overview-disk": "Festplatte",
         "overview-history": "Ressourcenverlauf (Letzte 5 Minuten)",
         "overview-table": "Ressourcennutzung pro Server",
@@ -3736,14 +4369,9 @@ const i18n = {
         "console-input-placeholder": "Befehl an die Serverkonsole senden...",
         "console-mode-log": "Konsolen-Logdatei",
         "console-no-server-selected": "Kein Server gewählt",
-        "console-no-server-connected": "Kein Server verbunden",
         "console-title": "Live-Konsole & Protokoll",
         "console-subtitle": "Sieh den Live-Bildschirm (tmux) oder Logdateien deines Gameservers ein.",
         "settings-btn-save": "Passwort speichern",
-        "modal-config-btn-save": "Speichern",
-        "config-save-error": "Fehler beim Speichern der Konfiguration.",
-        "terminal-loading": "Lade Konsole...",
-        "config-loading-file": "Lade Inhalt...",
         "modal-config-tab-form": "Formular",
         "modal-config-tab-raw": "Text",
         "modal-config-btn-save": "Speichern",
@@ -3784,6 +4412,9 @@ const i18n = {
         "config-loading-file": "Lade Inhalt...",
         "config-load-error": "Ladefehler",
         "config-load-file-error": "Fehler beim Laden der Datei.",
+        "config-form-empty": "Keine Werte gefunden, die das Formular anzeigen kann. Bearbeite die Datei in der Textansicht.",
+        "config-form-empty-lgsm": "Diese Datei setzt noch keine Werte, LinuxGSM nutzt daher die Werte aus _default.cfg. Werte, die du im Formular von _default.cfg änderst, werden hier gespeichert; in der Textansicht kannst du Einstellungen direkt eintragen.",
+        "config-form-open-default": "_default.cfg öffnen",
         "saving": "Speichert...",
         "saved": "Gespeichert!",
         "config-save-error": "Fehler beim Speichern der Konfiguration.",
@@ -3894,7 +4525,7 @@ const i18n = {
         "confirm-restore-backup-text": "Möchtest du dieses Backup wirklich wiederherstellen? Der Gameserver wird gestoppt und alle Spieldateien werden auf den Stand dieses Backups zurückgesetzt.",
         "backups-settings-title": "Backup-Einstellungen",
         "backups-setting-maxbackups-label": "Max Backups (maxbackups)",
-        "backups-setting-maxbackups-help": "Maximale Anzahl an Backups, die behalten werden. 0 verhindert das Speichern von Backups.",
+        "backups-setting-maxbackups-help": "Maximale Anzahl an Backups, die behalten werden (mindestens 1). LinuxGSM löscht ältere Archive im Backup-Ordner, auch die anderer Instanzen im selben Verzeichnis.",
         "backups-setting-maxbackupdays-label": "Max Backup-Tage (maxbackupdays)",
         "backups-setting-maxbackupdays-help": "Backups, die älter als diese Anzahl an Tagen sind, werden gelöscht. 0 behält das Backup für 24 Stunden.",
         "backups-setting-stoponbackup-label": "Server stoppen bei Backup (stoponbackup)",
@@ -3999,7 +4630,7 @@ const i18n = {
         "settings-btn-clone": "Instanz klonen",
         "cloudbackup-title": "Cloud Backup (rclone Sync)",
         "cloudbackup-btn-sync": "Jetzt synchronisieren",
-        "cloudbackup-desc": "Synchronisiere erstellte Backups automatisch oder manuell mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
+        "cloudbackup-desc": "Synchronisiere erstellte Backups per Knopfdruck mit Cloud-Speichern (Google Drive, AWS S3, Wasabi, Backblaze B2 via rclone).",
         "cloudbackup-enable-label": "Cloud Sync aktivieren",
         "cloudbackup-remote-label": "rclone Remote Name",
         "cloudbackup-remote-placeholder": "z. B. gdrive oder s3",
@@ -4031,6 +4662,61 @@ const i18n = {
         "settings-subtab-cron": "Crontab & Scheduler",
         "settings-subtab-alerts": "Benachrichtigungen",
         "settings-subtab-security": "Firewall & Sicherheit",
+        "settings-subtab-nodes": "Nodes",
+        "nodes-add-title": "Node hinzufügen",
+        "nodes-add-desc": "Ein Node ist ein weiterer Rechner (z. B. ein LXC-Container oder ein VPS), dessen Gameserver hier mit verwaltet werden. Der Node verbindet sich mit diesem Dashboard; die Verbindung ist Ende-zu-Ende verschlüsselt.",
+        "nodes-add-name": "Name",
+        "nodes-add-mode": "Zugriff",
+        "nodes-mode-read-only": "Nur lesen (Start/Stop erlaubt)",
+        "nodes-mode-read-write": "Lesen und schreiben",
+        "nodes-add-btn": "Pairing-Befehl erstellen",
+        "nodes-command-intro": "Führe diesen Befehl als root auf dem Node \"{name}\" aus. Er gilt einmal und {minutes} Minuten lang.",
+        "nodes-command-direct": "Alternativ über den direkten Agent-Port:",
+        "nodes-command-hint": "Danach den Agent auf dem Node mit \"/opt/lgsm-dashboard/lgsm-dashboard agent run\" starten. Der Node erscheint unten, sobald er verbunden ist.",
+        "nodes-copy": "Kopieren",
+        "nodes-copied": "Kopiert",
+        "nodes-list-title": "Nodes",
+        "nodes-refresh": "Aktualisieren",
+        "nodes-empty": "Noch keine Nodes.",
+        "nodes-col-node": "Node",
+        "nodes-col-status": "Status",
+        "nodes-col-mode": "Zugriff",
+        "nodes-col-version": "Version",
+        "nodes-col-host": "Host / zuletzt gesehen",
+        "nodes-col-load": "Auslastung",
+        "nodes-upgrade-all": "Alle Nodes aktualisieren",
+        "nodes-upgrade-btn": "Auf {version} aktualisieren",
+        "nodes-upgrade-confirm": "Node \"{name}\" auf {version} aktualisieren? Er lädt und prüft das Release selbst und startet den Agent neu.",
+        "nodes-upgrade-all-confirm": "{count} Node(s) nacheinander auf {version} aktualisieren? Jeder Agent startet kurz neu.",
+        "nodes-upgrade-node-newer": "Neuer als das Dashboard: Dashboard aktualisieren",
+        "nodes-upgrade-no-self-update": "Docker: mit docker compose pull && docker compose up -d aktualisieren",
+        "nodes-upgrade-disabled": "Updates vom Dashboard sind auf dem Node aus (allow_self_update)",
+        "nodes-upgrade-unknown": "Build aus dem Quellcode: auf dem Node aktualisieren",
+        "nodes-status-online": "Online",
+        "nodes-status-offline": "Offline",
+        "nodes-status-update": "Update nötig",
+        "nodes-status-problem": "Problem",
+        "nodes-effective": "Effektiv: {mode} (auf dem Node eingeschränkt)",
+        "nodes-rename": "Umbenennen",
+        "nodes-rename-prompt": "Neuer Name des Nodes:",
+        "nodes-repair": "Neu koppeln",
+        "nodes-repair-confirm": "Neuen Pairing-Befehl für \"{name}\" erstellen? Sobald er benutzt wird, kann sich die bisherige Installation des Nodes nicht mehr verbinden. Zuweisungen und Tags bleiben erhalten.",
+        "nodes-remove": "Entfernen",
+        "nodes-remove-confirm": "Node \"{name}\" entfernen? Er wird sofort getrennt, seine Benutzerzuweisungen und Tags werden gelöscht. Die Gameserver auf dem Node bleiben unberührt.",
+        "nodes-error": "Fehler",
+        "card-node-offline": "Node offline",
+        "card-node-read-only": "Read-only-Node: nur Start, Stop und Restart",
+        "users-nodes-label": "Nodes (alle Server des Nodes, auch neue)",
+        "inst-target-label": "Installieren auf",
+        "inst-target-help": "Read-only-Nodes und Nodes ohne Verbindung stehen nicht zur Auswahl.",
+        "inst-target-here": "Dieser Rechner (Dashboard)",
+        "fastdl-mode-label": "FastDL ausgeliefert von",
+        "fastdl-mode-dashboard": "Diesem Dashboard",
+        "fastdl-mode-node": "Dem Node selbst",
+        "fastdl-mode-off": "Aus",
+        "fastdl-off": "FastDL ist für diesen Server aus.",
+        "fastdl-node-no-url": "Der Node liefert noch kein FastDL aus: Agent mit --fastdl-port und --fastdl-url starten, oder public_html/fastdl mit einem eigenen Webserver ausliefern und --fastdl-url setzen.",
+        "fastdl-copied": "FastDL-URL in die Zwischenablage kopiert!",
         "settings-server-select-hint": "Einstellungen gelten für die ausgewählte Server-Instanz.",
         "settings-select-server-prompt": "Bitte wähle oben einen Server aus, um Server-Tools und Instanz-Einstellungen anzuzeigen.",
         "settings-select-server-prompt-cron": "Bitte wähle oben einen Server aus, um geplante Wartungsaufgaben zu verwalten.",
@@ -4299,10 +4985,10 @@ async function checkServerPorts(serverId) {
 
             row.innerHTML = `
                 <td style="padding: 0.75rem 0.5rem; text-align: left; font-family: monospace; font-size: 0.85rem;">
-                    ${probe.port} <span style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;">${probe.description}</span>
+                    ${Number(probe.port) || 0} <span style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;">${escapeHtml(probe.description)}</span>
                 </td>
                 <td style="padding: 0.75rem 0.5rem; text-align: left; font-size: 0.8rem;">
-                    ${probe.protocol}
+                    ${escapeHtml(probe.protocol)}
                 </td>
                 <td style="padding: 0.75rem 0.5rem; text-align: right;">
                     <span class="${badgeClass}" style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 4px;">${statusText}</span>
@@ -4335,9 +5021,20 @@ async function confirmDeleteServer() {
     el.btnDeleteConfirmSubmit.disabled = true;
     
     try {
-        const res = await apiFetch(`/api/servers/${serverId}/delete`, {
-            method: 'POST'
-        });
+        const url = `/api/servers/${encodeURIComponent(serverId)}/delete`;
+        let res = await apiFetch(url, { method: 'POST' });
+        if (res.status === 409) {
+            // Still running after the stop (players online with stoponlyifnoplayers, hung
+            // server) or still installing.
+            const data = await res.json().catch(() => ({}));
+            if (data.code === 'still_running' && confirm(t('delete-force-confirm'))) {
+                res = await apiFetch(url + '?force=1', { method: 'POST' });
+            } else {
+                alert(data.code === 'installing' ? t('delete-installing') : (data.error || t('status-error')));
+                el.btnDeleteConfirmSubmit.disabled = false;
+                return;
+            }
+        }
         if (res.status !== 200) {
             throw new Error('Delete API failed');
         }
@@ -4520,12 +5217,16 @@ async function loadUsersList() {
                 '<span class="badge badge-success" style="font-size: 0.75rem;">Admin</span>' : 
                 '<span class="badge badge-secondary" style="font-size: 0.75rem;">User</span>';
                 
-            const servers = user.role === 'admin' ? 
+            let servers = user.role === 'admin' ? 
                 `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Alle Server' : 'All Servers'}</span>` : 
                 (user.servers && user.servers.length > 0 ? 
                     user.servers.map(s => `<code style="font-size: 0.8rem;">${escapeHtml(s)}</code>`).join(', ') : 
                     `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Keine' : 'None'}</span>`);
                     
+            if (user.role !== 'admin' && user.nodes && user.nodes.length > 0) {
+                const chips = user.nodes.map(n => `<span class="node-chip">${escapeHtml(n)}</span>`).join(' ');
+                servers = user.servers && user.servers.length > 0 ? `${servers} ${chips}` : chips;
+            }
             const perms = user.role === 'admin' ? 
                 `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Voller Zugriff' : 'Full Access'}</span>` : 
                 (user.permissions && user.permissions.length > 0 ? 
@@ -4594,9 +5295,10 @@ async function populateUserServerCheckboxes() {
                 label.style.cursor = 'pointer';
                 label.style.fontSize = '0.85rem';
                 
+                const node = srv.node ? ` · ${escapeHtml(srv.node_name || srv.node)}` : '';
                 label.innerHTML = `
                     <input type="checkbox" name="user-assigned-servers" value="${escapeHtml(srv.id)}">
-                    <span>${escapeHtml(srv.name)} (<code>${escapeHtml(srv.user)}</code>)</span>
+                    <span>${escapeHtml(srv.name)} (<code>${escapeHtml(srv.user)}</code>)${node}</span>
                 `;
                 listDiv.appendChild(label);
             });
@@ -4604,6 +5306,33 @@ async function populateUserServerCheckboxes() {
     } catch (e) {
         console.error('Failed to load servers for user form:', e);
     }
+    await populateUserNodeCheckboxes();
+}
+
+// populateUserNodeCheckboxes lists the nodes a user can be assigned to as a whole.
+async function populateUserNodeCheckboxes() {
+    const section = document.getElementById('user-nodes-section');
+    const list = document.getElementById('user-nodes-list');
+    if (!section || !list) return;
+    list.innerHTML = '';
+    let nodes = [];
+    try {
+        const res = await apiFetch('/api/admin/nodes');
+        if (res.ok) nodes = (await res.json()).nodes || [];
+    } catch (e) {
+        nodes = [];
+    }
+    section.classList.toggle('hidden', nodes.length === 0);
+    nodes.forEach(node => {
+        const label = document.createElement('label');
+        label.className = 'checkbox-label';
+        label.style.cssText = 'display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-size:0.85rem;';
+        label.innerHTML = `
+            <input type="checkbox" name="user-assigned-nodes" value="${escapeHtml(node.id)}">
+            <span>${escapeHtml(node.name)} (<code>${escapeHtml(node.id)}</code>)</span>
+        `;
+        list.appendChild(label);
+    });
 }
 
 async function openCreateUserModal() {
@@ -4668,6 +5397,9 @@ async function openEditUserModal(username) {
             serverCheckboxes.forEach(cb => {
                 cb.checked = user.servers && user.servers.includes(cb.value);
             });
+            document.querySelectorAll('input[name="user-assigned-nodes"]').forEach(cb => {
+                cb.checked = !!(user.nodes && user.nodes.includes(cb.value));
+            });
             
             const permCheckboxes = document.querySelectorAll('#user-permissions-list input[type="checkbox"]');
             permCheckboxes.forEach(cb => {
@@ -4724,6 +5456,10 @@ async function saveUserForm() {
         const checkedServers = document.querySelectorAll('input[name="user-assigned-servers"]:checked');
         checkedServers.forEach(cb => servers.push(cb.value));
     }
+    const nodes = [];
+    if (role === 'user') {
+        document.querySelectorAll('input[name="user-assigned-nodes"]:checked').forEach(cb => nodes.push(cb.value));
+    }
     
     let permissions = [];
     if (role === 'user') {
@@ -4747,6 +5483,7 @@ async function saveUserForm() {
                     password: password || undefined,
                     role,
                     servers,
+                    nodes,
                     permissions
                 })
             });
@@ -4759,6 +5496,7 @@ async function saveUserForm() {
                     password,
                     role,
                     servers,
+                    nodes,
                     permissions
                 })
             });
@@ -4816,7 +5554,7 @@ function populateBackupsDropdown() {
     state.servers.forEach(server => {
         const opt = document.createElement('option');
         opt.value = server.id;
-        opt.textContent = `${server.name} (${server.user})`;
+        opt.textContent = serverLabel(server);
         el.backupsServerSelect.appendChild(opt);
     });
     
@@ -4867,7 +5605,7 @@ function updateBackupsView() {
         if (el.cloudbackupMessage) el.cloudbackupMessage.textContent = '';
         
         const placeholder = document.createElement('tr');
-        placeholder.innerHTML = `<td colspan="4" class="text-center text-muted" style="padding: 2rem;">\${t('backups-no-server-selected')}</td>`;
+        placeholder.innerHTML = `<td colspan="4" class="text-center text-muted" style="padding: 2rem;">${t('backups-no-server-selected')}</td>`;
         el.backupsTableBody.appendChild(placeholder);
         return;
     }
@@ -4888,8 +5626,18 @@ function updateBackupsView() {
     if (el.cloudbackupEnabled) el.cloudbackupEnabled.disabled = false;
     if (el.cloudbackupRemote) el.cloudbackupRemote.disabled = false;
     if (el.cloudbackupPath) el.cloudbackupPath.disabled = false;
-    if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = false;
-    
+    // Cloud settings are saved by administrators only (the backend requires it).
+    if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = !(state.currentUser && state.currentUser.role === 'admin');
+
+    // Read-only or offline node: viewing and downloading only.
+    if (serverWriteLocked(state.selectedBackupServer)) {
+        [el.backupsBtnCreate, el.backupsBtnUpload, el.backupsSettingMaxBackups, el.backupsSettingMaxBackupDays,
+            el.backupsSettingStopOnBackup, el.backupsSettingsSaveBtn, el.backupsSettingAutoBackupEnabled,
+            el.backupsSettingCronPreset, el.backupsSettingCronCustom, el.cloudbackupEnabled, el.cloudbackupRemote,
+            el.cloudbackupPath, el.cloudbackupBtnSave].forEach(c => { if (c) c.disabled = true; });
+        el.backupsSettingsMessage.textContent = serverWriteLockedText(state.selectedBackupServer);
+    }
+
     loadBackupsList();
     loadBackupSettings();
     loadCloudBackupSettings();
@@ -4905,6 +5653,7 @@ async function loadBackupsList() {
     
     try {
         const res = await apiFetch(`/api/servers/${serverId}/backups`);
+        if (serverId !== state.selectedBackupServer) return; // another server was chosen meanwhile
         el.backupsLoading.classList.add('hidden');
         
         if (res.status === 200) {
@@ -4934,6 +5683,7 @@ async function loadBackupsList() {
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
                             ${t('btn-download')}
                         </a>
+                        ${serverWriteLocked(serverId) ? '' : `
                         <button class="btn btn-warning btn-sm" onclick="confirmRestoreBackup(${jsArg(serverId)}, ${jsArg(backup.name)})" style="display: inline-flex; align-items: center; gap: 0.25rem;">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0-.57-8.38l5.67-5.67"></path></svg>
                             ${t('btn-restore')}
@@ -4941,7 +5691,7 @@ async function loadBackupsList() {
                         <button class="btn btn-danger btn-sm" onclick="confirmDeleteBackup(${jsArg(serverId)}, ${jsArg(backup.name)})" style="display: inline-flex; align-items: center; gap: 0.25rem;">
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                             ${t('btn-delete')}
-                        </button>
+                        </button>`}
                     </td>
                 `;
                 el.backupsTableBody.appendChild(tr);
@@ -4961,6 +5711,7 @@ async function loadBackupSettings() {
         const res = await apiFetch(`/api/servers/${serverId}/backups/settings`);
         if (res.status === 200) {
             const settings = await res.json();
+            if (serverId !== state.selectedBackupServer) return;
             el.backupsSettingMaxBackups.value = settings.maxbackups || '';
             el.backupsSettingMaxBackupDays.value = settings.maxbackupdays || '';
             el.backupsSettingStopOnBackup.value = settings.stoponbackup === 'off' ? 'off' : 'on';
@@ -5188,75 +5939,96 @@ function toggleContainer(checkbox, container) {
     }
 }
 
+// Alert settings are LinuxGSM variables; the server sends the services with their fields, the
+// values the user set (secrets masked), LinuxGSM's defaults and the file each value comes from.
+const ALERT_SERVICE_NAMES = {
+    discord: 'Discord', email: 'E-Mail', gotify: 'Gotify', ifttt: 'IFTTT', matrix: 'Matrix', ntfy: 'ntfy',
+    pushbullet: 'Pushbullet', pushover: 'Pushover', rocketchat: 'Rocket.Chat', slack: 'Slack', telegram: 'Telegram'
+};
+const ALERT_FIELD_LABELS = {
+    statusalert: ['Alert on start, stop and restart', 'Bei Start, Stopp und Neustart benachrichtigen'],
+    postalert: ['Attach details (post to termbin.com)', 'Details anhängen (Upload zu termbin.com)'],
+    displayip: ['IP address shown in alerts', 'In Benachrichtigungen angezeigte IP-Adresse'],
+    discordwebhook: ['Webhook URL', 'Webhook-URL'],
+    email: ['Recipient (sent with the local mail command)', 'Empfänger (Versand über den lokalen mail-Befehl)'],
+    emailfrom: ['Sender (optional)', 'Absender (optional)'],
+    gotifytoken: ['App token', 'App-Token'], gotifywebhook: ['Server URL', 'Server-URL'],
+    ifttttoken: ['Webhooks key', 'Webhooks-Key'], iftttevent: ['Event name', 'Event-Name'],
+    matrixhomeserver: ['Homeserver', 'Homeserver'], matrixtoken: ['Access token', 'Access-Token'], matrixroom: ['Room ID', 'Raum-ID'],
+    ntfyserver: ['Server', 'Server'], ntfytopic: ['Topic', 'Topic'], ntfytoken: ['Access token (optional)', 'Access-Token (optional)'],
+    ntfyusername: ['User name (optional)', 'Benutzername (optional)'], ntfypassword: ['Password (optional)', 'Passwort (optional)'],
+    ntfypriority: ['Priority (optional)', 'Priorität (optional)'], ntfytags: ['Tags (optional)', 'Tags (optional)'],
+    pushbullettoken: ['Access token', 'Access-Token'], channeltag: ['Channel tag (optional)', 'Channel-Tag (optional)'],
+    pushovertoken: ['App token', 'App-Token'], pushoveruserkey: ['User key', 'User-Key'],
+    rocketchatwebhook: ['Webhook URL', 'Webhook-URL'], slackwebhook: ['Webhook URL', 'Webhook-URL'],
+    telegramtoken: ['Bot token', 'Bot-Token'], telegramchatid: ['Chat ID', 'Chat-ID'],
+    telegramthreadid: ['Thread ID (optional)', 'Thread-ID (optional)'], telegramapi: ['API host', 'API-Host']
+};
+let alertSettingsLoadedFor = '';
+
+function alertLabel(key) {
+    const l = ALERT_FIELD_LABELS[key];
+    return l ? (state.language === 'de' ? l[1] : l[0]) : key;
+}
+
+// A value from common.cfg applies to every instance in the directory; the file is shown.
+function alertSourceNote(sources, key) {
+    const src = sources[key];
+    if (!src || !src.includes('common')) return '';
+    return ` <small class="text-muted">(${escapeHtml(src)})</small>`;
+}
+
+function alertInputHtml(f, values, defaults, sources) {
+    const id = `alerts-field-${f.key}`;
+    const placeholder = f.secret ? '' : (defaults[f.key] || '');
+    return `<label for="${id}" style="font-size:0.85rem; display:block;" class="mt-2">${escapeHtml(alertLabel(f.key))}${alertSourceNote(sources, f.key)}</label>
+        <input type="${f.secret ? 'password' : 'text'}" id="${id}" data-alert-key="${escapeHtml(f.key)}" class="form-control mt-1"
+            value="${escapeHtml(values[f.key] || '')}" placeholder="${escapeHtml(placeholder)}" autocomplete="off">`;
+}
+
+function renderAlertFields(data) {
+    const values = data.values || {}, defaults = data.defaults || {}, sources = data.sources || {};
+    const isOn = (key) => (values[key] ?? defaults[key]) === 'on';
+    let html = '';
+    (data.services || []).forEach(svc => {
+        const fields = svc.fields || [];
+        const general = svc.id === 'general';
+        html += `<div class="form-group mb-3" data-alert-service="${escapeHtml(svc.id)}">`;
+        if (general) {
+            html += `<div style="font-weight:600; margin-bottom:0.25rem;">${state.language === 'de' ? 'Allgemein' : 'General'}</div>`;
+            fields.forEach(f => {
+                html += f.switch
+                    ? `<label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;"><input type="checkbox" data-alert-key="${escapeHtml(f.key)}" ${isOn(f.key) ? 'checked' : ''}> <span>${escapeHtml(alertLabel(f.key))}</span>${alertSourceNote(sources, f.key)}</label>`
+                    : alertInputHtml(f, values, defaults, sources);
+            });
+        } else if (fields.length) {
+            const sw = fields[0];
+            const name = ALERT_SERVICE_NAMES[svc.id] || svc.id;
+            html += `<label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;"><input type="checkbox" data-alert-key="${escapeHtml(sw.key)}" ${isOn(sw.key) ? 'checked' : ''}> <span>${escapeHtml(name)}${state.language === 'de' ? '-Alerts' : ' alerts'}</span>${alertSourceNote(sources, sw.key)}</label>`;
+            html += `<div class="mt-2${isOn(sw.key) ? '' : ' hidden'}" data-alert-details>`;
+            fields.slice(1).forEach(f => { html += alertInputHtml(f, values, defaults, sources); });
+            html += '</div>';
+        }
+        html += '</div>';
+    });
+    el.alertsFields.innerHTML = html;
+    el.alertsFields.querySelectorAll('[data-alert-service]').forEach(group => {
+        const sw = group.querySelector('input[type=checkbox]');
+        const details = group.querySelector('[data-alert-details]');
+        if (sw && details) sw.addEventListener('change', () => details.classList.toggle('hidden', !sw.checked));
+    });
+}
+
 async function loadAlertSettings() {
     const serverId = el.settingsServerSelect.value;
     if (!serverId) return;
-    
+    alertSettingsLoadedFor = '';
     try {
-        const res = await apiFetch(`/api/servers/${serverId}/alerts`);
-        if (res.status === 200) {
-            const data = await res.json();
-            
-            el.alertsSettingDiscordEnabled.checked = !!data.discord_enabled;
-            el.alertsSettingDiscordWebhook.value = data.discord_webhook || '';
-            toggleContainer(el.alertsSettingDiscordEnabled, el.alertsSettingDiscordContainer);
-            
-            el.alertsSettingTelegramEnabled.checked = !!data.telegram_enabled;
-            el.alertsSettingTelegramToken.value = data.telegram_token || '';
-            el.alertsSettingTelegramChatid.value = data.telegram_chatid || '';
-            toggleContainer(el.alertsSettingTelegramEnabled, el.alertsSettingTelegramContainer);
-            
-            el.alertsSettingEmailEnabled.checked = !!data.email_enabled;
-            el.alertsSettingEmailSmtp.value = data.email_smtp || '';
-            el.alertsSettingEmailPort.value = data.email_port || '';
-            el.alertsSettingEmailUser.value = data.email_user || '';
-            el.alertsSettingEmailPass.value = data.email_pass || '';
-            el.alertsSettingEmailDest.value = data.email_dest || '';
-            toggleContainer(el.alertsSettingEmailEnabled, el.alertsSettingEmailContainer);
-            
-            if (el.alertsSettingNtfyEnabled) {
-                el.alertsSettingNtfyEnabled.checked = !!data.ntfy_enabled;
-                el.alertsSettingNtfyUrl.value = data.ntfy_url || '';
-                el.alertsSettingNtfyTopic.value = data.ntfy_topic || '';
-                el.alertsSettingNtfyToken.value = data.ntfy_authtoken || '';
-                toggleContainer(el.alertsSettingNtfyEnabled, el.alertsSettingNtfyContainer);
-            }
-            if (el.alertsSettingSlackEnabled) {
-                el.alertsSettingSlackEnabled.checked = !!data.slack_enabled;
-                el.alertsSettingSlackWebhook.value = data.slack_webhook || '';
-                toggleContainer(el.alertsSettingSlackEnabled, el.alertsSettingSlackContainer);
-            }
-            if (el.alertsSettingMatrixEnabled) {
-                el.alertsSettingMatrixEnabled.checked = !!data.matrix_enabled;
-                el.alertsSettingMatrixHomeserver.value = data.matrix_homeserver || '';
-                el.alertsSettingMatrixRoomid.value = data.matrix_roomid || '';
-                el.alertsSettingMatrixToken.value = data.matrix_accesstoken || '';
-                toggleContainer(el.alertsSettingMatrixEnabled, el.alertsSettingMatrixContainer);
-            }
-            if (el.alertsSettingPushoverEnabled) {
-                el.alertsSettingPushoverEnabled.checked = !!data.pushover_enabled;
-                el.alertsSettingPushoverToken.value = data.pushover_token || '';
-                el.alertsSettingPushoverUser.value = data.pushover_user || '';
-                toggleContainer(el.alertsSettingPushoverEnabled, el.alertsSettingPushoverContainer);
-            }
-            if (el.alertsSettingPushbulletEnabled) {
-                el.alertsSettingPushbulletEnabled.checked = !!data.pushbullet_enabled;
-                el.alertsSettingPushbulletToken.value = data.pushbullet_token || '';
-                el.alertsSettingPushbulletChannel.value = data.pushbullet_channel || '';
-                toggleContainer(el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletContainer);
-            }
-            if (el.alertsSettingIftttEnabled) {
-                el.alertsSettingIftttEnabled.checked = !!data.ifttt_enabled;
-                el.alertsSettingIftttKey.value = data.ifttt_key || '';
-                el.alertsSettingIftttEvent.value = data.ifttt_event || '';
-                toggleContainer(el.alertsSettingIftttEnabled, el.alertsSettingIftttContainer);
-            }
-            if (el.alertsSettingRocketchatEnabled) {
-                el.alertsSettingRocketchatEnabled.checked = !!data.rocketchat_enabled;
-                el.alertsSettingRocketchatWebhook.value = data.rocketchat_webhook || '';
-                toggleContainer(el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatContainer);
-            }
-        }
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/alerts`);
+        if (res.status !== 200 || el.settingsServerSelect.value !== serverId) return;
+        renderAlertFields(await res.json());
+        alertSettingsLoadedFor = serverId;
+        setAlertFieldsDisabled(serverWriteLocked(serverId));
     } catch (err) {
         console.error('Error loading alert settings:', err);
     }
@@ -5264,82 +6036,33 @@ async function loadAlertSettings() {
 
 async function saveAlertSettings(e) {
     if (e) e.preventDefault();
-    
     const serverId = el.settingsServerSelect.value;
-    if (!serverId) return;
-    
+    // Never save a form that was loaded for another server or did not load at all.
+    if (!serverId || alertSettingsLoadedFor !== serverId) return;
+
     el.alertsSettingsMessage.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
     el.alertsSettingsMessage.className = 'info-message text-muted';
     el.alertsSettingsSaveBtn.disabled = true;
-    
+    const values = {};
+    el.alertsFields.querySelectorAll('[data-alert-key]').forEach(input => {
+        values[input.dataset.alertKey] = input.type === 'checkbox' ? (input.checked ? 'on' : 'off') : input.value.trim();
+    });
     try {
-        const payload = {
-            discord_enabled: el.alertsSettingDiscordEnabled.checked,
-            discord_webhook: el.alertsSettingDiscordWebhook.value.trim(),
-            telegram_enabled: el.alertsSettingTelegramEnabled.checked,
-            telegram_token: el.alertsSettingTelegramToken.value.trim(),
-            telegram_chatid: el.alertsSettingTelegramChatid.value.trim(),
-            email_enabled: el.alertsSettingEmailEnabled.checked,
-            email_smtp: el.alertsSettingEmailSmtp.value.trim(),
-            email_port: el.alertsSettingEmailPort.value.trim(),
-            email_user: el.alertsSettingEmailUser.value.trim(),
-            email_pass: el.alertsSettingEmailPass.value.trim(),
-            email_dest: el.alertsSettingEmailDest.value.trim()
-        };
-
-        if (el.alertsSettingNtfyEnabled) {
-            payload.ntfy_enabled = el.alertsSettingNtfyEnabled.checked;
-            payload.ntfy_url = el.alertsSettingNtfyUrl.value.trim();
-            payload.ntfy_topic = el.alertsSettingNtfyTopic.value.trim();
-            payload.ntfy_authtoken = el.alertsSettingNtfyToken.value.trim();
-        }
-        if (el.alertsSettingSlackEnabled) {
-            payload.slack_enabled = el.alertsSettingSlackEnabled.checked;
-            payload.slack_webhook = el.alertsSettingSlackWebhook.value.trim();
-        }
-        if (el.alertsSettingMatrixEnabled) {
-            payload.matrix_enabled = el.alertsSettingMatrixEnabled.checked;
-            payload.matrix_homeserver = el.alertsSettingMatrixHomeserver.value.trim();
-            payload.matrix_roomid = el.alertsSettingMatrixRoomid.value.trim();
-            payload.matrix_accesstoken = el.alertsSettingMatrixToken.value.trim();
-        }
-        if (el.alertsSettingPushoverEnabled) {
-            payload.pushover_enabled = el.alertsSettingPushoverEnabled.checked;
-            payload.pushover_token = el.alertsSettingPushoverToken.value.trim();
-            payload.pushover_user = el.alertsSettingPushoverUser.value.trim();
-        }
-        if (el.alertsSettingPushbulletEnabled) {
-            payload.pushbullet_enabled = el.alertsSettingPushbulletEnabled.checked;
-            payload.pushbullet_token = el.alertsSettingPushbulletToken.value.trim();
-            payload.pushbullet_channel = el.alertsSettingPushbulletChannel.value.trim();
-        }
-        if (el.alertsSettingIftttEnabled) {
-            payload.ifttt_enabled = el.alertsSettingIftttEnabled.checked;
-            payload.ifttt_key = el.alertsSettingIftttKey.value.trim();
-            payload.ifttt_event = el.alertsSettingIftttEvent.value.trim();
-        }
-        if (el.alertsSettingRocketchatEnabled) {
-            payload.rocketchat_enabled = el.alertsSettingRocketchatEnabled.checked;
-            payload.rocketchat_webhook = el.alertsSettingRocketchatWebhook.value.trim();
-        }
-
-        const res = await apiFetch(`/api/servers/${serverId}/alerts`, {
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/alerts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ values })
         });
-        
         el.alertsSettingsSaveBtn.disabled = false;
         if (res.status === 200) {
             el.alertsSettingsMessage.textContent = state.language === 'de' ? 'Benachrichtigungs-Einstellungen erfolgreich gespeichert.' : 'Alert settings saved successfully.';
             el.alertsSettingsMessage.className = 'info-message text-success';
             setTimeout(() => {
-                if (el.settingsServerSelect.value === serverId) {
-                    el.alertsSettingsMessage.textContent = '';
-                }
+                if (el.settingsServerSelect.value === serverId) el.alertsSettingsMessage.textContent = '';
             }, 3000);
+            loadAlertSettings();
         } else {
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
             el.alertsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || 'Unknown error');
             el.alertsSettingsMessage.className = 'info-message text-danger';
         }
@@ -5352,32 +6075,8 @@ async function saveAlertSettings(e) {
 }
 
 function resetSettingsAlerts() {
-    const alertsFields = [
-        [el.alertsSettingDiscordEnabled, el.alertsSettingDiscordWebhook, el.alertsSettingDiscordContainer],
-        [el.alertsSettingTelegramEnabled, el.alertsSettingTelegramToken, el.alertsSettingTelegramContainer, el.alertsSettingTelegramChatid],
-        [el.alertsSettingEmailEnabled, el.alertsSettingEmailSmtp, el.alertsSettingEmailContainer, el.alertsSettingEmailPort, el.alertsSettingEmailUser, el.alertsSettingEmailPass, el.alertsSettingEmailDest],
-        [el.alertsSettingNtfyEnabled, el.alertsSettingNtfyUrl, el.alertsSettingNtfyContainer, el.alertsSettingNtfyTopic, el.alertsSettingNtfyToken],
-        [el.alertsSettingSlackEnabled, el.alertsSettingSlackWebhook, el.alertsSettingSlackContainer],
-        [el.alertsSettingMatrixEnabled, el.alertsSettingMatrixHomeserver, el.alertsSettingMatrixContainer, el.alertsSettingMatrixRoomid, el.alertsSettingMatrixToken],
-        [el.alertsSettingPushoverEnabled, el.alertsSettingPushoverToken, el.alertsSettingPushoverContainer, el.alertsSettingPushoverUser],
-        [el.alertsSettingPushbulletEnabled, el.alertsSettingPushbulletToken, el.alertsSettingPushbulletContainer, el.alertsSettingPushbulletChannel],
-        [el.alertsSettingIftttEnabled, el.alertsSettingIftttKey, el.alertsSettingIftttContainer, el.alertsSettingIftttEvent],
-        [el.alertsSettingRocketchatEnabled, el.alertsSettingRocketchatWebhook, el.alertsSettingRocketchatContainer]
-    ];
-
-    alertsFields.forEach(group => {
-        group.forEach(elem => {
-            if (!elem) return;
-            if (elem.tagName === 'INPUT') {
-                elem.disabled = true;
-                if (elem.type === 'checkbox') elem.checked = false;
-                else elem.value = '';
-            } else if (elem.classList && elem.classList.contains('mt-2')) {
-                elem.classList.add('hidden');
-            }
-        });
-    });
-
+    alertSettingsLoadedFor = '';
+    if (el.alertsFields) el.alertsFields.innerHTML = '';
     el.alertsSettingsSaveBtn.disabled = true;
     el.alertsSettingsMessage.textContent = '';
 }
@@ -5440,174 +6139,66 @@ async function installCronjobs() {
     }
 }
 
+// Game specific actions: only the commands LinuxGSM offers for this game (server.commands, see
+// backend/commands.go). The TS3 password change stays hidden: LinuxGSM's command does not apply
+// the password.
+const GAME_ACTIONS = [
+    { cmd: 'map-wipe', cls: 'btn-danger', label: ['Map wipe', 'Map-Wipe'], confirm: ['Perform a map wipe? All player structures will be deleted!', 'Map-Wipe durchführen? Alle Bauwerke werden gelöscht!'] },
+    { cmd: 'full-wipe', cls: 'btn-danger', label: ['Full wipe', 'Full-Wipe'], confirm: ['Perform a full wipe? All map progress and blueprints will be deleted!', 'Full-Wipe durchführen? Alle Bauwerke und Blueprints werden gelöscht!'] },
+    { cmd: 'map-compressor', cls: 'btn-secondary', label: ['Compress maps', 'Maps komprimieren'], confirm: ['Run the map compressor?', 'Map-Komprimierung ausführen?'] },
+    { cmd: 'mods-install', cls: 'btn-primary', label: ['Mods and plugins', 'Mods und Plugins'], open: 'mods' },
+    { cmd: 'mods-update', cls: 'btn-secondary', label: ['Update mods', 'Mods aktualisieren'] },
+    { cmd: 'workshop-update', cls: 'btn-secondary', label: ['Update Workshop mods', 'Workshop-Mods aktualisieren'] },
+    { cmd: 'install-default-resources', cls: 'btn-primary', label: ['Install MTA default resources', 'MTA-Standardressourcen installieren'] },
+    { cmd: 'fastdl', cls: 'btn-primary', label: ['Build FastDL (bzip2)', 'FastDL erzeugen (bzip2)'], fastdlPanel: true }
+];
+
+function serverHasCommand(server, cmd) {
+    return Array.isArray(server.commands) && server.commands.includes(cmd);
+}
+
 function renderConsoleGameActions(server) {
-    if (!server || !el.consoleGameActions) {
-        if (el.consoleGameActions) {
-            el.consoleGameActions.classList.add('hidden');
-            el.consoleGameActions.innerHTML = '';
-        }
-        return;
-    }
-
+    const hide = () => {
+        if (!el.consoleGameActions) return;
+        el.consoleGameActions.classList.add('hidden');
+        el.consoleGameActions.innerHTML = '';
+    };
     const isAdmin = state.currentUser && state.currentUser.role === 'admin';
-    const isBusy = server.status === 'installing' || server.status === 'updating';
-
-    if (!isAdmin) {
-        el.consoleGameActions.classList.add('hidden');
-        el.consoleGameActions.innerHTML = '';
+    if (!server || !el.consoleGameActions || !isAdmin) {
+        hide();
+        return;
+    }
+    const isDe = state.language === 'de';
+    const disabledAttr = (server.status === 'installing' || server.status === 'updating') ? 'disabled' : '';
+    const actions = GAME_ACTIONS.filter(a => serverHasCommand(server, a.cmd));
+    if (actions.length === 0) {
+        hide();
         return;
     }
 
-    const game = (server.game || '').toLowerCase();
-    const disabledAttr = isBusy ? 'disabled' : '';
-    let buttonsHtml = '';
-    const clickHandlers = [];
-
-    const isDe = state.language === 'de';
-
-    // 1. Rust Specific Actions
-    if (game === 'rust') {
-        buttonsHtml += `
-            <button id="game-act-map-wipe" class="btn btn-danger btn-sm" ${disabledAttr}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-                <span>${isDe ? 'Map Wipe' : 'Map Wipe'}</span>
-            </button>
-            <button id="game-act-full-wipe" class="btn btn-danger btn-sm" ${disabledAttr}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                <span>${isDe ? 'Full Wipe' : 'Full Wipe'}</span>
-            </button>
-            <button id="game-act-map-compressor" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'Map komprimieren' : 'Compress map'}</span>
-            </button>
-            <button id="game-act-mods-install" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'Oxide / uMod installieren' : 'Install Oxide / uMod'}</span>
-            </button>
-            <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'Oxide / uMod aktualisieren' : 'Update Oxide / uMod'}</span>
-            </button>
-        `;
-        clickHandlers.push(
-            { id: 'game-act-map-wipe', confirmMsg: isDe ? 'Map-Wipe durchführen? Alle Bauwerke werden gelöscht!' : 'Perform Map Wipe? All player structures will be deleted!', action: 'map-wipe' },
-            { id: 'game-act-full-wipe', confirmMsg: isDe ? 'Full-Wipe durchführen? Alle Bauwerke und Blueprints werden gelöscht!' : 'Perform Full Wipe? All map progress and blueprint data will be deleted!', action: 'full-wipe' },
-            { id: 'game-act-map-compressor', confirmMsg: isDe ? 'Map-Komprimierung ausführen?' : 'Run Map Compressor?', action: 'map-compressor' },
-            { id: 'game-act-mods-install', action: 'mods-install' },
-            { id: 'game-act-mods-update', action: 'mods-update' }
-        );
-    } 
-    // 2. TeamSpeak 3
-    else if (game === 'ts3') {
-        buttonsHtml += `
-            <button id="game-act-ts3-pw" class="btn btn-warning btn-sm" ${disabledAttr}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                <span>${isDe ? 'Query-Admin-Passwort zurücksetzen' : 'Reset query admin password'}</span>
-            </button>
-        `;
-        clickHandlers.push({
-            id: 'game-act-ts3-pw',
-            confirmMsg: isDe ? 'Möchtest du das Query-Admin-Passwort zurücksetzen? Der Server startet danach neu.' : 'Reset TeamSpeak 3 Query Admin password? Server will restart.',
-            action: 'change-password'
-        });
+    let html = '';
+    actions.forEach(a => {
+        html += `<button id="game-act-${a.cmd}" class="btn ${a.cls} btn-sm" ${disabledAttr}><span>${escapeHtml(isDe ? a.label[1] : a.label[0])}</span></button>`;
+    });
+    if (actions.some(a => a.fastdlPanel)) {
+        html += `<div id="game-fastdl-info" data-server="${escapeHtml(server.id)}" style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;"></div>`;
     }
-    // 3. Source Engine & FastDL Supported Games (CS2, CS:GO, TF2, CSS, GMod, CoD4, Sven Co-op, Xonotic, etc.)
-    else if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih', 'cod4', 'sven', 'xon'].includes(game)) {
-        buttonsHtml += `
-            <button id="game-act-fastdl" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'FastDL erzeugen (bzip2)' : 'Build FastDL (bzip2)'}</span>
-            </button>
-            <div style="width: 100%; margin-top: 0.5rem; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;">
-                <span style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.35rem;">
-                    <strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${window.location.protocol}//${window.location.host}/fastdl/${server.id}/</code>
-                </span>
-                <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText('${window.location.protocol}//${window.location.host}/fastdl/${server.id}/'); alert(state.language === 'de' ? 'FastDL URL in die Zwischenablage kopiert!' : 'FastDL URL copied to clipboard!');">
-                    ${isDe ? 'Kopieren' : 'Copy'}
-                </button>
-            </div>
-        `;
-        clickHandlers.push({ id: 'game-act-fastdl', action: 'fastdl' });
+    el.consoleGameActions.innerHTML = html;
+    el.consoleGameActions.classList.remove('hidden');
+    if (actions.some(a => a.fastdlPanel)) loadFastDLInfo(server);
 
-        if (['cs2', 'csgo', 'tf2', 'css', 'gmod', 'dod', 'hl2dm', 'l4d', 'l4d2', 'ins', 'doi', 'nmrih'].includes(game)) {
-            buttonsHtml += `
-                <button id="game-act-mods-install" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                    <span>${isDe ? 'Metamod / SourceMod installieren' : 'Install Metamod / SourceMod'}</span>
-                </button>
-                <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                    <span>${isDe ? 'Metamod / SourceMod aktualisieren' : 'Update Metamod / SourceMod'}</span>
-                </button>
-            `;
-            clickHandlers.push(
-                { id: 'game-act-mods-install', action: 'mods-install' },
-                { id: 'game-act-mods-update', action: 'mods-update' }
-            );
-        }
-    }
-    // 4. Multi Theft Auto (MTA:SA)
-    else if (game === 'mta' || game === 'multitheftauto') {
-        buttonsHtml += `
-            <button id="game-act-mta-resources" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'MTA-Standardressourcen installieren' : 'Install MTA default resources'}</span>
-            </button>
-        `;
-        clickHandlers.push({ id: 'game-act-mta-resources', action: 'install-default-resources' });
-    }
-    // 5. Mod & Workshop Games (Arma 3, Minecraft, 7DTD, Factorio, ARK, KF2, DST, Insurgency, Valheim, TrackMania)
-    else if (['arma3', 'mc', 'mcb', 'mct', 'sdtd', 'fct', 'ark', 'kf2', 'dst', 'inss', 'vh', 'valheim', 'tm2', 'tmf'].includes(game)) {
-        let modFrameworkLabel = isDe ? 'Mods / Plugins' : 'Mods / Plugins';
-        if (game === 'arma3') modFrameworkLabel = 'Arma 3 Mods / Workshop';
-        else if (['mc', 'mcb', 'mct'].includes(game)) modFrameworkLabel = 'Paper/Spigot/Fabric Plugins';
-        else if (game === 'sdtd') modFrameworkLabel = "Alloc's Server Fixes";
-        else if (game === 'fct') modFrameworkLabel = 'Factorio Mod Portal';
-        else if (game === 'ark') modFrameworkLabel = 'ARK Workshop Mods';
-        else if (game === 'kf2') modFrameworkLabel = 'KF2 Workshop Maps & Mutators';
-        else if (game === 'dst') modFrameworkLabel = 'DST Workshop Mods';
-        else if (game === 'inss') modFrameworkLabel = 'Mod.io Mods';
-        else if (['vh', 'valheim'].includes(game)) modFrameworkLabel = 'Valheim BepInEx Mods';
-        else if (['tm2', 'tmf'].includes(game)) modFrameworkLabel = 'TrackMania Plugins & Scripts';
-
-        buttonsHtml += `
-            <button id="game-act-mods-install" class="btn btn-primary btn-sm" ${disabledAttr}>
-                <span>${isDe ? `${modFrameworkLabel} installieren` : `Install ${modFrameworkLabel}`}</span>
-            </button>
-            <button id="game-act-mods-update" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>${isDe ? `${modFrameworkLabel} aktualisieren` : `Update ${modFrameworkLabel}`}</span>
-            </button>
-        `;
-        clickHandlers.push(
-            { id: 'game-act-mods-install', action: 'mods-install' },
-            { id: 'game-act-mods-update', action: 'mods-update' }
-        );
-    }
-    // 5. Unreal Tournament (UT2004, UT3, UT99)
-    else if (['ut2k4', 'ut3', 'ut99'].includes(game)) {
-        buttonsHtml += `
-            <button id="game-act-map-compressor" class="btn btn-secondary btn-sm" ${disabledAttr}>
-                <span>${isDe ? 'UT-Maps komprimieren (Redirect)' : 'Compress UT maps (redirect)'}</span>
-            </button>
-        `;
-        clickHandlers.push({ id: 'game-act-map-compressor', action: 'map-compressor' });
-    }
-
-    if (buttonsHtml) {
-        el.consoleGameActions.innerHTML = buttonsHtml;
-        el.consoleGameActions.classList.remove('hidden');
-
-        clickHandlers.forEach(item => {
-            const btn = document.getElementById(item.id);
-            if (btn) {
-                btn.addEventListener('click', () => {
-                    if (item.confirmMsg) {
-                        if (confirm(item.confirmMsg)) {
-                            runServerAction(server.id, item.action);
-                        }
-                    } else {
-                        runServerAction(server.id, item.action);
-                    }
-                });
+    actions.forEach(a => {
+        const btn = document.getElementById(`game-act-${a.cmd}`);
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            if (a.open === 'mods') {
+                openModsModal(server);
+                return;
             }
+            if (a.confirm && !confirm(isDe ? a.confirm[1] : a.confirm[0])) return;
+            runServerAction(server.id, a.cmd);
         });
-    } else {
-        el.consoleGameActions.classList.add('hidden');
-        el.consoleGameActions.innerHTML = '';
-    }
+    });
 }
 
 function updateBulkToolbarState() {
@@ -5635,11 +6226,22 @@ async function runBulkAction(action) {
             method: 'POST',
             body: JSON.stringify({ action: action, serverIds: checked })
         });
-        if (res.status === 200) {
-            refreshDashboard();
+        const data = await res.json().catch(() => ({}));
+        if (res.status !== 200) {
+            alert((state.language === 'de' ? 'Sammelaktion fehlgeschlagen: ' : 'Bulk action failed: ') + (data.error || res.status));
+            return;
         }
+        // Report every server that did not simply succeed (offline or read-only node, warnings, errors).
+        const problems = Object.entries(data).filter(([, result]) => result !== 'Success');
+        if (problems.length > 0) {
+            const name = (id) => { const s = state.servers.find(x => x.id === id); return s ? serverLabel(s) : id; };
+            alert((state.language === 'de' ? 'Ergebnis der Sammelaktion:\n' : 'Bulk action result:\n') +
+                problems.map(([id, result]) => `${name(id)}: ${result}`).join('\n'));
+        }
+        refreshDashboard();
     } catch (e) {
         console.error('Bulk action error:', e);
+        alert((state.language === 'de' ? 'Sammelaktion fehlgeschlagen: ' : 'Bulk action failed: ') + e.message);
     }
 }
 
@@ -5660,7 +6262,7 @@ function openPlayersModal(serverId) {
 
     el.modalPlayersTbody.innerHTML = '';
     const players = query.players || [];
-    const canKick = hasUserPermission('console');
+    const canKick = hasUserPermission('console') && !isReadOnlyNodeServer(server) && !server.node_offline;
 
     if (players.length === 0) {
         const msg = query.num_players > 0
@@ -5674,9 +6276,9 @@ function openPlayersModal(serverId) {
                 <td><strong>${escapeHtml(p.name)}</strong></td>
                 <td>${escapeHtml(p.score || 0)}</td>
                 <td>${escapeHtml(p.time || '-')}</td>
-                <td class="text-right">${canKick ? `
-                    <button class="btn btn-secondary btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg('kick ' + p.name)})">Kick</button>
-                    <button class="btn btn-danger btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg('ban ' + p.name)})">Ban</button>` : ''}
+                <td class="text-right">${canKick && playerCommand(server, 'kick', p.name) ? `
+                    <button class="btn btn-secondary btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg(playerCommand(server, 'kick', p.name))})">Kick</button>` : ''}${canKick && playerCommand(server, 'ban', p.name) ? `
+                    <button class="btn btn-danger btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg(playerCommand(server, 'ban', p.name))})">Ban</button>` : ''}
                 </td>
             `;
             el.modalPlayersTbody.appendChild(tr);
@@ -5684,6 +6286,23 @@ function openPlayersModal(serverId) {
     }
 
     el.modalPlayers.classList.remove('hidden');
+}
+
+// playerCommand builds a kick or ban console command for a player, or returns null where the game
+// has no such command or the name cannot be passed safely. Names come from the game query, i.e.
+// from the player: Source consoles run "x;quit" as two commands, so separators are refused and
+// the name is quoted.
+function playerCommand(server, verb, name) {
+    if (!serverHasCommand(server, 'send') || typeof name !== 'string' || name === '') return null;
+    if (/[";\\\u0000-\u001f\u007f]/.test(name)) return null;
+    const game = (server.game || '').toLowerCase();
+    if (game === 'mc' || game === 'pmc') {
+        return /^[A-Za-z0-9_]{1,16}$/.test(name) ? `${verb} ${name}` : null;
+    }
+    if (game === 'rust') return `${verb} "${name}"`;
+    // Source and GoldSrc (the engines with FastDL): kick only, bans need banid or a plugin.
+    if (serverHasCommand(server, 'fastdl') && verb === 'kick') return `kick "${name}"`;
+    return null;
 }
 
 function closePlayersModal() {
@@ -5706,17 +6325,63 @@ async function sendRconCommand(serverId, command) {
     }
 }
 
+// Scheduler: one cron expression per LinuxGSM command. Presets fill the expression; anything
+// else stays as "custom", so the form never changes a job it cannot show.
+const CRON_JOB_PRESETS = {
+    'monitor': [['*/5 * * * *', 'Every 5 minutes', 'Alle 5 Minuten'], ['*/10 * * * *', 'Every 10 minutes', 'Alle 10 Minuten'], ['*/15 * * * *', 'Every 15 minutes', 'Alle 15 Minuten']],
+    'update': [['*/30 * * * *', 'Every 30 minutes', 'Alle 30 Minuten'], ['0 * * * *', 'Every hour', 'Jede Stunde'], ['0 */6 * * *', 'Every 6 hours', 'Alle 6 Stunden']],
+    'force-update': [['30 4 * * *', 'Daily at 04:30', 'Täglich um 04:30'], ['0 5 * * *', 'Daily at 05:00', 'Täglich um 05:00']],
+    'restart': [['30 4 * * *', 'Daily at 04:30', 'Täglich um 04:30'], ['0 6 * * *', 'Daily at 06:00', 'Täglich um 06:00']],
+    'update-lgsm': [['0 0 * * 0', 'Sundays at 00:00', 'Sonntags um 00:00'], ['0 0 * * 1', 'Mondays at 00:00', 'Montags um 00:00']]
+};
+const CRON_JOB_LABELS = {
+    'monitor': ['Crash monitor (monitor)', 'Absturz-Überwachung (monitor)'],
+    'update': ['Update check (update)', 'Update-Prüfung (update)'],
+    'force-update': ['Forced update and restart (force-update)', 'Erzwungenes Update mit Neustart (force-update)'],
+    'restart': ['Restart (restart)', 'Neustart (restart)'],
+    'update-lgsm': ['LinuxGSM update (update-lgsm)', 'LinuxGSM-Update (update-lgsm)']
+};
+let cronLoaded = { serverId: '', jobs: {} };
+
+function renderCronJobs(data) {
+    const de = state.language === 'de';
+    const jobs = data.jobs || {};
+    let html = '';
+    (data.available || []).forEach(cmd => {
+        const expr = jobs[cmd] || '';
+        const presets = CRON_JOB_PRESETS[cmd] || [];
+        const isPreset = presets.some(p => p[0] === expr);
+        const options = [`<option value="" ${expr === '' ? 'selected' : ''}>${de ? 'Deaktiviert' : 'Disabled'}</option>`]
+            .concat(presets.map(p => `<option value="${escapeHtml(p[0])}" ${p[0] === expr ? 'selected' : ''}>${escapeHtml(de ? p[2] : p[1])}</option>`))
+            .concat([`<option value="custom" ${expr !== '' && !isPreset ? 'selected' : ''}>${de ? 'Eigener Cron-Ausdruck' : 'Custom cron expression'}</option>`]);
+        const label = CRON_JOB_LABELS[cmd] ? CRON_JOB_LABELS[cmd][de ? 1 : 0] : cmd;
+        html += `<div data-cron-job="${escapeHtml(cmd)}">
+            <label style="font-size:0.85rem; font-weight:600;">${escapeHtml(label)}</label>
+            <select class="form-control mt-1" data-cron-select>${options.join('')}</select>
+            <input type="text" class="form-control mt-1${expr !== '' && !isPreset ? '' : ' hidden'}" data-cron-expr value="${escapeHtml(expr)}" placeholder="m h dom mon dow" autocomplete="off">
+        </div>`;
+    });
+    el.cronJobs.innerHTML = html;
+    el.cronJobs.querySelectorAll('[data-cron-job]').forEach(row => {
+        const select = row.querySelector('[data-cron-select]');
+        const input = row.querySelector('[data-cron-expr]');
+        select.addEventListener('change', () => {
+            input.classList.toggle('hidden', select.value !== 'custom');
+            if (select.value !== 'custom') input.value = select.value;
+        });
+    });
+}
+
 async function loadCronSchedule(serverId) {
-    if (!el.cronMonitorSelect) return;
+    if (!el.cronJobs) return;
+    cronLoaded = { serverId: '', jobs: {} };
+    el.cronJobs.innerHTML = '';
     try {
-        const res = await apiFetch(`/api/servers/${serverId}/cron`);
-        if (res.status === 200) {
-            const data = await res.json();
-            el.cronMonitorSelect.value = data.monitor_interval || '';
-            el.cronUpdateSelect.value = data.update_interval || '';
-            el.cronRestartTime.value = data.restart_time || '04:30';
-            el.cronCoreSelect.value = data.core_update_day || '';
-        }
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/cron`);
+        if (res.status !== 200 || el.settingsServerSelect.value !== serverId) return;
+        const data = await res.json();
+        renderCronJobs(data);
+        cronLoaded = { serverId, jobs: data.jobs || {} };
     } catch (e) {
         console.error('Failed to load cron schedule:', e);
     }
@@ -5725,27 +6390,37 @@ async function loadCronSchedule(serverId) {
 async function handleCronBuilderSubmit(e) {
     e.preventDefault();
     const serverId = el.settingsServerSelect.value;
-    if (!serverId) return;
+    // Never save a schedule that was loaded for another server or did not load.
+    if (!serverId || cronLoaded.serverId !== serverId) return;
 
-    const sched = {
-        monitor_interval: el.cronMonitorSelect.value,
-        update_interval: el.cronUpdateSelect.value,
-        restart_time: el.cronRestartTime.value,
-        core_update_day: el.cronCoreSelect.value
-    };
+    // Only the jobs the user changed are sent; the server leaves all others as they are.
+    const jobs = {};
+    el.cronJobs.querySelectorAll('[data-cron-job]').forEach(row => {
+        const cmd = row.dataset.cronJob;
+        const select = row.querySelector('[data-cron-select]');
+        const expr = (select.value === 'custom' ? row.querySelector('[data-cron-expr]').value : select.value).trim();
+        if (expr !== (cronLoaded.jobs[cmd] || '')) jobs[cmd] = expr;
+    });
+    if (Object.keys(jobs).length === 0) {
+        el.cronBuilderMessage.className = 'info-message text-muted';
+        el.cronBuilderMessage.textContent = t('saved');
+        return;
+    }
 
     el.cronBuilderMessage.textContent = t('saving');
     try {
-        const res = await apiFetch(`/api/servers/${serverId}/cron`, {
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/cron`, {
             method: 'POST',
-            body: JSON.stringify(sched)
+            body: JSON.stringify({ jobs })
         });
         if (res.status === 200) {
             el.cronBuilderMessage.className = 'info-message text-success';
             el.cronBuilderMessage.textContent = t('saved');
+            loadCronSchedule(serverId);
         } else {
+            const data = await res.json().catch(() => ({}));
             el.cronBuilderMessage.className = 'info-message text-danger';
-            el.cronBuilderMessage.textContent = t('status-error');
+            el.cronBuilderMessage.textContent = data.error || t('status-error');
         }
     } catch (err) {
         el.cronBuilderMessage.className = 'info-message text-danger';
@@ -5805,39 +6480,127 @@ if (el.consoleInputForm) {
 }
 
 // ----------------------------------------------------
-// Installed Mods & Plugins Modal
+// Mods & Plugins Modal
 // ----------------------------------------------------
+// mods-install and mods-remove ask LinuxGSM for a mod name, so the mod is picked here: the
+// installed ones (to remove) and the ones LinuxGSM offers for the game (to install).
 function openModsModal(server) {
     if (!el.modalMods) return;
+    const serverId = server.id;
+    el.modalMods.dataset.server = serverId;
     el.modalMods.classList.remove('hidden');
     el.modalModsList.innerHTML = `<div class="text-center text-muted py-3">${t('mods-loading')}</div>`;
 
-    fetch(`/api/servers/${server.id}/mods`)
-        .then(r => r.json())
-        .then(data => {
-            const installed = data.installed || [];
-            if (installed.length === 0) {
-                el.modalModsList.innerHTML = `
-                    <div class="alert alert-info">
-                        ${state.language === 'de' ? 'Keine aktiven Mods in lgsm/mods/installed-mods.txt registriert.' : 'No active mods registered in lgsm/mods/installed-mods.txt.'}
-                    </div>
-                `;
-            } else {
-                let html = '<ul class="list-group">';
-                installed.forEach(mod => {
-                    html += `<li class="list-group-item flex-between align-center"><span class="mono">${escapeHtml(mod)}</span></li>`;
-                });
-                html += '</ul>';
-                el.modalModsList.innerHTML = html;
-            }
+    const base = `/api/servers/${encodeURIComponent(serverId)}`;
+    const getJSON = url => fetch(url).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))));
+    const current = () => el.modalMods.dataset.server === serverId && !el.modalMods.classList.contains('hidden');
+    Promise.all([getJSON(`${base}/mods`), getJSON(`${base}/mods/available`)])
+        .then(([inst, avail]) => {
+            if (current()) renderModsModal(server, inst.installed || [], avail.available || []);
         })
         .catch(() => {
-            el.modalModsList.innerHTML = `<div class="alert alert-danger">${t('status-error')}</div>`;
+            if (current()) el.modalModsList.innerHTML = `<div class="alert alert-danger">${t('mods-load-error')}</div>`;
         });
+}
+
+function renderModsModal(server, installed, available) {
+    const locked = serverWriteLocked(server.id);
+    const lockAttr = locked ? `disabled title="${escapeHtml(serverWriteLockedText(server.id))}"` : '';
+    const installedSet = new Set(installed);
+
+    let html = `<h4 class="text-sm mb-2">${t('mods-installed')}</h4>`;
+    if (installed.length === 0) {
+        html += `<div class="alert alert-info mb-3">${t('mods-none-installed')}</div>`;
+    } else {
+        html += '<ul class="list-group mb-3">';
+        installed.forEach(mod => {
+            html += `<li class="list-group-item flex-between align-center">
+                <span class="mono">${escapeHtml(mod)}</span>
+                <button class="btn btn-danger btn-sm" data-mod-remove="${escapeHtml(mod)}" ${lockAttr}>${t('mods-btn-remove')}</button>
+            </li>`;
+        });
+        html += '</ul>';
+    }
+
+    html += `<h4 class="text-sm mb-2">${t('mods-available')}</h4>`;
+    if (available.length === 0) {
+        html += `<div class="alert alert-info">${t('mods-none-available')}</div>`;
+    } else {
+        html += '<ul class="list-group">';
+        available.forEach(mod => {
+            const label = installedSet.has(mod.command) ? t('mods-btn-reinstall') : t('mods-btn-install');
+            html += `<li class="list-group-item flex-between align-center" style="gap: 0.75rem;">
+                <div style="min-width: 0;">
+                    <span class="mono">${escapeHtml(mod.command)}</span>
+                    <div class="text-muted text-sm" style="overflow-wrap: anywhere;">${escapeHtml(mod.description)}</div>
+                </div>
+                <button class="btn btn-primary btn-sm" data-mod-install="${escapeHtml(mod.command)}" ${lockAttr}>${label}</button>
+            </li>`;
+        });
+        html += '</ul>';
+    }
+    el.modalModsList.innerHTML = html;
+
+    el.modalModsList.querySelectorAll('[data-mod-install]').forEach(btn => btn.addEventListener('click', () => {
+        el.modalMods.classList.add('hidden');
+        runServerAction(server.id, 'mods-install', { mod: btn.dataset.modInstall });
+    }));
+    el.modalModsList.querySelectorAll('[data-mod-remove]').forEach(btn => btn.addEventListener('click', () => {
+        const mod = btn.dataset.modRemove;
+        if (!confirm(t('mods-confirm-remove').replace('{mod}', mod))) return;
+        el.modalMods.classList.add('hidden');
+        runServerAction(server.id, 'mods-remove', { mod });
+    }));
 }
 
 if (el.btnCloseModalMods) el.btnCloseModalMods.addEventListener('click', () => el.modalMods.classList.add('hidden'));
 if (el.btnCloseModsModalFooter) el.btnCloseModsModalFooter.addEventListener('click', () => el.modalMods.classList.add('hidden'));
+
+// ----------------------------------------------------
+// TeamSpeak 3 ServerAdmin password
+// ----------------------------------------------------
+// LinuxGSM writes the password into a shell line, so the backend accepts only these characters.
+const TS3_PASSWORD_RE = /^[A-Za-z0-9._+=@#%^*!?:,~-]{8,64}$/;
+
+function openTs3PasswordModal(server) {
+    const modal = document.getElementById('modal-ts3pw');
+    if (!modal) return;
+    modal.dataset.server = server.id;
+    document.getElementById('ts3pw-password').value = '';
+    document.getElementById('ts3pw-confirm').value = '';
+    document.getElementById('ts3pw-error').textContent = '';
+    modal.classList.remove('hidden');
+    document.getElementById('ts3pw-password').focus();
+}
+
+(function initTs3PasswordModal() {
+    const modal = document.getElementById('modal-ts3pw');
+    const form = document.getElementById('ts3pw-form');
+    if (!modal || !form) return;
+    const close = () => {
+        modal.classList.add('hidden');
+        document.getElementById('ts3pw-password').value = '';
+        document.getElementById('ts3pw-confirm').value = '';
+    };
+    document.getElementById('btn-close-modal-ts3pw').addEventListener('click', close);
+    document.getElementById('btn-cancel-ts3pw').addEventListener('click', close);
+    form.addEventListener('submit', e => {
+        e.preventDefault();
+        const password = document.getElementById('ts3pw-password').value;
+        const errorEl = document.getElementById('ts3pw-error');
+        if (!TS3_PASSWORD_RE.test(password)) {
+            errorEl.textContent = t('ts3pw-invalid');
+            return;
+        }
+        if (password !== document.getElementById('ts3pw-confirm').value) {
+            errorEl.textContent = t('ts3pw-mismatch');
+            return;
+        }
+        const serverId = modal.dataset.server;
+        close();
+        runServerAction(serverId, 'change-password', { password });
+    });
+})();
 
 // ----------------------------------------------------
 // Web File Manager
@@ -5851,6 +6614,11 @@ function initFileManager() {
     el.filesServerSelect.addEventListener('change', () => {
         currentFilesServer = el.filesServerSelect.value;
         currentFilesSubpath = '';
+        // An open file belongs to the previous server.
+        fileEditorSeq++;
+        fileEditorLoaded = null;
+        el.filesEditorCard.classList.add('hidden');
+        applyFilesUploadLock();
         loadFilesTree();
     });
 
@@ -5997,28 +6765,73 @@ function navigateFilesUp() {
 
 let activeEditingFilePath = '';
 
+// applyFilesUploadLock disables uploads for servers of read-only or offline nodes.
+function applyFilesUploadLock() {
+    if (!el.filesBtnUpload) return;
+    const locked = !!currentFilesServer && serverWriteLocked(currentFilesServer);
+    el.filesBtnUpload.disabled = locked;
+    el.filesBtnUpload.title = locked ? serverWriteLockedText(currentFilesServer) : '';
+}
+
+// The editor only saves what it loaded: after a failed load (file too large, error) or for a
+// binary file there is nothing to save, and a late answer for a file that is no longer open is
+// dropped. Otherwise Save would write the error text or another file's content over the file.
+let fileEditorSeq = 0;
+let fileEditorLoaded = null; // { server, path } of the content in the textarea
+
+function setFileEditorEditable(editable, lockText) {
+    el.filesEditorTextarea.readOnly = !editable;
+    if (el.filesBtnSave) {
+        el.filesBtnSave.disabled = !editable;
+        el.filesBtnSave.title = editable ? '' : (lockText || '');
+    }
+}
+
 async function openFileEditor(path) {
     if (!currentFilesServer) return;
+    const serverId = currentFilesServer;
+    const seq = ++fileEditorSeq;
+    fileEditorLoaded = null;
     activeEditingFilePath = path;
     el.filesEditingFilename.textContent = path;
     el.filesEditorCard.classList.remove('hidden');
+    setFileEditorEditable(false);
     el.filesEditorTextarea.value = state.language === 'de' ? 'Lade Dateiinhalt...' : 'Loading file content...';
 
+    let text = null, error = '';
     try {
-        const res = await apiFetch(`/api/servers/${currentFilesServer}/files/content?path=${encodeURIComponent(path)}`);
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/files/content?path=${encodeURIComponent(path)}`);
         if (res.status === 200) {
-            const text = await res.text();
-            el.filesEditorTextarea.value = text;
+            text = await res.text();
         } else {
-            el.filesEditorTextarea.value = state.language === 'de' ? 'Fehler beim Lesen des Dateiinhalts.' : 'Error reading file content.';
+            const data = await res.json().catch(() => ({}));
+            error = data.error || '';
         }
     } catch (e) {
-        el.filesEditorTextarea.value = 'Error: ' + e.message;
+        error = e.message;
     }
+    if (seq !== fileEditorSeq) return; // another file was opened meanwhile
+
+    if (text === null) {
+        el.filesEditorTextarea.value = (state.language === 'de' ? 'Fehler beim Lesen des Dateiinhalts.' : 'Error reading file content.') + (error ? ` (${error})` : '');
+        return;
+    }
+    if (text.includes('\u0000') || (text.match(/�/g) || []).length > 8) {
+        el.filesEditorTextarea.value = state.language === 'de'
+            ? 'Binärdatei: sie kann im Browser nicht bearbeitet werden. Nutze den Download.'
+            : 'Binary file: it cannot be edited in the browser. Use the download instead.';
+        return;
+    }
+    el.filesEditorTextarea.value = text;
+    fileEditorLoaded = { server: serverId, path };
+    // Files of a read-only or offline node can be read, not saved.
+    const locked = serverWriteLocked(serverId);
+    setFileEditorEditable(!locked, locked ? serverWriteLockedText(serverId) : '');
 }
 
 async function saveFileContent() {
     if (!currentFilesServer || !activeEditingFilePath) return;
+    if (!fileEditorLoaded || fileEditorLoaded.server !== currentFilesServer || fileEditorLoaded.path !== activeEditingFilePath) return;
     try {
         const res = await apiFetch(`/api/servers/${currentFilesServer}/files`, {
             method: 'POST',
@@ -6142,6 +6955,7 @@ async function loadServerStopMode(serverId) {
         const res = await apiFetch(`/api/servers/${serverId}/stopmode`);
         if (res.status === 200) {
             const data = await res.json();
+            if (el.settingsServerSelect.value !== serverId) return;
             el.settingsStopmodeSelect.value = data.stopmode || 'default';
         }
     } catch (e) {
@@ -6274,15 +7088,19 @@ function handleRustWipeSubmit() {
 // Cloud Backup (rclone) Integration
 // ----------------------------------------------------
 async function loadCloudBackupSettings() {
-    if (!state.selectedBackupServer) return;
+    const serverId = state.selectedBackupServer;
+    if (!serverId) return;
     try {
-        const res = await apiFetch(`/api/servers/${state.selectedBackupServer}/cloudbackup/settings`);
+        const res = await apiFetch(`/api/servers/${encodeURIComponent(serverId)}/cloudbackup/settings`);
         if (res.status === 200) {
             const data = await res.json();
+            if (serverId !== state.selectedBackupServer) return;
             if (el.cloudbackupEnabled) el.cloudbackupEnabled.checked = !!data.enabled;
             if (el.cloudbackupRemote) el.cloudbackupRemote.value = data.remote || '';
             if (el.cloudbackupPath) el.cloudbackupPath.value = data.path || 'backups';
-            if (el.cloudbackupBtnSync) el.cloudbackupBtnSync.disabled = !data.enabled || !data.remote;
+            // Syncing is a write on the node; saving the settings needs an administrator.
+            if (el.cloudbackupBtnSync) el.cloudbackupBtnSync.disabled = !data.enabled || !data.remote || serverWriteLocked(serverId);
+            if (el.cloudbackupBtnSave) el.cloudbackupBtnSave.disabled = !(state.currentUser && state.currentUser.role === 'admin') || serverWriteLocked(serverId);
         }
     } catch (e) {
         console.error('Failed to load cloud backup settings:', e);

@@ -86,23 +86,42 @@ func isIntInRange(s string, min, max int) bool {
 	return err == nil && n >= min && n <= max && strconv.Itoa(n) == s
 }
 
-var reClockTime = regexp.MustCompile(`^([01][0-9]|2[0-3]):([0-5][0-9])$`)
-
-// ValidateCronSchedule validates the scheduler form values.
-func ValidateCronSchedule(s CronSchedule) error {
-	if s.MonitorInterval != "" && !isIntInRange(s.MonitorInterval, 1, 59) {
-		return fmt.Errorf("invalid monitor interval")
+// ValidateCronExpr accepts what IsValidCronExpr allows and what the scheduler can also run: the
+// regex alone lets through */0, 60 or 0 25 * * *, which crontab rejects and the Docker scheduler
+// never runs.
+func ValidateCronExpr(expr string) error {
+	if !IsValidCronExpr(expr) {
+		return fmt.Errorf("invalid cron expression %q", expr)
 	}
-	if s.UpdateInterval != "" && !isIntInRange(s.UpdateInterval, 1, 59) {
-		return fmt.Errorf("invalid update interval")
-	}
-	if s.RestartTime != "" && !reClockTime.MatchString(s.RestartTime) {
-		return fmt.Errorf("invalid restart time")
-	}
-	if s.CoreUpdateDay != "" && !isIntInRange(s.CoreUpdateDay, 0, 7) {
-		return fmt.Errorf("invalid core update day")
+	if _, err := ParseCron(expr); err != nil {
+		return fmt.Errorf("invalid cron expression %q: %v", expr, err)
 	}
 	return nil
+}
+
+// scheduleCommands are the LinuxGSM commands the scheduler form manages, in crontab order.
+var scheduleCommands = []string{"monitor", "update", "force-update", "restart", "update-lgsm"}
+
+// availableScheduleCommands lists the scheduler commands the game of srv has (core_getopt.sh):
+// update not for the "noupdate" engines, force-update only for SteamCMD games, mta and hyt.
+func availableScheduleCommands(srv GameServerInstance) []string {
+	values := lgsmCfgValues(srv, true)
+	short := strings.TrimSuffix(gameServerName(srv.Script), "server")
+	if srv.Layout != LayoutData {
+		short = strings.TrimSuffix(gameServerNameOf(srv.Dir, srv.Script), "server")
+	}
+	engine := values["engine"]
+	hasUpdate := (short == "jk2" || short == "jk3" || short == "etl" || engine != "idtech3") &&
+		short != "bf1942" && short != "bfv" && engine != "idtech2" && engine != "iw2.0" &&
+		engine != "iw3.0" && engine != "quake" && short != "samp" && short != "ut2k4"
+	out := []string{"monitor"}
+	if hasUpdate {
+		out = append(out, "update")
+		if values["appid"] != "" || short == "mta" || short == "hyt" {
+			out = append(out, "force-update")
+		}
+	}
+	return append(out, "restart", "update-lgsm")
 }
 
 // maintenanceComment marks the maintenance lines of a server. It names the script, which never
@@ -117,7 +136,7 @@ func isLegacyMaintenanceComment(line string) bool {
 	return strings.HasPrefix(line, "# LinuxGSM ") && strings.HasSuffix(line, " Geplante Wartungsaufgaben")
 }
 
-var maintenanceCommands = map[string]bool{"monitor": true, "update": true, "force-update": true, "update-lgsm": true}
+var maintenanceCommands = map[string]bool{"monitor": true, "update": true, "force-update": true, "restart": true, "update-lgsm": true}
 
 // rewriteCrontab removes this server's lines whose command is in drop (all commands if drop is nil)
 // plus our own comment line, then appends extra lines.
@@ -176,50 +195,51 @@ func removeCronLinesForScript(rt Runtime, srv GameServerInstance, drop map[strin
 // Scheduler
 // -------------------------------------------------------------
 
+// cronJobLines returns this server's crontab lines per scheduler command, as they are.
+func cronJobLines(crontab, scriptPath string) map[string][]string {
+	out := map[string][]string{}
+	for _, line := range strings.Split(crontab, "\n") {
+		if _, cmd, ok := cronLineCommand(line, scriptPath); ok && maintenanceCommands[cmd] {
+			out[cmd] = append(out[cmd], strings.TrimSpace(line))
+		}
+	}
+	return out
+}
+
 func (im *InstanceManager) GetCronSchedule(serverID string) (CronSchedule, error) {
 	srv, ok := im.getServer(serverID)
 	if !ok {
 		return CronSchedule{}, fmt.Errorf("server not found")
 	}
-
-	sched := CronSchedule{}
-	crontabStr, _ := im.rt.ReadCrontab(srv)
+	crontab, _ := im.rt.ReadCrontab(srv)
+	sched := CronSchedule{Jobs: map[string]string{}, Available: availableScheduleCommands(srv)}
 	scriptPath := scriptPathOf(srv)
-
-	reEvery := regexp.MustCompile(`^\*/(\d+) \* \* \* \*$`)
-	reDaily := regexp.MustCompile(`^(\d+) (\d+) \* \* \*$`)
-	reWeekly := regexp.MustCompile(`^0 0 \* \* (\d+)$`)
-
-	for _, line := range strings.Split(crontabStr, "\n") {
-		expr, cmd, ok := cronLineCommand(line, scriptPath)
-		if !ok {
-			continue
-		}
-		switch cmd {
-		case "monitor":
-			if m := reEvery.FindStringSubmatch(expr); m != nil {
-				sched.MonitorInterval = m[1]
-			}
-		case "update":
-			if m := reEvery.FindStringSubmatch(expr); m != nil {
-				sched.UpdateInterval = m[1]
-			}
-		case "force-update":
-			if m := reDaily.FindStringSubmatch(expr); m != nil {
-				hour, _ := strconv.Atoi(m[2])
-				min, _ := strconv.Atoi(m[1])
-				sched.RestartTime = fmt.Sprintf("%02d:%02d", hour, min)
-			}
-		case "update-lgsm":
-			if m := reWeekly.FindStringSubmatch(expr); m != nil {
-				sched.CoreUpdateDay = m[1]
-			}
+	for cmd, lines := range cronJobLines(crontab, scriptPath) {
+		if expr, _, ok := cronLineCommand(lines[0], scriptPath); ok {
+			sched.Jobs[cmd] = expr
 		}
 	}
-
 	return sched, nil
 }
 
+// ValidateCronSchedule checks the jobs sent by the scheduler form.
+func ValidateCronSchedule(s CronSchedule) error {
+	for cmd, expr := range s.Jobs {
+		if !maintenanceCommands[cmd] {
+			return fmt.Errorf("unknown scheduler command %q", cmd)
+		}
+		if expr != "" {
+			if err := ValidateCronExpr(expr); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// SaveCronSchedule changes the jobs of the commands in sched.Jobs ("" removes a job). Jobs of
+// other commands stay exactly as they are, so the form never removes or adds anything the user
+// did not touch.
 func (im *InstanceManager) SaveCronSchedule(serverID string, sched CronSchedule) error {
 	srv, ok := im.getServer(serverID)
 	if !ok {
@@ -228,47 +248,51 @@ func (im *InstanceManager) SaveCronSchedule(serverID string, sched CronSchedule)
 	if err := ValidateCronSchedule(sched); err != nil {
 		return err
 	}
-
+	available := map[string]bool{}
+	for _, c := range availableScheduleCommands(srv) {
+		available[c] = true
+	}
+	crontab, err := im.rt.ReadCrontab(srv)
+	if err != nil {
+		return err
+	}
 	scriptPath := scriptPathOf(srv)
-	var crons []string
-	if sched.MonitorInterval != "" {
-		crons = append(crons, fmt.Sprintf("*/%s * * * * %s monitor > /dev/null 2>&1", sched.MonitorInterval, scriptPath))
+	current := cronJobLines(crontab, scriptPath)
+	var lines []string
+	for _, cmd := range scheduleCommands {
+		expr, changed := sched.Jobs[cmd]
+		if !changed {
+			lines = append(lines, current[cmd]...)
+			continue
+		}
+		if expr == "" {
+			continue
+		}
+		if !available[cmd] {
+			return fmt.Errorf("%s does not exist for this game", cmd)
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s > /dev/null 2>&1", strings.TrimSpace(expr), scriptPath, cmd))
 	}
-	if sched.UpdateInterval != "" {
-		crons = append(crons, fmt.Sprintf("*/%s * * * * %s update > /dev/null 2>&1", sched.UpdateInterval, scriptPath))
+	if len(lines) > 0 {
+		lines = append([]string{maintenanceComment(srv)}, lines...)
 	}
-	if sched.RestartTime != "" {
-		parts := strings.Split(sched.RestartTime, ":")
-		hour, _ := strconv.Atoi(parts[0])
-		min, _ := strconv.Atoi(parts[1])
-		crons = append(crons, fmt.Sprintf("%d %d * * * %s force-update > /dev/null 2>&1", min, hour, scriptPath))
-	}
-	if sched.CoreUpdateDay != "" {
-		crons = append(crons, fmt.Sprintf("0 0 * * %s %s update-lgsm > /dev/null 2>&1", sched.CoreUpdateDay, scriptPath))
-	}
-
-	extra := []string{}
-	if len(crons) > 0 {
-		extra = append(extra, maintenanceComment(srv))
-		extra = append(extra, crons...)
-	}
-	return rewriteCrontab(im.rt, srv, maintenanceCommands, extra)
+	return rewriteCrontab(im.rt, srv, maintenanceCommands, lines)
 }
 
+// InstallCronjobs sets up the jobs LinuxGSM recommends: monitor every 5 minutes, update every
+// 30 minutes (where the game has it) and update-lgsm weekly.
 func (im *InstanceManager) InstallCronjobs(serverID string) error {
 	srv, ok := im.getServer(serverID)
 	if !ok {
 		return fmt.Errorf("server not found")
 	}
-	scriptPath := scriptPathOf(srv)
-	crons := []string{
-		maintenanceComment(srv),
-		fmt.Sprintf("*/5 * * * * %s monitor > /dev/null 2>&1", scriptPath),
-		fmt.Sprintf("*/30 * * * * %s update > /dev/null 2>&1", scriptPath),
-		fmt.Sprintf("30 4 * * * %s force-update > /dev/null 2>&1", scriptPath),
-		fmt.Sprintf("0 0 * * 0 %s update-lgsm > /dev/null 2>&1", scriptPath),
+	jobs := map[string]string{"monitor": "*/5 * * * *", "update-lgsm": "0 0 * * 0"}
+	for _, c := range availableScheduleCommands(srv) {
+		if c == "update" {
+			jobs["update"] = "*/30 * * * *"
+		}
 	}
-	return rewriteCrontab(im.rt, srv, maintenanceCommands, crons)
+	return im.SaveCronSchedule(serverID, CronSchedule{Jobs: jobs})
 }
 
 // -------------------------------------------------------------
@@ -277,8 +301,10 @@ func (im *InstanceManager) InstallCronjobs(serverID string) error {
 
 // ValidateBackupSettings checks values written into the bash-sourced LinuxGSM config and crontab.
 func ValidateBackupSettings(s BackupSettings) error {
-	if s.MaxBackups != "" && !isIntInRange(s.MaxBackups, 0, 999) {
-		return fmt.Errorf("invalid maxbackups value")
+	// LinuxGSM deletes all but maxbackups archives of the (shared) backup directory after each
+	// backup: 0 would delete every archive there, also uploads and other instances' backups.
+	if s.MaxBackups != "" && !isIntInRange(s.MaxBackups, 1, 999) {
+		return fmt.Errorf("maxbackups must be between 1 and 999")
 	}
 	if s.MaxBackupDays != "" && !isIntInRange(s.MaxBackupDays, 0, 999) {
 		return fmt.Errorf("invalid maxbackupdays value")
@@ -286,8 +312,10 @@ func ValidateBackupSettings(s BackupSettings) error {
 	if s.StopOnBackup != "" && s.StopOnBackup != "on" && s.StopOnBackup != "off" {
 		return fmt.Errorf("invalid stoponbackup value")
 	}
-	if s.AutoBackupEnabled && !IsValidCronExpr(s.AutoBackupCron) {
-		return fmt.Errorf("invalid cron expression")
+	if s.AutoBackupEnabled {
+		if err := ValidateCronExpr(s.AutoBackupCron); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -1,0 +1,51 @@
+# Node of another LinuxGSM Web Dashboard in Docker mode (agent).
+#
+# The agent manages the game server containers on this machine and connects to the dashboard;
+# it has no web interface and opens no port. Pair it once with the command from the dashboard
+# (Settings > Nodes), using everything after "agent join":
+#
+#   docker compose -f docker-compose.agent.yml run --rm agent agent join <url> --token <token> \
+#     --ca-fingerprint <sha256:...> --mode read-only|read-write --config-dir /config
+#   docker compose -f docker-compose.agent.yml up -d
+#
+# Change the access mode later with
+#   docker compose -f docker-compose.agent.yml run --rm agent agent mode read-write --config-dir /config
+#   docker compose -f docker-compose.agent.yml restart agent
+services:
+  agent:
+    image: ghcr.io/yourdawi/linuxgsm-dashboard:latest
+    # To build the image from this repository instead:
+    # build: .
+    container_name: lgsm-dashboard-agent
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/lgsm-dashboard"]
+    command: ["agent", "run", "--config-dir", "/config"]
+    # The image's health check probes the web port, which an agent does not have.
+    healthcheck:
+      disable: true
+    volumes:
+      # Pairing (node key and certificate), access mode and the node's own audit log.
+      - lgsm-agent-config:/config
+      # Game server data. Must be mounted at the SAME path as on the host, because the agent
+      # passes this path to Docker when it creates game server containers.
+      - /srv/lgsm:/srv/lgsm
+      # Access to the Docker engine. The dashboard can control Docker on this host through the
+      # agent (limited by the access mode), which is equivalent to root access.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Lets the dashboard notice when this node identity is copied to another machine.
+      - /etc/machine-id:/etc/machine-id:ro
+    environment:
+      LGSM_DATA_DIR: /srv/lgsm
+      # TZ: Europe/Berlin
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Needed to hand uploaded and edited files over to the game server user (UID 1000).
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+
+volumes:
+  lgsm-agent-config:

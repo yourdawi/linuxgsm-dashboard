@@ -93,7 +93,8 @@ func TestDockerInstall(t *testing.T) {
 		strings.Join(cfg.Env, ",") != "UPDATE_CHECK=0,UPDATE_ON_START=false" ||
 		cfg.Labels[dockerLabelManaged] != "true" || cfg.Labels[dockerLabelGameServer] != "vhserver" || cfg.Labels[dockerLabelDir] != dir ||
 		len(cfg.HostConfig.Binds) != 2 || cfg.HostConfig.Binds[0] != dir+":/data" || cfg.HostConfig.Binds[1] != dir+"/mods:/app/lgsm/mods" ||
-		cfg.HostConfig.NetworkMode != "host" || cfg.HostConfig.RestartPolicy.Name != "unless-stopped" {
+		cfg.HostConfig.NetworkMode != "host" || cfg.HostConfig.RestartPolicy.Name != "unless-stopped" ||
+		cfg.HostConfig.LogConfig == nil || cfg.HostConfig.LogConfig.Config["max-size"] != "10m" {
 		t.Fatalf("unexpected container config %+v", cfg)
 	}
 	if len(e.started) != 1 || e.started[0] != "vh1" {

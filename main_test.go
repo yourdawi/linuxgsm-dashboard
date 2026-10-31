@@ -187,7 +187,8 @@ func TestRBACMatrixAllServerRoutes(t *testing.T) {
 	other := e.login("other")
 	admin := e.login("admin2")
 
-	for key, perm := range serverRoutes {
+	for key, policy := range serverRoutes {
+		perm := policy.perm
 		method, path := routeRequest(key)
 
 		// A user assigned to a different server is always denied.
@@ -302,7 +303,7 @@ func TestActionEndpoint(t *testing.T) {
 	if rec := e.do(&operator, http.MethodPost, "/api/servers/srv1/action", map[string]string{"action": "restart"}); !isPermissionDenied(rec) {
 		t.Errorf("operator restart without permission: %d", rec.Code)
 	}
-	for _, adminOnly := range []string{"update", "full-wipe", "postdetails", "debug"} {
+	for _, adminOnly := range []string{"update", "full-wipe", "postdetails", "mods-install", "change-password"} {
 		if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/action", map[string]string{"action": adminOnly}); !isPermissionDenied(rec) {
 			t.Errorf("non-admin %s: %d", adminOnly, rec.Code)
 		}
@@ -377,14 +378,14 @@ func TestConsoleAndRconRequireConsolePermission(t *testing.T) {
 func TestCronWriteRequiresSchedulePermission(t *testing.T) {
 	e := newTestEnv(t)
 	viewer := e.login("viewer")
-	if rec := e.do(&viewer, http.MethodPost, "/api/servers/srv1/cron", map[string]string{"monitor_interval": "5"}); !isPermissionDenied(rec) {
+	if rec := e.do(&viewer, http.MethodPost, "/api/servers/srv1/cron", map[string]interface{}{"jobs": map[string]string{"monitor": "*/5 * * * *"}}); !isPermissionDenied(rec) {
 		t.Errorf("viewer cron write: %d", rec.Code)
 	}
 	if rec := e.do(&viewer, http.MethodPost, "/api/servers/srv1/cron/install", "{}"); !isPermissionDenied(rec) {
 		t.Errorf("viewer cron install: %d", rec.Code)
 	}
 	full := e.login("full")
-	if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/cron", map[string]string{"monitor_interval": "5 * * * * id #"}); rec.Code != http.StatusBadRequest {
+	if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/cron", map[string]interface{}{"jobs": map[string]string{"monitor": "5 * * * * id #"}}); rec.Code != http.StatusBadRequest {
 		t.Errorf("cron injection: %d", rec.Code)
 	}
 }
@@ -395,7 +396,7 @@ func TestAlertsPermissionAndSecretMasking(t *testing.T) {
 	if rec := e.do(&operator, http.MethodGet, "/api/servers/srv1/alerts", nil); !isPermissionDenied(rec) {
 		t.Errorf("alerts read without permission: %d", rec.Code)
 	}
-	if rec := e.do(&operator, http.MethodPost, "/api/servers/srv1/alerts", map[string]interface{}{"discord_webhook": "https://evil"}); !isPermissionDenied(rec) {
+	if rec := e.do(&operator, http.MethodPost, "/api/servers/srv1/alerts", map[string]interface{}{"values": map[string]string{"discordwebhook": "https://evil"}}); !isPermissionDenied(rec) {
 		t.Errorf("alerts write without permission: %d", rec.Code)
 	}
 
@@ -404,8 +405,10 @@ func TestAlertsPermissionAndSecretMasking(t *testing.T) {
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "SECRET-WEBHOOK") || !strings.Contains(rec.Body.String(), backend.SecretMask) {
 		t.Fatalf("secret leaked or not masked: %s", rec.Body.String())
 	}
-	if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/alerts", map[string]interface{}{"discord_webhook": `x"; id; "`}); rec.Code != http.StatusBadRequest {
-		t.Errorf("config injection via alerts: %d", rec.Code)
+	for _, bad := range []map[string]string{{"discordwebhook": "x\nid"}, {"evil": "x"}, {"discordalert": "yes"}} {
+		if rec := e.do(&full, http.MethodPost, "/api/servers/srv1/alerts", map[string]interface{}{"values": bad}); rec.Code != http.StatusBadRequest {
+			t.Errorf("invalid alert values %v accepted: %d", bad, rec.Code)
+		}
 	}
 }
 
@@ -965,7 +968,7 @@ func TestFrontendEscapesUntrustedValues(t *testing.T) {
 			t.Errorf("unsafe pattern present in app.js: %q", f)
 		}
 	}
-	for _, required := range []string{"function jsArg(", "X-CSRF-Token", "jsArg('kick ' + p.name)"} {
+	for _, required := range []string{"function jsArg(", "X-CSRF-Token", "jsArg(playerCommand(server, 'kick', p.name))"} {
 		if !strings.Contains(js, required) {
 			t.Errorf("expected %q in app.js", required)
 		}

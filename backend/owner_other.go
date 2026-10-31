@@ -26,13 +26,6 @@ func lfileOwnerUID(path string) (int, error) {
 	return -1, nil
 }
 
-func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil, ErrPathOutsideRoot
-	}
-	return os.OpenFile(path, flag, perm)
-}
-
 func diskFreeBytes(path string) int64 {
 	return -1
 }

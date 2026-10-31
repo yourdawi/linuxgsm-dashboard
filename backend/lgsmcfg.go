@@ -87,11 +87,11 @@ func lgsmCfgValues(srv GameServerInstance, includeDefault bool) map[string]strin
 	return merged
 }
 
-// lgsmCfgValuesAt merges the configs of script below configLgsm (lgsm/config-lgsm), including
+// lgsmCfgValuesAt merges the configs of script (in homeDir) below configLgsm (lgsm/config-lgsm), including
 // _default.cfg. It is used during discovery, before a GameServerInstance exists; only regular
 // files are read, so a FIFO or device planted by a game server user cannot block the dashboard.
-func lgsmCfgValuesAt(configLgsm, script string) map[string]string {
-	dir := filepath.Join(configLgsm, gameServerName(script))
+func lgsmCfgValuesAt(homeDir, configLgsm, script string) map[string]string {
+	dir := filepath.Join(configLgsm, gameServerNameOf(homeDir, script))
 	merged := make(map[string]string)
 	for _, name := range []string{"_default.cfg", "common.cfg", "secrets-common.cfg", script + ".cfg", "secrets-" + script + ".cfg"} {
 		p := filepath.Join(dir, name)

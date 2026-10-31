@@ -17,6 +17,7 @@ type LoginLimiter struct {
 	forgetAfter time.Duration
 	maxEntries  int
 	now         func() time.Time
+	inflight    map[string]int // attempts being verified right now (Reserve)
 }
 
 type limiterEntry struct {
@@ -119,5 +120,51 @@ func (l *LoginLimiter) pruneLocked(now time.Time) {
 			}
 			i++
 		}
+	}
+}
+
+// Reserve is Allow for an attempt that is verified afterwards. The attempt counts while it runs,
+// so parallel requests cannot all pass before the first failure is recorded: as long as a key has
+// free tries left, at most that many attempts run at once, after that only one. done records the
+// result (success clears the history, a failure counts).
+func (l *LoginLimiter) Reserve(keys ...string) (ok bool, wait time.Duration, done func(success bool)) {
+	if ok, wait := l.Allow(keys...); !ok {
+		return false, wait, nil
+	}
+	l.mu.Lock()
+	if l.inflight == nil {
+		l.inflight = make(map[string]int)
+	}
+	for _, k := range keys {
+		failures := 0
+		if e, found := l.entries[k]; found {
+			failures = e.failures
+		}
+		if n := l.inflight[k]; n > 0 && failures+n >= l.freeTries {
+			l.mu.Unlock()
+			return false, l.baseDelay, nil
+		}
+	}
+	for _, k := range keys {
+		l.inflight[k]++
+	}
+	l.mu.Unlock()
+
+	var once sync.Once
+	return true, 0, func(success bool) {
+		once.Do(func() {
+			l.mu.Lock()
+			for _, k := range keys {
+				if l.inflight[k]--; l.inflight[k] <= 0 {
+					delete(l.inflight, k)
+				}
+			}
+			l.mu.Unlock()
+			if success {
+				l.Success(keys...)
+			} else {
+				l.Failure(keys...)
+			}
+		})
 	}
 }

@@ -1226,3 +1226,62 @@ body.light-theme .terminal-card { border-color: #2b3036; }
 }
 .twofa-codes-list li { padding: 0.12rem 0; }
 #login-2fa-code { font-size: 1.15rem; letter-spacing: 0.15em; text-align: center; }
+
+/* ------------------------------------------------------------------ */
+/* Nodes (game servers on other machines)                              */
+/* ------------------------------------------------------------------ */
+.nodes-add-form {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr) auto;
+    gap: 0.75rem;
+    align-items: end;
+    margin-top: 0.75rem;
+}
+.nodes-add-form .form-group { margin-bottom: 0; }
+@media (max-width: 720px) {
+    .nodes-add-form { grid-template-columns: 1fr; }
+}
+.nodes-command-box {
+    margin-top: 1rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--bg-surface-2);
+}
+.nodes-command-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+}
+.nodes-command {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    word-break: break-all;
+    white-space: pre-wrap;
+    user-select: all;
+}
+.nodes-list table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+.nodes-list th, .nodes-list td {
+    text-align: left;
+    padding: 0.55rem 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+}
+.nodes-list th { color: var(--text-muted); font-weight: 500; font-size: 0.78rem; }
+.nodes-list .node-sub { color: var(--text-muted); font-size: 0.76rem; }
+.nodes-list .node-problem { color: var(--warning); font-size: 0.78rem; margin-top: 0.2rem; }
+.nodes-list .node-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.nodes-list select { min-width: 12rem; }
+.nodes-list-scroll { overflow-x: auto; }
+.node-chip {
+    font-size: 0.74rem;
+    padding: 0 0.4rem;
+    border-radius: 3px;
+    background: var(--info-soft);
+    color: var(--info);
+}
+.server-card.is-node-offline { opacity: 0.6; }
+.node-chip.is-read-only { background: transparent; border: 1px dashed var(--info); }
+.nodes-list td.node-load { white-space: nowrap; }

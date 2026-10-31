@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -83,10 +84,10 @@ func parseDetailsIP(output string) string {
 // host).
 func parseServerPort(homeDir, configLgsm string, scriptName string) int {
 	// The game port as LinuxGSM sees it: port= from the merged configs.
-	if p, err := strconv.Atoi(lgsmCfgValuesAt(configLgsm, scriptName)["port"]); err == nil && p > 0 {
+	if p, err := strconv.Atoi(lgsmCfgValuesAt(homeDir, configLgsm, scriptName)["port"]); err == nil && p > 0 {
 		return p
 	}
-	rootScript := gameServerName(scriptName)
+	rootScript := gameServerNameOf(homeDir, scriptName)
 
 	// Game-specific fallbacks if not found in LGSM config
 	if rootScript == "mtaserver" || scriptName == "mtaserver" {
@@ -240,26 +241,6 @@ func getGameFromScriptName(scriptName string) string {
 	return clean
 }
 
-var skipDirs = map[string]bool{
-	"steamapps":         true,
-	"steam":             true,
-	"Engine":            true,
-	"Binaries":          true,
-	"MonoBleedingEdge":  true,
-	"linux64":           true,
-	"node_modules":      true,
-	".git":              true,
-	".steam":            true,
-	"lgsm":              true,
-	"log":               true,
-	"backups":           true,
-	"saves":             true,
-	"Save":              true,
-	"Saved":             true,
-	"serverfiles/steam": true,
-	"steamclient":       true,
-}
-
 type FileNode struct {
 	Name     string     `json:"name"`
 	Path     string     `json:"path"`
@@ -267,44 +248,6 @@ type FileNode struct {
 	Size     int64      `json:"size"`
 	ModTime  string     `json:"mod_time"`
 	Children []FileNode `json:"children,omitempty"`
-}
-
-func findConfigsInDir(baseDir string, dirPath string, depth int) []ConfigFile {
-	if depth > 4 {
-		return nil
-	}
-
-	var configs []ConfigFile
-	entries, err := os.ReadDir(dirPath)
-	if err != nil {
-		return nil
-	}
-
-	for _, entry := range entries {
-		name := entry.Name()
-		fullPath := filepath.Join(dirPath, name)
-
-		if entry.IsDir() {
-			if skipDirs[name] {
-				continue
-			}
-			configs = append(configs, findConfigsInDir(baseDir, fullPath, depth+1)...)
-		} else {
-			ext := strings.ToLower(filepath.Ext(name))
-			if ext == ".cfg" || ext == ".ini" || ext == ".properties" || ext == ".conf" || ext == ".json" {
-				relPath, err := filepath.Rel(baseDir, fullPath)
-				if err != nil {
-					relPath = name
-				}
-				relPath = filepath.ToSlash(relPath)
-				configs = append(configs, ConfigFile{
-					Name: relPath,
-					Path: fullPath,
-				})
-			}
-		}
-	}
-	return configs
 }
 
 type PortProbe struct {
@@ -381,18 +324,38 @@ func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// The public IP is looked up at most every publicIPCacheTime; port checks are frequent and the
+// lookup is an outside request.
+const publicIPCacheTime = 10 * time.Minute
+
+var publicIPCache struct {
+	sync.Mutex
+	ip      string
+	fetched time.Time
+}
+
 func getPublicIP() (string, error) {
+	publicIPCache.Lock()
+	defer publicIPCache.Unlock()
+	if publicIPCache.ip != "" && time.Since(publicIPCache.fetched) < publicIPCacheTime {
+		return publicIPCache.ip, nil
+	}
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("https://api.ipify.org")
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	ipBytes, err := io.ReadAll(resp.Body)
+	ipBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64))
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(ipBytes)), nil
+	ip := strings.TrimSpace(string(ipBytes))
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("invalid answer from the IP lookup")
+	}
+	publicIPCache.ip, publicIPCache.fetched = ip, time.Now()
+	return ip, nil
 }
 
 func checkTCP(ip string, port int) bool {
@@ -543,7 +506,7 @@ func parseServerPortsFromConfig(homeDir, configLgsm string, scriptName string, g
 
 	// Port variables from the merged LinuxGSM configs
 	parsedPorts := make(map[string]int)
-	values := lgsmCfgValuesAt(configLgsm, scriptName)
+	values := lgsmCfgValuesAt(homeDir, configLgsm, scriptName)
 	for _, name := range []string{"port", "queryport", "rconport", "appport", "sourcetvport"} {
 		if p, err := strconv.Atoi(values[name]); err == nil && p > 0 && p < 65536 {
 			parsedPorts[name] = p

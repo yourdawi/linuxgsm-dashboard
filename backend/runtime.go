@@ -201,7 +201,7 @@ func streamLines(run func(w io.Writer) error, onLine func(string), readErr func(
 
 	reader := bufio.NewReader(pr)
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := readLineOrCR(reader)
 		if line != "" {
 			onLine(line)
 		}
@@ -215,4 +215,27 @@ func streamLines(run func(w io.Writer) error, onLine func(string), readErr func(
 	// Keep draining so the command never blocks on a full pipe after a read error.
 	go io.Copy(io.Discard, pr)
 	return <-done
+}
+
+// readLineOrCR reads up to and including the next \n or a lone \r. Programs redraw a line with
+// \r (LinuxGSM's "[ .... ]" status becoming "[  OK  ]", SteamCMD's progress), so such a line is
+// passed on right away instead of when the next \n arrives.
+func readLineOrCR(r *bufio.Reader) (string, error) {
+	var b strings.Builder
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			return b.String(), err
+		}
+		b.WriteByte(c)
+		if c == '\n' {
+			return b.String(), nil
+		}
+		if c == '\r' {
+			if next, err := r.Peek(1); err == nil && next[0] == '\n' {
+				continue // \r\n is a normal line end
+			}
+			return b.String(), nil
+		}
+	}
 }

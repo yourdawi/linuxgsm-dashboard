@@ -61,7 +61,7 @@ func TestAuthorizeServerActionMatrix(t *testing.T) {
 func TestActionPermissionAllowlist(t *testing.T) {
 	want := map[string]string{
 		"start": PermStart, "stop": PermStop, "restart": PermRestart, "backup": PermBackup,
-		"update": PermAdmin, "full-wipe": PermAdmin, "postdetails": PermAdmin, "debug": PermAdmin,
+		"update": PermAdmin, "full-wipe": PermAdmin, "postdetails": PermAdmin, "details": PermConfig, "mods-install": PermAdmin,
 	}
 	for action, perm := range want {
 		got, ok := ActionPermission(action)
@@ -69,7 +69,7 @@ func TestActionPermissionAllowlist(t *testing.T) {
 			t.Errorf("ActionPermission(%q) = %q,%v want %q", action, got, ok, perm)
 		}
 	}
-	for _, a := range []string{"", "rm", "start; id", "install", "auto-install", "console"} {
+	for _, a := range []string{"", "rm", "start; id", "install", "auto-install", "console", "debug"} {
 		if _, ok := ActionPermission(a); ok {
 			t.Errorf("unexpected action allowed: %q", a)
 		}

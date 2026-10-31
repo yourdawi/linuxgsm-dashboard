@@ -68,7 +68,7 @@ func (im *InstanceManager) assignStableIDs(found []*GameServerInstance) {
 			used[inst.ID] = true
 			continue
 		}
-		if id, ok := stored[serverIDKey(inst)]; ok && IsValidServerID(id) && !used[id] {
+		if id, ok := stored[serverIDKey(inst)]; ok && IsValidLocalServerID(id) && !used[id] {
 			inst.ID = id
 			used[id] = true
 			continue
@@ -77,13 +77,13 @@ func (im *InstanceManager) assignStableIDs(found []*GameServerInstance) {
 	}
 	for _, inst := range fresh {
 		id := inst.ID
-		if used[id] || reserved[id] || !IsValidServerID(id) {
+		if used[id] || reserved[id] || !IsValidLocalServerID(id) {
 			base := inst.Script
 			if inst.User != "" {
 				base = inst.Script + "@" + inst.User
 			}
 			id = base
-			for n := 2; used[id] || reserved[id] || !IsValidServerID(id); n++ {
+			for n := 2; used[id] || reserved[id] || !IsValidLocalServerID(id); n++ {
 				id = fmt.Sprintf("%s-%d", base, n)
 			}
 		}

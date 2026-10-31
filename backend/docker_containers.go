@@ -89,6 +89,15 @@ type DockerHostConfig struct {
 	Binds         []string            `json:"Binds,omitempty"`
 	NetworkMode   string              `json:"NetworkMode,omitempty"`
 	RestartPolicy DockerRestartPolicy `json:"RestartPolicy"`
+	LogConfig     *DockerLogConfig    `json:"LogConfig,omitempty"`
+	CapDrop       []string            `json:"CapDrop,omitempty"`
+	SecurityOpt   []string            `json:"SecurityOpt,omitempty"`
+}
+
+// DockerLogConfig is the log driver of a container.
+type DockerLogConfig struct {
+	Type   string            `json:"Type"`
+	Config map[string]string `json:"Config,omitempty"`
 }
 
 // DockerRestartPolicy is the restart policy of a container.

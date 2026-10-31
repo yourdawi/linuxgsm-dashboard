@@ -2,6 +2,8 @@ package backend
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Size limits for files that are loaded into memory.
@@ -20,13 +23,6 @@ const (
 
 // ErrFileTooLarge is returned when a file exceeds MaxEditableFileSize.
 var ErrFileTooLarge = errors.New("file is too large to be edited in the browser")
-
-// chownToServer hands a file created by root over to the server's Linux user (never follows symlinks).
-func chownToServer(path string, srv GameServerInstance) {
-	if srv.UID > 0 {
-		_ = os.Lchown(path, srv.UID, srv.GID)
-	}
-}
 
 // writeServerFile writes data to rel (relative to the server root) as root without ever following
 // symlinks out of the server directory. Missing parent directories are created and handed to the
@@ -48,35 +44,12 @@ func writeServerFile(srv GameServerInstance, rel string, data []byte) error {
 }
 
 // writeResolvedFile writes data via a temporary file + rename so a symlink planted at target is
-// replaced instead of followed.
+// replaced instead of followed. An existing file keeps its mode.
 func writeResolvedFile(srv GameServerInstance, target string, data []byte, perm os.FileMode) error {
-	if info, err := os.Lstat(target); err == nil {
-		if info.IsDir() {
-			return fmt.Errorf("target is a directory")
-		}
-		perm = info.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".lgsm-dashboard-*")
-	if err != nil {
+	return writeFileNoSymlinks(target, perm, true, srv.UID, srv.GID, func(f *os.File) error {
+		_, err := f.Write(data)
 		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	_ = os.Chmod(tmpName, perm)
-	chownToServer(tmpName, srv)
-	if err := os.Rename(tmpName, target); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	})
 }
 
 // mkdirAllForServer creates dir (which must be inside the server directory) and chowns the newly
@@ -93,20 +66,8 @@ func mkdirAllForServer(srv GameServerInstance, dir string) error {
 	if !IsWithin(root, resolved) {
 		return ErrPathOutsideRoot
 	}
-	var missing []string
-	for p := resolved; p != root && IsWithin(root, p); p = filepath.Dir(p) {
-		if _, err := os.Lstat(p); err == nil {
-			break
-		}
-		missing = append(missing, p)
-	}
-	if err := os.MkdirAll(resolved, 0755); err != nil {
-		return err
-	}
-	for _, p := range missing {
-		chownToServer(p, srv)
-	}
-	return nil
+	// Everything that is missing lies below root, so only directories of the server get created.
+	return mkdirAllNoSymlinks(resolved, 0755, srv.UID, srv.GID)
 }
 
 // readResolvedFileLimited reads an already resolved file with a size limit.
@@ -192,10 +153,22 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 		}
 	}
 
-	// 2. Scan gameserver files directory recursively: <dir>/serverfiles/
+	// 2. The game config LinuxGSM itself uses (servercfgfullpath), wherever the game keeps it.
+	for _, p := range linuxGSMConfigPaths(srv) {
+		if _, ok := isLinuxGSMConfigFile(srv, p); !ok {
+			continue
+		}
+		name := filepath.Base(p)
+		if rel, err := filepath.Rel(srv.Dir, p); err == nil && !strings.HasPrefix(rel, "..") {
+			name = filepath.ToSlash(rel)
+		}
+		addConfig(name, p, "game")
+	}
+
+	// 3. Other configs below serverfiles.
 	serverfilesDir := filepath.Join(srv.Dir, "serverfiles")
 	if _, err := ServerSubRoot(srv.Dir, "serverfiles", srv.UID); err == nil {
-		found := findConfigsInDir(srv.Dir, serverfilesDir, 0)
+		found := findConfigs(srv.Dir, serverfilesDir)
 		for _, cfg := range found {
 			addConfig(cfg.Name, cfg.Path, "instance")
 		}
@@ -206,6 +179,10 @@ func (im *InstanceManager) GetConfigFiles(serverID string) ([]ConfigFile, error)
 
 // resolveConfigPath validates an absolute path from the config file list.
 func resolveConfigPath(srv GameServerInstance, path string) (string, error) {
+	// The game config LinuxGSM uses is allowed whatever its extension and location.
+	if resolved, ok := isLinuxGSMConfigFile(srv, path); ok {
+		return resolved, nil
+	}
 	if !IsEditableConfigFile(path) {
 		return "", fmt.Errorf("access denied: file type not editable in config editor")
 	}
@@ -393,7 +370,7 @@ func (im *InstanceManager) GetServerFiles(serverID string, subPath string) ([]Fi
 		return nil, fmt.Errorf("invalid path")
 	}
 
-	entries, err := os.ReadDir(targetDir)
+	entries, err := readDirNoSymlinks(targetDir)
 	if err != nil {
 		return []FileNode{}, nil
 	}
@@ -525,30 +502,11 @@ func (im *InstanceManager) UploadServerFile(serverID string, subPath string, fil
 
 // streamToResolvedFile copies r into a temp file next to target and renames it into place.
 func streamToResolvedFile(srv GameServerInstance, target string, r io.Reader) error {
-	if info, err := os.Lstat(target); err == nil && info.IsDir() {
-		return fmt.Errorf("target is a directory")
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".lgsm-upload-*")
-	if err != nil {
-		return fmt.Errorf("failed to create file")
-	}
-	tmpName := tmp.Name()
-	if _, err := io.Copy(tmp, r); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+	// Copy errors are returned unchanged: callers recognise a body that exceeded its limit.
+	return writeFileNoSymlinks(target, 0644, false, srv.UID, srv.GID, func(f *os.File) error {
+		_, err := io.Copy(f, r)
 		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	_ = os.Chmod(tmpName, 0644)
-	chownToServer(tmpName, srv)
-	if err := os.Rename(tmpName, target); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("failed to store file")
-	}
-	return nil
+	})
 }
 
 // -------------------------------------------------------------
@@ -602,6 +560,30 @@ func (im *InstanceManager) GetInstalledMods(serverID string) ([]string, error) {
 	return installedMods, nil
 }
 
+// AvailableMods asks LinuxGSM which mods it offers for a server: mods-install prints the list
+// and is then answered with "exit", so nothing is installed.
+func (im *InstanceManager) AvailableMods(serverID string) ([]ModInfo, error) {
+	srv, ok := im.getServer(serverID)
+	if !ok {
+		return nil, ErrServerNotFound
+	}
+	if im.static || im.isInstalling(&srv) {
+		return []ModInfo{}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var out bytes.Buffer
+	err := im.rt.RunLGSM(ctx, srv, ExecIO{Stdin: strings.NewReader("exit\n"), Stdout: &out, Stderr: &out}, "mods-install")
+	mods := ParseAvailableMods(out.String())
+	if len(mods) == 0 && err != nil && isStartError(err) {
+		return nil, err
+	}
+	if mods == nil {
+		mods = []ModInfo{}
+	}
+	return mods, nil
+}
+
 // -------------------------------------------------------------
 // Server tags
 // -------------------------------------------------------------
@@ -635,6 +617,31 @@ func (im *InstanceManager) saveServerTags(tags map[string]string) error {
 		return err
 	}
 	return WriteFileAtomic(im.tagsPath(), data, 0600)
+}
+
+// ServerTags returns all stored tags, including those of servers on nodes (global IDs).
+func (im *InstanceManager) ServerTags() map[string]string {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	return im.loadServerTags()
+}
+
+// SetNodeServerTag stores the tag of a server on a node. The dashboard keeps these tags itself,
+// keyed by global ID; an empty tag removes it.
+func (im *InstanceManager) SetNodeServerTag(globalID string, tag string) error {
+	if node, _ := SplitServerID(globalID); node == "" || !IsValidServerID(globalID) {
+		return fmt.Errorf("not a server of a node")
+	}
+	tag = sanitizeDisplayText(tag, 64)
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	tags := im.loadServerTags()
+	if tag == "" {
+		delete(tags, globalID)
+	} else {
+		tags[globalID] = tag
+	}
+	return im.saveServerTags(tags)
 }
 
 func (im *InstanceManager) SetServerTag(serverID string, tag string) error {
@@ -756,4 +763,105 @@ func (im *InstanceManager) SetCustomServerPaths(paths []string) ([]string, error
 
 	im.ScanInstances()
 	return clean, nil
+}
+
+// RemoveNodeServerTags removes the tags of all servers of a removed node.
+func (im *InstanceManager) RemoveNodeServerTags(nodeID string) error {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	tags := im.loadServerTags()
+	changed := false
+	for id := range tags {
+		if node, _ := SplitServerID(id); node == nodeID {
+			delete(tags, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return im.saveServerTags(tags)
+}
+
+// -------------------------------------------------------------
+// FastDL modes
+// -------------------------------------------------------------
+
+// FastDL modes of a server: who serves its public_html/fastdl directory.
+const (
+	// FastDLDashboard: the dashboard the users log in to (for a server of a node, the dashboard
+	// forwards the downloads through the node's tunnel). Default.
+	FastDLDashboard = "dashboard"
+	// FastDLNode: a node serves the files itself (agent --fastdl-port, or its own web server).
+	FastDLNode = "node"
+	// FastDLOff: not served.
+	FastDLOff = "off"
+)
+
+const fastdlSettingsFileName = "fastdl_settings.json"
+
+// IsValidFastDLMode validates FastDL modes.
+func IsValidFastDLMode(mode string) bool {
+	return mode == FastDLDashboard || mode == FastDLNode || mode == FastDLOff
+}
+
+func (im *InstanceManager) loadFastDLModesLocked() map[string]string {
+	modes := make(map[string]string)
+	data, err := os.ReadFile(filepath.Join(im.configDir, fastdlSettingsFileName))
+	if err == nil {
+		_ = json.Unmarshal(data, &modes)
+	}
+	return modes
+}
+
+// FastDLMode returns the FastDL mode of a server of this machine.
+func (im *InstanceManager) FastDLMode(serverID string) string {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if mode := im.loadFastDLModesLocked()[serverID]; IsValidFastDLMode(mode) {
+		return mode
+	}
+	return FastDLDashboard
+}
+
+// SetFastDLMode stores the FastDL mode of a server of this machine.
+func (im *InstanceManager) SetFastDLMode(serverID, mode string) error {
+	if !IsValidFastDLMode(mode) {
+		return fmt.Errorf("invalid FastDL mode")
+	}
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if _, ok := im.instances[serverID]; !ok {
+		return ErrServerNotFound
+	}
+	modes := im.loadFastDLModesLocked()
+	if mode == FastDLDashboard {
+		delete(modes, serverID)
+	} else {
+		modes[serverID] = mode
+	}
+	data, err := json.MarshalIndent(modes, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(im.configDir, 0700); err != nil {
+		return err
+	}
+	return WriteFileAtomic(filepath.Join(im.configDir, fastdlSettingsFileName), data, 0600)
+}
+
+// writeServerFilePerm is writeServerFile with the mode for a new file; an existing file keeps
+// its mode.
+func writeServerFilePerm(srv GameServerInstance, rel string, data []byte, perm os.FileMode) error {
+	target, err := ResolveInRoot(srv.Dir, rel)
+	if err != nil {
+		return err
+	}
+	if err := mkdirAllForServer(srv, filepath.Dir(target)); err != nil {
+		return err
+	}
+	if target, err = ResolveInRoot(srv.Dir, rel); err != nil {
+		return err
+	}
+	return writeResolvedFile(srv, target, data, perm)
 }

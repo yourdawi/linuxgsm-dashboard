@@ -300,8 +300,10 @@ func scanServerDir(dir string, owner passwdEntry, requireOwner bool) []*GameServ
 			Status: "stopped",
 			Port:   parseServerPort(dir, filepath.Join(dir, "lgsm", "config-lgsm"), scriptName),
 			Game:   getGameFromScriptName(scriptName),
-			UID:    owner.UID,
-			GID:    owner.GID,
+			Commands: linuxGSMCommands(lgsmCfgValuesAt(dir, filepath.Join(dir, "lgsm", "config-lgsm"), scriptName),
+				shortnameOfScript(dir, scriptName)),
+			UID: owner.UID,
+			GID: owner.GID,
 		}
 		if isTmuxSessionActive(HostRuntime{}, *inst) {
 			inst.Status = "running"
@@ -326,13 +328,16 @@ func convertScriptSymlink(dir, scriptPath string, owner passwdEntry) {
 	if uid, err := fileOwnerUID(target); err != nil || (uid >= 0 && uid != owner.UID) {
 		return
 	}
-	if err := os.Remove(scriptPath); err != nil {
-		return
-	}
+	// The copy is made next to the link and renamed over it, so the link stays when copying fails.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = exec.CommandContext(ctx, "runuser", "-u", owner.Name, "--", "cp", "-p", "--", target, scriptPath).Run()
-	_ = exec.CommandContext(ctx, "runuser", "-u", owner.Name, "--", "chmod", "0755", "--", scriptPath).Run()
+	tmp := scriptPath + ".lgsm-dashboard-copy"
+	run := func(args ...string) error {
+		return exec.CommandContext(ctx, "runuser", append([]string{"-u", owner.Name, "--"}, args...)...).Run()
+	}
+	if run("cp", "-p", "--", target, tmp) != nil || run("chmod", "0755", "--", tmp) != nil || run("mv", "-f", "-T", "--", tmp, scriptPath) != nil {
+		_ = run("rm", "-f", "--", tmp)
+	}
 }
 
 func cleanupLeftoverSudoers() {
@@ -365,8 +370,22 @@ func ValidateInstallDir(dir string) error {
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("parent directory %s does not exist", parent)
 	}
-	if resolved, err := filepath.EvalSymlinks(parent); err == nil && IsForbiddenServerDir(filepath.ToSlash(filepath.Join(resolved, filepath.Base(dir)))) {
+	resolved, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return fmt.Errorf("parent directory %s does not exist", parent)
+	}
+	if IsForbiddenServerDir(filepath.ToSlash(filepath.Join(resolved, filepath.Base(dir)))) {
 		return fmt.Errorf("installation directory points into a system directory")
+	}
+	// Inside another user's tree that user could swap the new home for a symlink later.
+	if err := checkTrustedAncestors(resolved); err != nil {
+		return fmt.Errorf("installation directory cannot be used: %v", err)
+	}
+	// The uninstaller removes the dashboard directory with everything in it.
+	if exe, err := os.Executable(); err == nil {
+		if exeDir, err := filepath.EvalSymlinks(filepath.Dir(exe)); err == nil && IsWithin(exeDir, resolved) {
+			return fmt.Errorf("installation directory is inside the dashboard directory %s", exeDir)
+		}
 	}
 	return nil
 }
@@ -416,6 +435,9 @@ func existingInstallUser(req InstallRequest) (*passwdEntry, error) {
 	if uid, err := lfileOwnerUID(entry.Home); err != nil || (uid >= 0 && uid != entry.UID) {
 		return nil, fmt.Errorf("user %s already exists, but its home directory %s belongs to another user", req.Username, entry.Home)
 	}
+	if !wasCreatedByDashboard(entry.Name, entry.UID) && isAdminAccount(entry.Name, entry.Home) {
+		return nil, fmt.Errorf("user %s already exists and is an administrator or login account (sudo group or SSH keys): choose another user name", req.Username)
+	}
 	entries, err := os.ReadDir(entry.Home)
 	if err != nil {
 		return nil, fmt.Errorf("user %s already exists, but its home directory %s cannot be read", req.Username, entry.Home)
@@ -462,7 +484,7 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 	runCommandWithLogs := func(name string, args ...string) error {
 		return streamLines(func(w io.Writer) error {
 			return runHostCmd(exec.CommandContext(ctx, name, args...), ExecIO{Stdout: w, Stderr: w})
-		}, func(line string) { logf(stripAnsi(line)) }, nil)
+		}, func(line string) { logf(line) }, nil)
 	}
 	logLine := func(text string) {
 		logf(text + "\n")
@@ -511,10 +533,21 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 			logLine(Msg(lang, "[ERROR] Failed to create user: ", "[FEHLER] Benutzer konnte nicht erstellt werden: ") + err.Error())
 			return err
 		}
+		// Only users the dashboard created are ever deleted together with their home.
+		recordCreatedUser(username)
+		// useradd leaves the home 0755 on Debian 12 and older Ubuntu; other server users must not
+		// read this one's configs and secrets (LinuxGSM accepts 7xx).
+		if err := os.Chmod(homeDir, 0750); err != nil {
+			logLine(Msg(lang, "[WARNING] Could not restrict the home directory: ", "[WARNUNG] Home-Verzeichnis konnte nicht eingeschränkt werden: ") + err.Error())
+		}
 	}
 
-	// Set password if provided
-	if req.Password != "" {
+	// Set the password of a new user. An existing user keeps its password: it may be a login
+	// somebody uses.
+	if req.Password != "" && existing != nil {
+		logLine(Msg(lang, "[INSTALL] The user already exists, its password is not changed.",
+			"[INSTALL] Der Benutzer existiert bereits, sein Passwort wird nicht geändert."))
+	} else if req.Password != "" {
 		logLine(Msg(lang, "[INSTALL] Setting password for user...", "[INSTALL] Setze Passwort für Benutzer..."))
 		chpasswdCmd := exec.CommandContext(ctx, "chpasswd")
 		chpasswdCmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", username, req.Password))
@@ -532,7 +565,7 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 		// 2. Download linuxgsm.sh bootstrap script (as the new user, into its own directory)
 		logLine(Msg(lang, "[INSTALL] Downloading LinuxGSM bootstrap script...", "[INSTALL] Lade LinuxGSM Bootstrap-Skript herunter..."))
 		bootstrapPath := filepath.Join(homeDir, "linuxgsm.sh")
-		if err := runCommandWithLogs("runuser", "-u", username, "--", "wget", "-O", bootstrapPath, "https://linuxgsm.sh"); err != nil {
+		if err := runCommandWithLogs("runuser", "-u", username, "--", "curl", "-fsSL", "-o", bootstrapPath, "https://linuxgsm.sh"); err != nil {
 			logLine(Msg(lang, "[ERROR] Failed to download bootstrap script: ", "[FEHLER] Bootstrap-Skript konnte nicht geladen werden: ") + err.Error())
 			return err
 		}
@@ -552,15 +585,9 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 		}
 	}
 
-	// 3.5 Grant temporary sudo access for LinuxGSM dependency auto-installer
-	sudoersFile := fmt.Sprintf("/etc/sudoers.d/lgsm-%s", username)
-	sudoersContent := fmt.Sprintf("%s ALL=(ALL) NOPASSWD: ALL\n", username)
-	if err := WriteFileAtomic(sudoersFile, []byte(sudoersContent), 0440); err != nil {
-		logLine(Msg(lang, "[WARNING] Failed to configure temporary sudo permissions: ", "[WARNUNG] Sudo-Berechtigungen konnten nicht temporär konfiguriert werden: ") + err.Error())
-	}
-	defer func() {
-		_ = os.Remove(sudoersFile)
-	}()
+	// 3.5 Install the packages LinuxGSM needs as root; the game server user gets no sudo.
+	logLine(Msg(lang, "[INSTALL] Checking dependencies...", "[INSTALL] Prüfe Abhängigkeiten..."))
+	installDependencies(ctx, gameCmd, usesSteamCMD(ctx, gameCmd), lang, logf)
 
 	// 4. Run game auto-install: runuser -l <user> -c "cd '<dir>' && ./'<gameCmd>' auto-install"
 	logLine(Msg(lang, "[INSTALL] Installing server via LinuxGSM (SteamCMD)...", "[INSTALL] Installiere Server via LinuxGSM (SteamCMD)..."))
@@ -579,21 +606,10 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 // directory. Otherwise only this instance is removed, and the LinuxGSM files of its directory
 // once no other instance is left there; the Linux user is kept.
 func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedUser bool) error {
-	// Remove systemd service if it exists (current and legacy naming)
-	for _, unit := range []string{"linuxgsm-" + srv.Script, srv.ID} {
-		if !IsValidScriptName(unit) {
-			continue
-		}
-		servicePath := filepath.Join("/etc/systemd/system", unit+".service")
-		if _, err := os.Stat(servicePath); err == nil {
-			_ = exec.Command("systemctl", "stop", unit+".service").Run()
-			_ = exec.Command("systemctl", "disable", unit+".service").Run()
-			_ = os.Remove(servicePath)
-			_ = exec.Command("systemctl", "daemon-reload").Run()
-		}
-	}
+	// Remove the autostart unit (current and legacy naming), only if it runs this server.
+	removeAutostart(srv)
 
-	if sharedUser || !isDedicatedServerUser(srv) {
+	if sharedUser || !mayDeleteLinuxUser(srv) {
 		// Keep the Linux user: it hosts other servers or is not a dedicated game server user
 		// (for example a personal account that LinuxGSM was installed into).
 		_ = removeCronLinesForScript(h, srv, nil)
@@ -612,6 +628,7 @@ func (h HostRuntime) Delete(ctx context.Context, srv GameServerInstance, sharedU
 		fmt.Printf("[ERROR] Failed to delete user %s: %v\n", srv.User, err)
 		return fmt.Errorf("failed to delete user")
 	}
+	forgetCreatedUser(srv.User)
 	return nil
 }
 
@@ -831,47 +848,4 @@ func (HostRuntime) WriteCrontab(srv GameServerInstance, content string) error {
 	cmd := exec.CommandContext(ctx, "crontab", "-u", srv.User, "-")
 	cmd.Stdin = strings.NewReader(trimmed + "\n")
 	return cmd.Run()
-}
-
-// InstallAutostart writes and enables the systemd unit linuxgsm-<script>.service.
-func (HostRuntime) InstallAutostart(srv GameServerInstance) error {
-	if !IsSafeServerDir(srv.Dir) || !IsValidScriptName(srv.Script) || !IsValidLinuxUsername(srv.User) {
-		return fmt.Errorf("server cannot be installed as systemd service")
-	}
-	// The description comes from game server output: strip anything systemd could interpret.
-	desc := strings.Map(func(r rune) rune {
-		if r == '%' || r == '\\' {
-			return -1
-		}
-		return r
-	}, sanitizeDisplayText(srv.Name, 100))
-
-	scriptPath := scriptPathOf(srv)
-	systemdCode := fmt.Sprintf(`[Unit]
-Description=LinuxGSM %s Server
-After=network.target
-
-[Service]
-Type=simple
-User=%s
-WorkingDirectory=%s
-ExecStart=%s start
-ExecStop=%s stop
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-`, desc, srv.User, srv.Dir, scriptPath, scriptPath)
-
-	unit := fmt.Sprintf("linuxgsm-%s.service", srv.Script)
-	servicePath := filepath.Join("/etc/systemd/system", unit)
-	if err := WriteFileAtomic(servicePath, []byte(systemdCode), 0644); err != nil {
-		return err
-	}
-
-	_ = exec.Command("systemctl", "daemon-reload").Run()
-	_ = exec.Command("systemctl", "enable", unit).Run()
-
-	return nil
 }

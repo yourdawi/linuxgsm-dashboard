@@ -29,3 +29,6 @@ Thumbs.db
 # Temporary test directories (removed by the tests themselves)
 .test-*/
 test.log
+
+# Internal design documents
+/docs/
