@@ -359,7 +359,7 @@ Game servers on other machines, for example further LXC containers, VMs or a ren
    curl -sSL https://raw.githubusercontent.com/yourdawi/linuxgsm-dashboard/main/install-dashboard.sh | bash -s -- --agent --join '<pairing command>'
    ```
 
-   Without `--join` the installer asks for the command, and it asks for the access mode (the dashboard's choice is the default; `--mode read-only|read-write` sets it without asking). In the interactive menu this is option 4.
+   Put the whole pairing command in single quotes, or pass its parts as options: `--join <dashboard URL> --token <token> --ca-fingerprint <sha256:...>`. Without `--join` the installer asks for the command, and it asks for the access mode (the dashboard's choice is the default; `--mode read-only|read-write` sets it without asking). In the interactive menu this is option 4.
 
 The installer installs the binary, the LinuxGSM dependencies and the service `lgsm-dashboard-agent`, pairs the node and checks that it is connected. Running it again updates the agent and keeps the pairing. A machine is either the dashboard or a node, not both. `install-dashboard.sh uninstall` removes the agent; remove the node in the dashboard as well.
 

@@ -17,6 +17,7 @@
 #
 # Node of another dashboard (agent, see Settings > Nodes in the dashboard):
 #   --agent --join '<pairing command>' [--mode read-only|read-write]
+#     (or --join <url> --token <token> --ca-fingerprint <sha256:...>)
 #     [--fastdl-port <port> --fastdl-url <url>]   (FastDL served by the node itself)
 #     [--insecure-skip-signature]   (only without OpenSSL 3: rely on the checksum of a release)
 
@@ -911,6 +912,8 @@ parse_join_command() {
             --mode) JOIN_MODE="${words[$((i + 1))]:-}" ;;
         esac
     done
+    # Only the URL (with --token and --ca-fingerprint as options of their own).
+    [ -z "$JOIN_URL" ] && [[ "${words[0]:-}" =~ ^(https?|tls):// ]] && JOIN_URL="${words[0]}"
     # In a bracket expression "]" must come first to be literal ("[" for IPv6 hosts is plain).
     local url_re='^(https?|tls)://[][A-Za-z0-9._~:/-]+$'
     if ! [[ "$JOIN_URL" =~ $url_re ]]; then
@@ -1207,6 +1210,8 @@ PORT_FROM_ARGS="false"
 MODE="release"
 ROLE_ARG=""
 AGENT_JOIN_ARG=""
+AGENT_TOKEN_ARG=""
+AGENT_FINGERPRINT_ARG=""
 AGENT_MODE_ARG=""
 AGENT_FASTDL_PORT_ARG=""
 AGENT_FASTDL_URL_ARG=""
@@ -1260,6 +1265,18 @@ while [[ $# -gt 0 ]]; do
             AGENT_JOIN_ARG="${2:-}"
             shift 2
             ;;
+        # The parts of the pairing command may also be passed as separate options:
+        # --join <url> --token <token> --ca-fingerprint <sha256:...>
+        --token)
+            need_value "$1" $#
+            AGENT_TOKEN_ARG="$2"
+            shift 2
+            ;;
+        --ca-fingerprint)
+            need_value "$1" $#
+            AGENT_FINGERPRINT_ARG="$2"
+            shift 2
+            ;;
         --fastdl-port)
             need_value "$1" $#
             AGENT_FASTDL_PORT_ARG="${2:-}"
@@ -1289,6 +1306,9 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+[ -n "$AGENT_TOKEN_ARG" ] && AGENT_JOIN_ARG+=" --token $AGENT_TOKEN_ARG"
+[ -n "$AGENT_FINGERPRINT_ARG" ] && AGENT_JOIN_ARG+=" --ca-fingerprint $AGENT_FINGERPRINT_ARG"
 
 if [ -n "$AGENT_MODE_ARG" ] && [ "$AGENT_MODE_ARG" != "read-only" ] && [ "$AGENT_MODE_ARG" != "read-write" ]; then
     echo -e "${RED}[ERROR] Invalid access mode: $AGENT_MODE_ARG (read-only or read-write).${NC}"
@@ -1339,7 +1359,7 @@ if [ -n "$ACTION" ] || [ "$MODE" != "release" ] || [ "$ROLE_ARG" == "agent" ]; t
             ;;
         *)
             echo -e "${RED}[ERROR] Unknown argument: $ACTION${NC}"
-            echo -e "Usage: $0 [install|uninstall|status] [--port <port>] [--source|--dev|--local] [--agent [--join '<pairing command>'] [--mode read-only|read-write] [--fastdl-port <port>] [--fastdl-url <url>]]"
+            echo -e "Usage: $0 [install|uninstall|status] [--port <port>] [--source|--dev|--local] [--agent [--join '<pairing command>' | --join <url> --token <token> --ca-fingerprint <fp>] [--mode read-only|read-write] [--fastdl-port <port>] [--fastdl-url <url>]]"
             exit 1
             ;;
     esac
