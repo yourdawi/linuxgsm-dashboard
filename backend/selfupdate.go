@@ -97,11 +97,15 @@ func IsDevelopmentBuild(version string) bool {
 	return strings.HasPrefix(version, "dev-")
 }
 
+// maxReleaseNotes limits the text of a release kept for the update view.
+const maxReleaseNotes = 16 * 1024
+
 // ReleaseInfo describes a published release.
 type ReleaseInfo struct {
 	Tag       string            `json:"tag"`
 	URL       string            `json:"url"`
 	Published time.Time         `json:"published"`
+	Notes     string            `json:"notes,omitempty"`
 	Assets    map[string]string `json:"-"` // asset name -> download URL
 }
 
@@ -111,6 +115,7 @@ type UpdateStatus struct {
 	Latest    string    `json:"latest_version"`
 	Available bool      `json:"has_update"`
 	URL       string    `json:"release_url,omitempty"`
+	Notes     string    `json:"release_notes,omitempty"`
 	Checked   time.Time `json:"checked,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	Enabled   bool      `json:"self_update_enabled"`
@@ -132,6 +137,12 @@ type Updater struct {
 	mu      sync.Mutex
 	status  UpdateStatus
 	install sync.Mutex
+
+	notesMu      sync.Mutex
+	notes        []ReleaseNotes
+	notesFetched time.Time
+	notesFailed  time.Time
+	notesErr     error
 }
 
 func (u *Updater) client() *http.Client {
@@ -186,6 +197,7 @@ func (u *Updater) Latest(ctx context.Context) (ReleaseInfo, error) {
 		Prerelease  bool      `json:"prerelease"`
 		HTMLURL     string    `json:"html_url"`
 		PublishedAt time.Time `json:"published_at"`
+		Body        string    `json:"body"`
 		Assets      []struct {
 			Name string `json:"name"`
 			URL  string `json:"browser_download_url"`
@@ -197,7 +209,10 @@ func (u *Updater) Latest(ctx context.Context) (ReleaseInfo, error) {
 	if rel.Draft || rel.Prerelease || !IsStableReleaseTag(rel.TagName) {
 		return ReleaseInfo{}, errors.New("latest release is not a stable release")
 	}
-	info := ReleaseInfo{Tag: rel.TagName, URL: rel.HTMLURL, Published: rel.PublishedAt, Assets: map[string]string{}}
+	if len(rel.Body) > maxReleaseNotes {
+		rel.Body = strings.ToValidUTF8(rel.Body[:maxReleaseNotes], "")
+	}
+	info := ReleaseInfo{Tag: rel.TagName, URL: rel.HTMLURL, Published: rel.PublishedAt, Notes: rel.Body, Assets: map[string]string{}}
 	for _, a := range rel.Assets {
 		info.Assets[a.Name] = a.URL
 	}
@@ -246,12 +261,13 @@ func (u *Updater) Check(ctx context.Context) UpdateStatus {
 	} else {
 		st.Latest = rel.Tag
 		st.URL = rel.URL
+		st.Notes = rel.Notes
 		st.Available = IsNewerVersion(rel.Tag, u.CurrentVersion) && !st.DevBuild
 	}
 	u.mu.Lock()
 	if st.Error != "" && st.Latest == "" && u.status.Latest != "" {
 		// Keep the last known release when GitHub is temporarily unreachable.
-		st.Latest, st.URL, st.Available = u.status.Latest, u.status.URL, u.status.Available
+		st.Latest, st.URL, st.Notes, st.Available = u.status.Latest, u.status.URL, u.status.Notes, u.status.Available
 	}
 	u.status = st
 	u.mu.Unlock()

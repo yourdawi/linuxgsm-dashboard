@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -68,7 +69,7 @@ func TestDockerValidateInstall(t *testing.T) {
 
 func TestDockerInstall(t *testing.T) {
 	e := newExecEngine(t, func(c execCall) (string, string, int) {
-		if c.Cmd[0] == "tmux" {
+		if slices.Contains(c.Cmd, "tmux") {
 			return "vhserver\n", "", 0
 		}
 		return "", "", 0

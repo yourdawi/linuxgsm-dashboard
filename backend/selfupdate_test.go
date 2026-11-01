@@ -14,7 +14,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 type fakeGitHub struct {
@@ -26,6 +28,10 @@ type fakeGitHub struct {
 	sums       []byte
 	sig        []byte
 	pubKey     string
+	body       string
+	releases   []map[string]interface{}
+	listCalls  atomic.Int32
+	listStatus int
 }
 
 func newFakeGitHub(t *testing.T, tag string) *fakeGitHub {
@@ -44,12 +50,21 @@ func newFakeGitHub(t *testing.T, tag string) *fakeGitHub {
 			"tag_name":   f.tag,
 			"prerelease": f.prerelease,
 			"html_url":   "https://example.invalid/release",
+			"body":       f.body,
 			"assets": []map[string]string{
 				{"name": "lgsm-dashboard-linux-amd64", "browser_download_url": base + "bin"},
 				{"name": "SHA256SUMS", "browser_download_url": base + "sums"},
 				{"name": "SHA256SUMS.sig", "browser_download_url": base + "sig"},
 			},
 		})
+	})
+	mux.HandleFunc("/repos/owner/repo/releases", func(w http.ResponseWriter, r *http.Request) {
+		f.listCalls.Add(1)
+		if f.listStatus != 0 {
+			w.WriteHeader(f.listStatus)
+			return
+		}
+		json.NewEncoder(w).Encode(f.releases)
 	})
 	mux.HandleFunc("/repos/owner/repo/compare/", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/compare/main..."+f.tag) {
@@ -175,6 +190,31 @@ func TestUpdaterCheck(t *testing.T) {
 	}
 	if st := gh.updater("dev-main-1a2b3c4").Check(context.Background()); st.Available || !st.DevBuild {
 		t.Fatalf("development builds must not get update notices: %+v", st)
+	}
+}
+
+func TestUpdaterCheckKeepsTheReleaseNotes(t *testing.T) {
+	gh := newFakeGitHub(t, "v1.2.0")
+	gh.body = "**Fixes**\n- One"
+	u := gh.updater("1.1.9")
+	if st := u.Check(context.Background()); st.Notes != gh.body {
+		t.Fatalf("notes = %q", st.Notes)
+	}
+	if st := u.Status(); st.Notes != gh.body {
+		t.Fatalf("cached notes = %q", st.Notes)
+	}
+
+	// GitHub is unreachable: the known release keeps its notes.
+	gh.server.Close()
+	if st := u.Check(context.Background()); st.Notes != gh.body || !st.Available {
+		t.Fatalf("after a failed check: %+v", st)
+	}
+
+	gh = newFakeGitHub(t, "v1.2.0")
+	gh.body = strings.Repeat("ä", maxReleaseNotes)
+	st := gh.updater("1.1.9").Check(context.Background())
+	if len(st.Notes) > maxReleaseNotes || !utf8.ValidString(st.Notes) {
+		t.Fatalf("long notes: %d bytes, valid %v", len(st.Notes), utf8.ValidString(st.Notes))
 	}
 }
 

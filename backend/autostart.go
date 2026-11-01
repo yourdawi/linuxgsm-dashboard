@@ -168,13 +168,13 @@ func (h HostRuntime) MigrateAutostart(srv GameServerInstance) {
 	if !legacy {
 		return
 	}
-	wasRunning := isTmuxSessionActive(h, srv)
+	wasRunning := tmuxSessionState(h, srv) == tmuxActive
 	if err := h.InstallAutostart(srv); err != nil {
 		fmt.Printf("[WARNING] could not migrate the autostart unit of %s: %v\n", srv.ID, err)
 		return
 	}
 	fmt.Printf("[INFO] migrated the autostart unit of %s to %s\n", srv.ID, autostartUnitName(srv))
-	if wasRunning && !isTmuxSessionActive(h, srv) {
+	if wasRunning && tmuxSessionState(h, srv) == tmuxAbsent {
 		_ = systemctl("start", autostartUnitName(srv))
 	}
 }

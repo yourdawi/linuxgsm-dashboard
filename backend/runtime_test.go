@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -200,14 +201,14 @@ func TestInstallGameUsesRuntime(t *testing.T) {
 	im := newFakeManager(rt)
 
 	rec := httptest.NewRecorder()
-	im.InstallGame(rec, httptest.NewRequest("POST", "/", nil), "vhserver", "vh", "", "/bad", "en")
+	im.InstallGame(rec, httptest.NewRequest("POST", "/", nil), "vhserver", "vh", "", "/bad", "en", SteamLogin{})
 	if rec.Code != 400 || len(rt.installs) != 0 {
 		t.Fatalf("validation must stop the installation: %d %v", rec.Code, rt.installs)
 	}
 
 	rec = httptest.NewRecorder()
-	im.InstallGame(rec, httptest.NewRequest("POST", "/", nil), "vhserver", "vh", "pw", "", "de")
-	if len(rt.installs) != 1 || rt.installs[0].Username != "vh" || rt.installs[0].Lang != "de" {
+	im.InstallGame(rec, httptest.NewRequest("POST", "/", nil), "vhserver", "vh", "pw", "", "de", SteamLogin{User: "gamer", Pass: "secret"})
+	if len(rt.installs) != 1 || rt.installs[0].Username != "vh" || rt.installs[0].Lang != "de" || rt.installs[0].Steam.User != "gamer" {
 		t.Fatalf("unexpected install request %+v", rt.installs)
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "installing vhserver") || !strings.Contains(body, `"code":3`) {
@@ -227,7 +228,7 @@ func TestDeleteServerPassesSharedUser(t *testing.T) {
 	if len(rt.deleted) != 2 || !rt.deleted[0] || rt.deleted[1] {
 		t.Fatalf("sharedUser flags = %v, want [true false]", rt.deleted)
 	}
-	if rt.calls[0] != "lgsm vhserver stop" {
+	if !slices.Contains(rt.calls, "lgsm vhserver stop") {
 		t.Fatalf("server must be stopped before deletion: %q", rt.calls)
 	}
 }

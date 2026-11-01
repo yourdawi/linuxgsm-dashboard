@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -45,14 +47,22 @@ func (HostRuntime) Init() {
 // -------------------------------------------------------------
 
 // runHostCmd connects cmd to stdio and runs it. Start failures are reported as *StartError.
+//
+// A timeout of the context only kills cmd itself, runuser for example. Without WaitDelay, Wait
+// would go on as long as a child such as a hanging tmux client holds the output pipe.
 func runHostCmd(cmd *exec.Cmd, stdio ExecIO) error {
 	cmd.Stdin = stdio.Stdin
 	cmd.Stdout = stdio.Stdout
 	cmd.Stderr = stdio.Stderr
+	cmd.WaitDelay = time.Second
 	if err := cmd.Start(); err != nil {
 		return &StartError{Err: err}
 	}
-	return cmd.Wait()
+	err := cmd.Wait()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return nil // cmd itself succeeded, a background process it left keeps the pipe
+	}
+	return err
 }
 
 // systemdRunPath can be overridden in tests.
@@ -108,12 +118,38 @@ func (HostRuntime) RunAsUser(ctx context.Context, srv GameServerInstance, stdio 
 		}
 		return runHostCmd(exec.CommandContext(ctx, "runuser", "-l", srv.User, "-c", strings.Join(quoted, " ")), stdio)
 	}
-	return runHostCmd(exec.CommandContext(ctx, "runuser", append([]string{"-u", srv.User, "--"}, args...)...), stdio)
+	return runHostCmd(killTreeOnCancel(exec.CommandContext(ctx, "runuser", append([]string{"-u", srv.User, "--"}, args...)...)), stdio)
 }
 
-// ProcessStats sums up all processes of the server's Linux user.
-func (HostRuntime) ProcessStats(srv GameServerInstance) (cpu float64, ram float64, pids []int) {
-	return GetProcessStatsForUser(srv.User)
+// killTreeOnCancel makes a timeout end cmd with all its children. Killing only runuser would leave
+// the actual command behind, and a hanging tmux client stays until its server answers again. Only
+// for the direct path of RunAsUser: it runs tmux calls and commands without a timeout, while the
+// login path also runs commands that are meant to survive a closed browser.
+func killTreeOnCancel(cmd *exec.Cmd) *exec.Cmd {
+	cmd.Cancel = func() error {
+		for _, s := range processTree(readHostProcesses(), []int{cmd.Process.Pid}) {
+			if s.pid == cmd.Process.Pid {
+				continue
+			}
+			if p, err := os.FindProcess(s.pid); err == nil {
+				_ = p.Kill()
+			}
+		}
+		return cmd.Process.Kill()
+	}
+	return cmd
+}
+
+// ProcessStats measures the processes in the server's tmux session, so several servers under one
+// Linux user do not count each other.
+func (h HostRuntime) ProcessStats(srv GameServerInstance) (cpu float64, ram float64, pids []int) {
+	return procStats.measure(srv.ID, func() ([]procSample, bool) {
+		panes, known := tmuxPanePIDs(h, srv)
+		if len(panes) == 0 {
+			return nil, known
+		}
+		return processTree(readHostProcesses(), panes), true
+	})
 }
 
 // -------------------------------------------------------------
@@ -240,7 +276,30 @@ func (HostRuntime) Discover(customPaths []string) ([]*GameServerInstance, error)
 			}
 		}
 	}
+	setTmuxStatuses(found)
 	return found, nil
+}
+
+// setTmuxStatuses asks tmux about all servers at once, so several hanging tmux servers take no
+// longer than one.
+func setTmuxStatuses(instances []*GameServerInstance) {
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for _, inst := range instances {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(inst *GameServerInstance) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			switch tmuxSessionState(HostRuntime{}, *inst) {
+			case tmuxActive:
+				inst.Status = "running"
+			case tmuxUnknown:
+				inst.statusUnknown = true
+			}
+		}(inst)
+	}
+	wg.Wait()
 }
 
 // scanServerDir detects LinuxGSM scripts in dir. When requireOwner is set, scripts must be owned
@@ -304,9 +363,6 @@ func scanServerDir(dir string, owner passwdEntry, requireOwner bool) []*GameServ
 				shortnameOfScript(dir, scriptName)),
 			UID: owner.UID,
 			GID: owner.GID,
-		}
-		if isTmuxSessionActive(HostRuntime{}, *inst) {
-			inst.Status = "running"
 		}
 		found = append(found, inst)
 	}
@@ -589,13 +645,43 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 	logLine(Msg(lang, "[INSTALL] Checking dependencies...", "[INSTALL] Prüfe Abhängigkeiten..."))
 	installDependencies(ctx, gameCmd, usesSteamCMD(ctx, gameCmd), lang, logf)
 
+	if req.Steam.User != "" {
+		uid, gid, err := fileOwnerIDs(homeDir)
+		if err == nil {
+			err = seedSteamLogin(filepath.Join(homeDir, "lgsm", "config-lgsm", gameCmd), req.Steam, uid, gid)
+		}
+		if err != nil {
+			logLine(Msg(lang, "[ERROR] Failed to store the Steam login: ", "[FEHLER] Steam-Login konnte nicht gespeichert werden: ") + err.Error())
+			return err
+		}
+		logLine(Msg(lang, "[INSTALL] Steam login stored in secrets-common.cfg.", "[INSTALL] Steam-Login in secrets-common.cfg gespeichert."))
+	}
+
 	// 4. Run game auto-install: runuser -l <user> -c "cd '<dir>' && ./'<gameCmd>' auto-install"
 	logLine(Msg(lang, "[INSTALL] Installing server via LinuxGSM (SteamCMD)...", "[INSTALL] Installiere Server via LinuxGSM (SteamCMD)..."))
 	installCmd := fmt.Sprintf("cd %s && ./%s auto-install", ShellQuote(homeDir), ShellQuote(gameCmd))
 	installName, installArgs := outsideServiceSandbox("runuser", "-l", username, "-c", installCmd)
-	if err := runCommandWithLogs(installName, installArgs...); err != nil {
+	// LinuxGSM exits with 0 when SteamCMD gave up, a wrong Steam password for example.
+	downloadFailed := false
+	logInstall := logf
+	logf = func(line string) {
+		downloadFailed = downloadFailed || lgsmDownloadFailed(line)
+		logInstall(line)
+	}
+	err = runCommandWithLogs(installName, installArgs...)
+	logf = logInstall
+	if err != nil {
 		logLine(Msg(lang, "[ERROR] Server installation failed: ", "[FEHLER] Server-Installation fehlgeschlagen: ") + err.Error())
 		return err
+	}
+	if downloadFailed {
+		logLine(Msg(lang, "[ERROR] SteamCMD could not download the server files, see the log above.", "[FEHLER] SteamCMD konnte die Serverdateien nicht laden, siehe Log oben."))
+		if req.Steam.User != "" {
+			logLine(Msg(lang,
+				"[ERROR] Check the Steam login in secrets-common.cfg. An account with Steam Guard does not work here.",
+				"[FEHLER] Prüfe den Steam-Login in der secrets-common.cfg. Ein Konto mit Steam Guard funktioniert hier nicht."))
+		}
+		return &ExitError{Code: 1}
 	}
 	logLine(Msg(lang, "[INSTALL] Installation completed successfully!", "[INSTALL] Installation erfolgreich abgeschlossen!"))
 	return nil

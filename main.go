@@ -144,6 +144,12 @@ func main() {
 
 	// Initialize Auth Manager
 	authMgr, err := backend.NewAuthManager(*configDirFlag)
+	if err == nil && authMgr.IsFreshInstall() {
+		// A new installation has nothing to catch up on.
+		if err := authMgr.SetNotesSeen("admin", Version); err != nil {
+			fmt.Printf("[WARNING] could not store the release notes state: %v\n", err)
+		}
+	}
 	if err != nil {
 		fmt.Printf("[FATAL] Failed to initialize Auth Manager: %v\n", err)
 		os.Exit(1)
@@ -183,6 +189,11 @@ func main() {
 		}
 		updater.StartBackgroundCheck(updateCheckInterval)
 	}
+	// Release notes are read in Docker mode as well, where nothing is installed.
+	releases := updater
+	if releases == nil {
+		releases = &backend.Updater{Repo: releaseRepo, CurrentVersion: Version}
+	}
 
 	instances := backend.NewInstanceManager(*configDirFlag, rt)
 	metrics := backend.NewSystemMetricsCollector()
@@ -218,6 +229,7 @@ func main() {
 		crawler:        gameCrawler,
 		limiter:        backend.NewLoginLimiter(),
 		updater:        updater,
+		releases:       releases,
 		configDir:      *configDirFlag,
 		uiFS:           subFS,
 		secureCookies:  *secureCookiesFlag,
@@ -260,6 +272,7 @@ type app struct {
 	crawler   *backend.GameCrawler
 	limiter   *backend.LoginLimiter
 	updater   *backend.Updater
+	releases  *backend.Updater // reads the release notes, also in Docker mode
 	configDir string
 	uiFS      fs.FS
 
@@ -594,6 +607,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/server-paths", a.requireAdmin(a.handleServerPaths))
 	mux.HandleFunc("/api/admin/timezone", a.requireAdmin(a.handleTimeZone))
 	mux.HandleFunc("/api/admin/update/check", methodOnly(http.MethodGet, a.requireAdmin(a.handleUpdateCheck)))
+	mux.HandleFunc("/api/admin/release-notes", a.requireAdmin(a.handleReleaseNotes))
 	mux.HandleFunc("/api/admin/update/trigger", methodOnly(http.MethodPost, a.requireAdmin(a.handleUpdateTrigger)))
 
 	mux.HandleFunc("/api/admin/nodes", a.requireAdmin(a.handleNodes))
@@ -2329,6 +2343,8 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		Password   string `json:"password"`
 		InstallDir string `json:"install_dir"`
 		Lang       string `json:"lang"`
+		SteamUser  string `json:"steam_user"`
+		SteamPass  string `json:"steam_pass"`
 		// Node to install on (multi-node); empty installs on this machine.
 		Node string `json:"node"`
 	}
@@ -2347,6 +2363,11 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		writeError(w, http.StatusBadRequest, "Invalid password")
 		return
 	}
+	steam := backend.SteamLogin{User: strings.TrimSpace(payload.SteamUser), Pass: payload.SteamPass}
+	if !steam.Valid() {
+		writeError(w, http.StatusBadRequest, "Invalid Steam login")
+		return
+	}
 	installDir := strings.TrimSpace(payload.InstallDir)
 	if len(installDir) > 1 {
 		installDir = strings.TrimRight(installDir, "/")
@@ -2355,6 +2376,7 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		a.installOnNode(w, r, user, payload.Node, map[string]string{
 			"game": payload.Game, "user": payload.User, "password": payload.Password,
 			"install_dir": installDir, "lang": payload.Lang,
+			"steam_user": steam.User, "steam_pass": steam.Pass,
 		})
 		return
 	}
@@ -2367,7 +2389,7 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		details += " in " + installDir
 	}
 	a.auth.LogAudit(user.Username, a.clientIP(r), "SERVER_INSTALL", details, "")
-	a.inst.InstallGame(w, r, payload.Game, payload.User, payload.Password, installDir, langOf(r, payload.Lang))
+	a.inst.InstallGame(w, r, payload.Game, payload.User, payload.Password, installDir, langOf(r, payload.Lang), steam)
 }
 
 func (a *app) handleGamesList(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
@@ -3127,6 +3149,37 @@ func (a *app) handleServerPaths(w http.ResponseWriter, r *http.Request, admin ba
 		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "paths": paths})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// GET returns the text of the GitHub releases and those the administrator has not seen yet, POST
+// records that the current ones were seen.
+func (a *app) handleReleaseNotes(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	switch r.Method {
+	case http.MethodGet:
+		var all []backend.ReleaseNotes
+		var err error
+		if a.releases != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			all, err = a.releases.ReleaseNotes(ctx)
+		}
+		if err != nil {
+			fmt.Printf("[WARNING] could not read the release notes: %v\n", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"current": Version,
+			"all":     all,
+			"unseen":  backend.UnseenReleaseNotes(all, admin.NotesSeen, Version),
+		})
+	case http.MethodPost:
+		if err := a.auth.SetNotesSeen(admin.Username, Version); err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to save")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "success"})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }
 

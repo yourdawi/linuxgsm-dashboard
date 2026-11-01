@@ -337,8 +337,8 @@ func a2sExchange(conn net.Conn, req []byte) ([]byte, error) {
 		return nil, err
 	}
 	buf := make([]byte, 1500)
-	var parts map[int][]byte
-	total := 0
+	var split [][]byte // the layout shows in the first part, which need not arrive first
+	layout := 0
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
@@ -351,37 +351,103 @@ func a2sExchange(conn net.Conn, req []byte) ([]byte, error) {
 		if header == -1 {
 			return append([]byte(nil), buf[4:n]...), nil
 		}
-		if header != -2 {
+		if header != -2 || n < 9 || len(split) >= a2sMaxSplitParts {
 			return nil, errQueryFormat
 		}
-		// Split packet (Source format): id(4) total(1) number(1) size(2)
-		if n < 12 {
-			return nil, errQueryFormat
-		}
-		id := binary.LittleEndian.Uint32(buf[4:8])
-		if id&0x80000000 != 0 {
+		if binary.LittleEndian.Uint32(buf[4:8])&0x80000000 != 0 {
 			return nil, errors.New("compressed responses are not supported")
 		}
-		total = int(buf[8])
-		number := int(buf[9])
-		if total == 0 || total > 32 || number >= total {
-			return nil, errQueryFormat
+		split = append(split, append([]byte(nil), buf[:n]...))
+		if layout == 0 {
+			layout = detectA2SSplitLayout(buf[:n])
 		}
-		if parts == nil {
-			parts = make(map[int][]byte)
+		if layout == 0 {
+			continue
 		}
-		parts[number] = append([]byte(nil), buf[12:n]...)
-		if len(parts) == total {
-			var joined []byte
-			for i := 0; i < total; i++ {
-				joined = append(joined, parts[i]...)
-			}
-			if len(joined) < 4 || int32(binary.LittleEndian.Uint32(joined[:4])) != -1 {
-				return nil, errQueryFormat
-			}
-			return joined[4:], nil
+		resp, err := joinA2SSplit(split, layout)
+		if err != nil {
+			return nil, err
+		}
+		if resp != nil {
+			return resp, nil
 		}
 	}
+}
+
+const a2sMaxSplitParts = 32
+
+// Headers of split responses, after the 0xFFFFFFFE marker and the 4 byte ID.
+const (
+	a2sSplitSource    = iota + 1 // total(1) number(1) size(2)
+	a2sSplitSourceOld            // total(1) number(1): old Source games send no size
+	a2sSplitGoldSrc              // number and total in the high and low half of one byte
+)
+
+// detectA2SSplitLayout recognises the layout from the first part of a response, whose payload
+// starts with 0xFFFFFFFF. It returns 0 for any other part.
+func detectA2SSplitLayout(p []byte) int {
+	starts := func(at int) bool {
+		return len(p) >= at+4 && p[at] == 0xFF && p[at+1] == 0xFF && p[at+2] == 0xFF && p[at+3] == 0xFF
+	}
+	switch {
+	case starts(9) && p[8]>>4 == 0:
+		return a2sSplitGoldSrc
+	case len(p) > 9 && p[9] != 0:
+		return 0
+	case starts(10):
+		return a2sSplitSourceOld
+	case starts(12):
+		return a2sSplitSource
+	}
+	return 0
+}
+
+// parseA2SSplit returns the position of a part and its payload.
+func parseA2SSplit(p []byte, layout int) (total, number int, payload []byte, err error) {
+	headerLen := 12
+	switch layout {
+	case a2sSplitGoldSrc:
+		headerLen = 9
+	case a2sSplitSourceOld:
+		headerLen = 10
+	}
+	if len(p) < headerLen {
+		return 0, 0, nil, errQueryFormat
+	}
+	if layout == a2sSplitGoldSrc {
+		total, number = int(p[8]&0x0F), int(p[8]>>4)
+	} else {
+		total, number = int(p[8]), int(p[9])
+	}
+	if total == 0 || total > a2sMaxSplitParts || number >= total {
+		return 0, 0, nil, errQueryFormat
+	}
+	return total, number, p[headerLen:], nil
+}
+
+// joinA2SSplit returns the payload once all parts have arrived, and nil before that.
+func joinA2SSplit(split [][]byte, layout int) ([]byte, error) {
+	parts := make(map[int][]byte, len(split))
+	total := 0
+	for _, p := range split {
+		t, number, payload, err := parseA2SSplit(p, layout)
+		if err != nil {
+			return nil, err
+		}
+		total = t
+		parts[number] = payload
+	}
+	if len(parts) != total {
+		return nil, nil
+	}
+	var joined []byte
+	for i := 0; i < total; i++ {
+		joined = append(joined, parts[i]...)
+	}
+	if len(joined) < 4 || int32(binary.LittleEndian.Uint32(joined[:4])) != -1 {
+		return nil, errQueryFormat
+	}
+	return joined[4:], nil
 }
 
 // a2sRequest performs a request that may be answered with a challenge (0x41).

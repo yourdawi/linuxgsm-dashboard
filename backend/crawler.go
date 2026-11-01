@@ -18,6 +18,8 @@ type GameCrawlItem struct {
 	Name string `json:"name"`
 	Cmd  string `json:"cmd"`
 	Icon string `json:"icon"`
+	// SteamLogin marks games LinuxGSM can only install with a Steam account.
+	SteamLogin bool `json:"steam_login,omitempty"`
 }
 
 type GameCrawler struct {
@@ -84,10 +86,16 @@ var popularFallbackGames = []GameCrawlItem{
 func (gc *GameCrawler) GetGames() []GameCrawlItem {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
-	if len(gc.games) == 0 {
-		return popularFallbackGames
+	src := gc.games
+	if len(src) == 0 {
+		src = popularFallbackGames
 	}
-	return gc.games
+	games := make([]GameCrawlItem, len(src))
+	for i, g := range src {
+		g.SteamLogin = NeedsSteamLogin(g.Cmd)
+		games[i] = g
+	}
+	return games
 }
 
 func (gc *GameCrawler) StartSync() {

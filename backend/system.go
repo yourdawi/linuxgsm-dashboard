@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -276,54 +275,6 @@ func getCPUModelName() string {
 		}
 	}
 	return "Unknown Processor"
-}
-
-// GetProcessStatsForUser queries running processes for the specified user and returns CPU sum, RAM sum in GB, and PIDs
-func GetProcessStatsForUser(username string) (cpu float64, ram float64, pids []int) {
-	if runtime.GOOS == "windows" {
-		return 0, 0, nil
-	}
-
-	// run: ps -u <username> -o pid,%cpu,rss --no-headers
-	cmd := exec.Command("ps", "-u", username, "-o", "pid,%cpu,rss", "--no-headers")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	err := cmd.Run()
-	if err != nil {
-		// No processes running or user doesn't exist
-		return 0, 0, nil
-	}
-
-	return parsePsStats(&out)
-}
-
-// parsePsStats sums up the output of "ps -o pid,%cpu,rss --no-headers": CPU in percent, RAM in
-// GB and the PIDs.
-func parsePsStats(r io.Reader) (cpu float64, ram float64, pids []int) {
-	scanner := bufio.NewScanner(r)
-	var totalCPU float64
-	var totalRAMKB float64
-	var pidList []int
-
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 3 {
-			continue
-		}
-
-		pidVal, err1 := strconv.Atoi(fields[0])
-		cpuVal, err2 := strconv.ParseFloat(fields[1], 64)
-		ramVal, err3 := strconv.ParseFloat(fields[2], 64)
-
-		if err1 == nil && err2 == nil && err3 == nil {
-			pidList = append(pidList, pidVal)
-			totalCPU += cpuVal
-			totalRAMKB += ramVal
-		}
-	}
-
-	totalRAMGB := totalRAMKB / 1024 / 1024 // Convert KB to GB
-	return totalCPU, totalRAMGB, pidList
 }
 
 type FirewallStatus struct {
