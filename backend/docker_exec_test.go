@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -330,7 +331,7 @@ func TestDockerRuntimeStartsStoppedContainer(t *testing.T) {
 
 func TestDockerDiscoverChecksTmux(t *testing.T) {
 	e := newExecEngine(t, func(c execCall) (string, string, int) {
-		if c.Cmd[0] == "tmux" && c.Container == "vh-up" {
+		if slices.Contains(c.Cmd, "tmux") && c.Container == "vh-up" {
 			return "vhserver\n", "", 0
 		}
 		return "", "no server running", 1

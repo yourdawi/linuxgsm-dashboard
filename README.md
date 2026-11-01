@@ -549,6 +549,7 @@ When upgrading from version 1.0.7 or older:
 - The live query uses the local address or the `Server IP` reported by LinuxGSM (in Docker mode also the Docker host); servers that block queries from the host itself show no player data.
 - The file manager edits files as plain text, without syntax highlighting, and opens files up to 5 MB in the editor.
 - Before a game server is installed, the dashboard installs the packages LinuxGSM lists for that game itself (from LinuxGSM's dependency list on GitHub, Debian/Ubuntu and RHEL based systems); the game server user never gets `sudo`. Packages LinuxGSM adds from other repositories (Mono, .NET) are not covered; LinuxGSM names them if they are missing. The service runs with `ProtectSystem=true` (a read-only `/usr`), so package installs and LinuxGSM's `auto-install` run as transient systemd units (`systemd-run`) outside of that sandbox.
+- While the tmux of a server does not answer, the server keeps its last status and values, and it cannot be deleted.
 - CPU and RAM cover the processes in the server's tmux session (in Docker mode: the processes of the `linuxgsm` user in the container). 100 percent is one full core. CPU shows 0 until the second measurement. Disk usage is shared when instances share a directory (marked in the tooltip).
 
 ## Development

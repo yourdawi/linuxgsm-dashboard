@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -116,8 +117,14 @@ func (d *DockerRuntime) Discover(customPaths []string) ([]*GameServerInstance, e
 	for _, inst := range found {
 		// A running container does not mean a running game server: LinuxGSM can be stopped
 		// inside it. The tmux session tells.
-		if inst.Status == "running" && !isTmuxSessionActive(d, *inst) {
+		if inst.Status != "running" {
+			continue
+		}
+		switch tmuxSessionState(d, *inst) {
+		case tmuxAbsent:
 			inst.Status = "stopped"
+		case tmuxUnknown:
+			inst.statusUnknown = true
 		}
 	}
 	return found, nil
@@ -176,7 +183,7 @@ func (d *DockerRuntime) QueryHosts() []string {
 }
 
 func (d *DockerRuntime) ProcessStats(srv GameServerInstance) (float64, float64, []int) {
-	return procStats.measure(srv.ID, func() []procSample {
+	return procStats.measure(srv.ID, func() ([]procSample, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var out bytes.Buffer
@@ -185,9 +192,9 @@ func (d *DockerRuntime) ProcessStats(srv GameServerInstance) (float64, float64, 
 			User: "root",
 		}, ExecIO{Stdout: &out})
 		if err != nil {
-			return nil
+			return nil, ctx.Err() == nil
 		}
-		return parseProcStats(out.String())
+		return parseProcStats(out.String()), true
 	})
 }
 
@@ -235,6 +242,15 @@ func (d *DockerRuntime) followServerState(srv GameServerInstance, command string
 	}
 }
 
+// execTimeoutPrefix ends a command inside the container at the deadline of its context. A timeout
+// only closes the connection of an exec, the process stays, and hanging tmux clients would pile up
+// in the container. The extra second lets the context expire first, so the caller sees a timeout
+// and not an exit code.
+func execTimeoutPrefix(remaining time.Duration) []string {
+	seconds := int(remaining.Seconds()) + 2
+	return []string{"timeout", "-s", "KILL", strconv.Itoa(seconds)}
+}
+
 // RunAsUser runs argv as the linuxgsm user inside the container. Paths below the server
 // directory are translated to /data, so callers can pass the paths they see.
 func (d *DockerRuntime) RunAsUser(ctx context.Context, srv GameServerInstance, stdio ExecIO, login bool, args ...string) error {
@@ -251,6 +267,8 @@ func (d *DockerRuntime) RunAsUser(ctx context.Context, srv GameServerInstance, s
 			quoted[i] = ShellQuote(a)
 		}
 		cmd = []string{"bash", "-lc", strings.Join(quoted, " ")}
+	} else if deadline, ok := ctx.Deadline(); ok {
+		cmd = append(execTimeoutPrefix(time.Until(deadline)), cmd...)
 	}
 	_, err := d.client.Exec(ctx, srv.ID, DockerExecConfig{Cmd: cmd, User: dockerServerUser, WorkingDir: containerDataDir}, stdio)
 	return err

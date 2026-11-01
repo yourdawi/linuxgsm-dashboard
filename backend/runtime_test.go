@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -227,7 +228,7 @@ func TestDeleteServerPassesSharedUser(t *testing.T) {
 	if len(rt.deleted) != 2 || !rt.deleted[0] || rt.deleted[1] {
 		t.Fatalf("sharedUser flags = %v, want [true false]", rt.deleted)
 	}
-	if rt.calls[0] != "lgsm vhserver stop" {
+	if !slices.Contains(rt.calls, "lgsm vhserver stop") {
 		t.Fatalf("server must be stopped before deletion: %q", rt.calls)
 	}
 }

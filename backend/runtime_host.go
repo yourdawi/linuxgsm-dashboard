@@ -143,12 +143,12 @@ func killTreeOnCancel(cmd *exec.Cmd) *exec.Cmd {
 // ProcessStats measures the processes in the server's tmux session, so several servers under one
 // Linux user do not count each other.
 func (h HostRuntime) ProcessStats(srv GameServerInstance) (cpu float64, ram float64, pids []int) {
-	return procStats.measure(srv.ID, func() []procSample {
-		panes := tmuxPanePIDs(h, srv)
+	return procStats.measure(srv.ID, func() ([]procSample, bool) {
+		panes, known := tmuxPanePIDs(h, srv)
 		if len(panes) == 0 {
-			return nil
+			return nil, known
 		}
-		return processTree(readHostProcesses(), panes)
+		return processTree(readHostProcesses(), panes), true
 	})
 }
 
@@ -291,8 +291,11 @@ func setTmuxStatuses(instances []*GameServerInstance) {
 		go func(inst *GameServerInstance) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if isTmuxSessionActive(HostRuntime{}, *inst) {
+			switch tmuxSessionState(HostRuntime{}, *inst) {
+			case tmuxActive:
 				inst.Status = "running"
+			case tmuxUnknown:
+				inst.statusUnknown = true
 			}
 		}(inst)
 	}

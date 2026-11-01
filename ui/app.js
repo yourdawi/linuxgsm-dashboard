@@ -3687,6 +3687,7 @@ const i18n = {
         "status-warning": "Done with warnings",
         "config-game-badge": "Game",
         "config-game-badge-title": "The config file LinuxGSM starts the game with (servercfgfullpath)",
+        "delete-tmux-unresponsive": "tmux of this server does not answer, so the server may still be running. It was not deleted. Try again when tmux answers, or end the tmux processes of this user on the server.",
         "delete-force-confirm": "The server is still running after the stop command (for example players are online and LinuxGSM only stops empty servers). End its session and delete it anyway?",
         "delete-installing": "The server is still being installed. Delete it when the installation has finished.",
         "btn-change-password": "Set ServerAdmin password",
@@ -4362,6 +4363,7 @@ const i18n = {
         "status-warning": "Fertig mit Warnungen",
         "config-game-badge": "Spiel",
         "config-game-badge-title": "Die Konfigurationsdatei, mit der LinuxGSM das Spiel startet (servercfgfullpath)",
+        "delete-tmux-unresponsive": "tmux dieses Servers antwortet nicht, der Server läuft also womöglich noch. Er wurde nicht gelöscht. Versuche es erneut, sobald tmux antwortet, oder beende die tmux-Prozesse dieses Benutzers auf dem Server.",
         "delete-force-confirm": "Der Server läuft nach dem Stopp-Befehl noch (zum Beispiel sind Spieler online und LinuxGSM stoppt nur leere Server). Sitzung beenden und trotzdem löschen?",
         "delete-installing": "Der Server wird noch installiert. Lösche ihn, wenn die Installation abgeschlossen ist.",
         "btn-change-password": "ServerAdmin-Passwort setzen",
@@ -5274,7 +5276,7 @@ async function confirmDeleteServer() {
             if (data.code === 'still_running' && confirm(t('delete-force-confirm'))) {
                 res = await apiFetch(url + '?force=1', { method: 'POST' });
             } else {
-                alert(data.code === 'installing' ? t('delete-installing') : (data.error || t('status-error')));
+                alert(data.code === 'installing' ? t('delete-installing') : data.code === 'tmux_unresponsive' ? t('delete-tmux-unresponsive') : (data.error || t('status-error')));
                 el.btnDeleteConfirmSubmit.disabled = false;
                 return;
             }

@@ -123,27 +123,31 @@ func processTree(all []procSample, roots []int) []procSample {
 	return tree
 }
 
-// tmuxPanePIDs returns the process IDs started in the LinuxGSM tmux session of a server.
-func tmuxPanePIDs(rt Runtime, srv GameServerInstance) []int {
+// tmuxPanePIDs returns the process IDs started in the LinuxGSM tmux session of a server. known is
+// false when tmux did not answer in time.
+func tmuxPanePIDs(rt Runtime, srv GameServerInstance) (pids []int, known bool) {
+	known = true
 	for _, socket := range linuxGSMTmuxSocketNames(srv) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		var out bytes.Buffer
 		err := rt.RunAsUser(ctx, srv, ExecIO{Stdout: &out}, false, "tmux", "-L", socket, "list-panes", "-s", "-t", "="+srv.Script, "-F", "#{pane_pid}")
+		timedOut := ctx.Err() != nil
 		cancel()
 		if err != nil {
+			known = known && !timedOut
 			continue
 		}
-		var pids []int
+		pids = nil
 		for _, f := range strings.Fields(out.String()) {
 			if pid, err := strconv.Atoi(f); err == nil && pid > 0 {
 				pids = append(pids, pid)
 			}
 		}
 		if len(pids) > 0 {
-			return pids
+			return pids, true
 		}
 	}
-	return nil
+	return nil, known
 }
 
 // procStatsCache turns process samples into CPU usage: the CPU time used since the previous
@@ -169,8 +173,9 @@ var (
 
 // measure returns the usage of a server, reusing a recent measurement. collect runs in the
 // background and can take seconds when a tmux hangs: after procStatsMaxWait the last values are
-// returned, and the running measurement is used by a later call.
-func (c *procStatsCache) measure(serverID string, collect func() []procSample) (float64, float64, []int) {
+// returned, and the running measurement is used by a later call. collect returns false when it
+// could not find out: the last values then stay.
+func (c *procStatsCache) measure(serverID string, collect func() ([]procSample, bool)) (float64, float64, []int) {
 	if cpu, ram, pids, ok := c.recent(serverID, time.Now()); ok {
 		return cpu, ram, pids
 	}
@@ -184,9 +189,11 @@ func (c *procStatsCache) measure(serverID string, collect func() []procSample) (
 		c.inflight[serverID] = done
 		go func() {
 			procStatsSlots <- struct{}{}
-			samples := collect()
+			samples, known := collect()
 			<-procStatsSlots
-			c.update(serverID, samples, time.Now())
+			if known {
+				c.update(serverID, samples, time.Now())
+			}
 			c.mu.Lock()
 			delete(c.inflight, serverID)
 			c.mu.Unlock()

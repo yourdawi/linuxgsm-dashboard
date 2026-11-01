@@ -30,9 +30,12 @@ type GameServerInstance struct {
 	RAM         float64     `json:"ram"`    // Process RAM usage in GB
 	PIDs        []int       `json:"pids,omitempty"`
 	ParsedPorts []PortProbe `json:"parsed_ports,omitempty"`
-	Tag         string      `json:"tag,omitempty"`
-	QueryData   QueryInfo   `json:"query_data"`
-	Disk        *DiskUsage  `json:"disk,omitempty"`
+
+	statusUnknown bool // discovery: tmux did not answer, keep the last status
+
+	Tag       string     `json:"tag,omitempty"`
+	QueryData QueryInfo  `json:"query_data"`
+	Disk      *DiskUsage `json:"disk,omitempty"`
 	// Servers of another machine (multi-node): node ID and name, whether the node is offline (the
 	// entry is then the last known state) and the capabilities of that node's runtime.
 	Node         string        `json:"node,omitempty"`
@@ -357,9 +360,16 @@ func (im *InstanceManager) scanLocked() {
 		if t, ok := tagsMap[k]; ok {
 			v.Tag = t
 		}
-		if existing, ok := im.instances[k]; ok && existing.Dir == v.Dir && existing.Script == v.Script {
+		existing, known := im.instances[k]
+		if !known && v.statusUnknown {
+			v.Status = "stopped" // a new server without a clear answer is not shown as running
+		}
+		if known && existing.Dir == v.Dir && existing.Script == v.Script {
 			if existing.Status == "updating" {
 				// Don't overwrite active operations statuses ("installing" is set below)
+				v.Status = existing.Status
+			} else if v.statusUnknown && (existing.Status == "running" || existing.Status == "stopped") {
+				// tmux did not answer: nothing is known about the server, so nothing changes.
 				v.Status = existing.Status
 			}
 			// The name from details or the game server query replaces the game name.
@@ -689,9 +699,47 @@ func ValidateConsoleCommand(command string) error {
 	return nil
 }
 
+// tmuxState is what tmux says about the session of a server.
+type tmuxState int
+
+const (
+	tmuxAbsent  tmuxState = iota // no session
+	tmuxActive                   // the session exists
+	tmuxUnknown                  // no clear answer from tmux, the server may well be running
+)
+
+// errTmuxUnclear is any failure of a tmux call other than tmux saying that there is no server.
+var errTmuxUnclear = errors.New("no clear answer from tmux")
+
+// tmuxSaysNoServer recognises the messages of tmux when nothing listens on its socket.
+func tmuxSaysNoServer(stderr string) bool {
+	for _, msg := range []string{"no server running", "No such file or directory", "Connection refused"} {
+		if strings.Contains(stderr, msg) {
+			return true
+		}
+	}
+	return false
+}
+
+func tmuxSessionState(rt Runtime, srv GameServerInstance) tmuxState {
+	state := tmuxAbsent
+	for _, socket := range linuxGSMTmuxSocketNames(srv) {
+		sessions, err := listTmuxSessions(rt, srv, socket)
+		if errors.Is(err, errTmuxUnclear) {
+			state = tmuxUnknown
+			continue
+		}
+		if err == nil && tmuxSessionExists(sessions, srv.Script) {
+			return tmuxActive
+		}
+	}
+	return state
+}
+
+// isTmuxSessionActive reports whether the server may be running. A tmux that does not answer
+// counts as running: the callers protect a running server from being replaced or deleted.
 func isTmuxSessionActive(rt Runtime, srv GameServerInstance) bool {
-	_, _, ok := findLinuxGSMTmuxTarget(rt, srv)
-	return ok
+	return tmuxSessionState(rt, srv) != tmuxAbsent
 }
 
 func findLinuxGSMTmuxTarget(rt Runtime, srv GameServerInstance) (socketName string, sessionName string, ok bool) {
@@ -729,8 +777,11 @@ func linuxGSMTmuxSocketNames(srv GameServerInstance) []string {
 func listTmuxSessions(rt Runtime, srv GameServerInstance, socketName string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var out bytes.Buffer
-	err := rt.RunAsUser(ctx, srv, ExecIO{Stdout: &out}, false, "tmux", "-L", socketName, "list-sessions", "-F", "#{session_name}")
+	var out, errOut bytes.Buffer
+	err := rt.RunAsUser(ctx, srv, ExecIO{Stdout: &out, Stderr: &errOut}, false, "tmux", "-L", socketName, "list-sessions", "-F", "#{session_name}")
+	if err != nil && (ctx.Err() != nil || !tmuxSaysNoServer(errOut.String())) {
+		err = fmt.Errorf("%w: %v", errTmuxUnclear, err)
+	}
 	return out.String(), err
 }
 
@@ -1006,12 +1057,24 @@ func (im *InstanceManager) DeleteServer(w http.ResponseWriter, r *http.Request, 
 		return false
 	}
 
+	// The stop below would wait for its timeout, and nothing could be said about the server after it.
+	if tmuxSessionState(im.rt, srv) == tmuxUnknown {
+		writeJSONError(w, http.StatusConflict, "tmux of this server does not answer, it may still be running", "tmux_unresponsive")
+		return false
+	}
+
 	// 1. Stop the server first. LinuxGSM can refuse (stoponlyifnoplayers) or fail; deleting the
 	// files under a running server would leave a process the dashboard can no longer see.
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	_ = im.runLGSM(stopCtx, srv, "stop")
 	cancel()
-	if isTmuxSessionActive(im.rt, srv) {
+	state := tmuxSessionState(im.rt, srv)
+	if state == tmuxUnknown {
+		// Forcing cannot help: killing the session needs the same tmux.
+		writeJSONError(w, http.StatusConflict, "tmux of this server does not answer, it may still be running", "tmux_unresponsive")
+		return false
+	}
+	if state == tmuxActive {
 		if r.URL.Query().Get("force") != "1" {
 			writeJSONError(w, http.StatusConflict, "The server is still running after the stop command", "still_running")
 			return false
