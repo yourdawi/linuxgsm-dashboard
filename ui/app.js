@@ -573,6 +573,7 @@ function initApp() {
     });
 
     // Port Checker modal listeners
+    document.getElementById('btn-release-notes').addEventListener('click', openAllReleaseNotes);
     el.modalPortcheckClose.addEventListener('click', () => el.modalPortcheck.classList.add('hidden'));
     el.modalPortcheckCloseX.addEventListener('click', () => el.modalPortcheck.classList.add('hidden'));
 
@@ -830,6 +831,7 @@ async function hideLogin() {
             if (data.csrf_token) state.csrfToken = data.csrf_token;
             applyUpdateStatus(data.update);
             startUpdateStatusPolling();
+            showUnseenReleaseNotes();
             state.lastSettingsData = data;
             renderSettingsMode(data);
             
@@ -3618,6 +3620,10 @@ const i18n = {
         "menu-console": "Live Console",
         "menu-settings": "Settings",
         "menu-update-badge": "Update",
+        "release-notes-title": "What's new",
+        "release-notes-open": "Show release notes",
+        "release-notes-unavailable": "The release notes could not be loaded from GitHub. Try again later.",
+        "release-notes-available": "Changes in this version:",
         "update-badge-title": "Version {version} is available",
         "login-2fa-hint": "Enter the code from your authenticator app. Without your device you can use a recovery code.",
         "login-2fa-label": "Verification code",
@@ -4294,6 +4300,10 @@ const i18n = {
         "menu-console": "Live-Konsole",
         "menu-settings": "Einstellungen",
         "menu-update-badge": "Update",
+        "release-notes-title": "Neu in dieser Version",
+        "release-notes-open": "Versionshinweise anzeigen",
+        "release-notes-unavailable": "Die Versionshinweise konnten nicht von GitHub geladen werden. Versuche es später erneut.",
+        "release-notes-available": "Änderungen in dieser Version:",
         "update-badge-title": "Version {version} ist verfügbar",
         "login-2fa-hint": "Gib den Code aus deiner Authenticator-App ein. Ohne Gerät kannst du einen Wiederherstellungscode verwenden.",
         "login-2fa-label": "Bestätigungscode",
@@ -5305,6 +5315,87 @@ let latestTagName = '';
 
 let updateStatusInterval = null;
 
+// Release notes are a small part of Markdown: headings, lists, **bold**, *italic*, `code` and https links.
+// Everything is escaped first, the text comes from GitHub.
+function renderReleaseNotes(text) {
+    const inline = s => escapeHtml(s)
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[\s(])\*([^\s*][^*]*?)\*/g, '$1<em>$2</em>')
+        .replace(/`(.+?)`/g, '<code>$1</code>')
+        .replace(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+        .replace(/(^|[\s(])(https:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+    const parts = [];
+    let list = null;
+    let paragraph = null;
+    const close = () => {
+        if (list) parts.push(`<ul style="margin: 0.25rem 0 0.75rem 1.25rem; padding: 0;">${list.map(i => `<li style="margin-bottom: 0.3rem;">${inline(i)}</li>`).join('')}</ul>`);
+        if (paragraph) parts.push(`<p style="margin: 0 0 0.75rem;">${inline(paragraph)}</p>`);
+        list = null;
+        paragraph = null;
+    };
+    String(text || '').split(/\r?\n/).forEach(raw => {
+        const line = raw.trim();
+        if (!line) {
+            close();
+        } else if (/^#{1,6}\s/.test(line)) {
+            close();
+            parts.push(`<h4 style="margin: 0.75rem 0 0.35rem;">${inline(line.replace(/^#+\s*/, ''))}</h4>`);
+        } else if (/^[-*]\s/.test(line)) {
+            if (paragraph) close();
+            if (!list) list = [];
+            list.push(line.slice(2));
+        } else if (list && /^\s/.test(raw)) {
+            list[list.length - 1] += ` ${line}`; // continuation of a list item
+        } else {
+            if (list) close();
+            paragraph = paragraph ? `${paragraph} ${line}` : line;
+        }
+    });
+    close();
+    return parts.join('');
+}
+
+function showReleaseNotes(entries, onClose) {
+    const modal = document.getElementById('modal-release-notes');
+    document.getElementById('modal-release-notes-body').innerHTML = entries.length > 0
+        ? entries.map(n => `<h3 style="margin: 0 0 0.5rem;">${escapeHtml(n.version)}</h3>${renderReleaseNotes(n.body)}`).join('')
+        : `<p class="text-muted">${escapeHtml(t('release-notes-unavailable'))}</p>`;
+    modal.classList.remove('hidden');
+    const close = () => {
+        modal.classList.add('hidden');
+        if (onClose) onClose();
+        onClose = null;
+    };
+    document.getElementById('modal-release-notes-close').onclick = close;
+    document.getElementById('modal-release-notes-close-x').onclick = close;
+}
+
+// After an update, administrators see once what changed. It only counts as seen when closed.
+async function showUnseenReleaseNotes() {
+    if (!state.currentUser || state.currentUser.role !== 'admin') return;
+    try {
+        const res = await apiFetch('/api/admin/release-notes');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.unseen || data.unseen.length === 0) return;
+        showReleaseNotes(data.unseen, () => {
+            apiFetch('/api/admin/release-notes', { method: 'POST' }).catch(e => console.error('Release notes:', e));
+        });
+    } catch (e) {
+        console.error('Release notes:', e);
+    }
+}
+
+async function openAllReleaseNotes() {
+    try {
+        const res = await apiFetch('/api/admin/release-notes');
+        const data = await res.json();
+        showReleaseNotes(data.all || []);
+    } catch (e) {
+        console.error('Release notes:', e);
+    }
+}
+
 function applyUpdateStatus(update) {
     const badge = document.getElementById('menu-update-badge');
     if (!badge) return;
@@ -5328,6 +5419,7 @@ function startUpdateStatusPolling() {
 
 async function checkDashboardUpdate(manual = false) {
     const statusText = document.getElementById('update-status-text');
+    const notesBox = document.getElementById('update-available-notes-box');
     const detailsRow = document.getElementById('update-details-row');
     const newVersionText = document.getElementById('update-new-version-text');
     const btnTrigger = document.getElementById('btn-trigger-update');
@@ -5363,12 +5455,15 @@ async function checkDashboardUpdate(manual = false) {
             detailsRow.classList.remove('hidden');
             btnTrigger.classList.remove('hidden');
             latestTagName = data.latest_version;
+            notesBox.classList.toggle('hidden', !data.release_notes);
+            document.getElementById('update-available-notes').innerHTML = renderReleaseNotes(data.release_notes);
             
             if (manual) {
                 messageArea.textContent = t('msg-a-new-version-is-available');
                 messageArea.className = 'info-message text-warning';
             }
         } else {
+            notesBox.classList.add('hidden');
             statusText.textContent = t('msg-up-to-date');
             statusText.className = 'info-value text-success';
             detailsRow.classList.add('hidden');

@@ -29,6 +29,8 @@ type User struct {
 	TOTPSecret    string   `json:"totp_secret,omitempty"`
 	TOTPLastStep  int64    `json:"totp_last_step,omitempty"`
 	RecoveryCodes []string `json:"recovery_codes,omitempty"`
+
+	NotesSeen string `json:"notes_seen,omitempty"` // version whose release notes the user has seen
 }
 
 // Sanitized returns a copy without password hash and 2FA secrets (for API responses).
@@ -65,14 +67,15 @@ const SessionCookieName = "session_id"
 const CSRFCookieName = "csrf_token"
 
 type AuthManager struct {
-	configPath string
-	config     Config
-	sessions   map[string]Session
-	challenges map[string]loginChallenge // pending second login steps (2FA)
-	setups     map[string]pendingSetup   // 2FA setups waiting for confirmation, by username
-	mu         sync.RWMutex
-	auditMu    sync.Mutex
-	now        func() time.Time
+	freshInstall bool // this start created the configuration
+	configPath   string
+	config       Config
+	sessions     map[string]Session
+	challenges   map[string]loginChallenge // pending second login steps (2FA)
+	setups       map[string]pendingSetup   // 2FA setups waiting for confirmation, by username
+	mu           sync.RWMutex
+	auditMu      sync.Mutex
+	now          func() time.Time
 }
 
 func NewAuthManager(configDir string) (*AuthManager, error) {
@@ -118,6 +121,26 @@ func NewAuditOnlyAuthManager(configDir string) (*AuthManager, error) {
 		setups:     make(map[string]pendingSetup),
 		now:        time.Now,
 	}, nil
+}
+
+// IsFreshInstall reports whether this start created the configuration.
+func (am *AuthManager) IsFreshInstall() bool {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.freshInstall
+}
+
+// SetNotesSeen records the version whose release notes a user has seen.
+func (am *AuthManager) SetNotesSeen(username, version string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	for i := range am.config.Users {
+		if am.config.Users[i].Username == username {
+			am.config.Users[i].NotesSeen = version
+			return am.saveConfigLocked()
+		}
+	}
+	return fmt.Errorf("user not found")
 }
 
 func (am *AuthManager) GetPort() int {
@@ -178,6 +201,7 @@ func (am *AuthManager) loadOrCreateConfig() error {
 		if err := am.saveConfigLocked(); err != nil {
 			return err
 		}
+		am.freshInstall = true
 
 		fmt.Println("==================================================================")
 		fmt.Println("   FIRST LAUNCH: LinuxGSM WebAdmin Config Generated!")
