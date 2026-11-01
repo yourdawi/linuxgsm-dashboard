@@ -83,3 +83,12 @@ func TestGamesListMarksSteamLoginGames(t *testing.T) {
 		}
 	}
 }
+
+func TestLGSMDownloadFailed(t *testing.T) {
+	if !lgsmDownloadFailed("\x1b[31mFailure!\x1b[0m Installing terrariaserver: SteamCMD: Did not complete the download, too many retrys\n") {
+		t.Error("failure not recognised")
+	}
+	if lgsmDownloadFailed("Error! Installing terrariaserver: SteamCMD: Exit code: 5\n") {
+		t.Error("a retry is not the end")
+	}
+}

@@ -71,3 +71,8 @@ func seedSteamLogin(cfgDir string, login SteamLogin, uid, gid int) error {
 		return err
 	})
 }
+
+// lgsmDownloadFailed recognises the last message of core_dl.sh after SteamCMD failed ten times.
+func lgsmDownloadFailed(line string) bool {
+	return strings.Contains(stripAnsi(line), "Did not complete the download")
+}

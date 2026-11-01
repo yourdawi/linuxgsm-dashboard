@@ -1,9 +1,14 @@
 package backend
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"reflect"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -154,5 +159,37 @@ func TestListingsShareOneDiscovery(t *testing.T) {
 	im.ScanInstances()
 	if n := rt.calls.Load(); n != 2 {
 		t.Fatalf("an explicit scan must always discover, calls = %d", n)
+	}
+}
+
+// A timeout must end a command whose child keeps the output pipe, like a hanging tmux client below
+// runuser. Without it, one hanging tmux would stop every server listing.
+func TestHostCommandTimeoutWithChildHoldingThePipe(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs sh")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	var out bytes.Buffer
+	err := runHostCmd(exec.CommandContext(ctx, "sh", "-c", "sleep 30 & wait"), ExecIO{Stdout: &out})
+	if err == nil {
+		t.Error("timeout not reported")
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("returned after %v", d)
+	}
+
+	// A command that succeeded stays a success when it leaves a background process behind.
+	start = time.Now()
+	err = runHostCmd(exec.CommandContext(context.Background(), "sh", "-c", "echo done; sleep 30 &"), ExecIO{Stdout: &out})
+	if err != nil {
+		t.Errorf("background process turned success into %v", err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("returned after %v", d)
+	}
+	if !strings.Contains(out.String(), "done") {
+		t.Errorf("output lost: %q", out.String())
 	}
 }

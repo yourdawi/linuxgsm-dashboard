@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,14 +46,22 @@ func (HostRuntime) Init() {
 // -------------------------------------------------------------
 
 // runHostCmd connects cmd to stdio and runs it. Start failures are reported as *StartError.
+//
+// A timeout of the context only kills cmd itself, runuser for example. Without WaitDelay, Wait
+// would go on as long as a child such as a hanging tmux client holds the output pipe.
 func runHostCmd(cmd *exec.Cmd, stdio ExecIO) error {
 	cmd.Stdin = stdio.Stdin
 	cmd.Stdout = stdio.Stdout
 	cmd.Stderr = stdio.Stderr
+	cmd.WaitDelay = time.Second
 	if err := cmd.Start(); err != nil {
 		return &StartError{Err: err}
 	}
-	return cmd.Wait()
+	err := cmd.Wait()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return nil // cmd itself succeeded, a background process it left keeps the pipe
+	}
+	return err
 }
 
 // systemdRunPath can be overridden in tests.
@@ -612,9 +621,27 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 	logLine(Msg(lang, "[INSTALL] Installing server via LinuxGSM (SteamCMD)...", "[INSTALL] Installiere Server via LinuxGSM (SteamCMD)..."))
 	installCmd := fmt.Sprintf("cd %s && ./%s auto-install", ShellQuote(homeDir), ShellQuote(gameCmd))
 	installName, installArgs := outsideServiceSandbox("runuser", "-l", username, "-c", installCmd)
-	if err := runCommandWithLogs(installName, installArgs...); err != nil {
+	// LinuxGSM exits with 0 when SteamCMD gave up, a wrong Steam password for example.
+	downloadFailed := false
+	logInstall := logf
+	logf = func(line string) {
+		downloadFailed = downloadFailed || lgsmDownloadFailed(line)
+		logInstall(line)
+	}
+	err = runCommandWithLogs(installName, installArgs...)
+	logf = logInstall
+	if err != nil {
 		logLine(Msg(lang, "[ERROR] Server installation failed: ", "[FEHLER] Server-Installation fehlgeschlagen: ") + err.Error())
 		return err
+	}
+	if downloadFailed {
+		logLine(Msg(lang, "[ERROR] SteamCMD could not download the server files, see the log above.", "[FEHLER] SteamCMD konnte die Serverdateien nicht laden, siehe Log oben."))
+		if req.Steam.User != "" {
+			logLine(Msg(lang,
+				"[ERROR] Check the Steam login in secrets-common.cfg. An account with Steam Guard does not work here.",
+				"[FEHLER] Prüfe den Steam-Login in der secrets-common.cfg. Ein Konto mit Steam Guard funktioniert hier nicht."))
+		}
+		return &ExitError{Code: 1}
 	}
 	logLine(Msg(lang, "[INSTALL] Installation completed successfully!", "[INSTALL] Installation erfolgreich abgeschlossen!"))
 	return nil
