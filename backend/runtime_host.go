@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -117,7 +118,26 @@ func (HostRuntime) RunAsUser(ctx context.Context, srv GameServerInstance, stdio 
 		}
 		return runHostCmd(exec.CommandContext(ctx, "runuser", "-l", srv.User, "-c", strings.Join(quoted, " ")), stdio)
 	}
-	return runHostCmd(exec.CommandContext(ctx, "runuser", append([]string{"-u", srv.User, "--"}, args...)...), stdio)
+	return runHostCmd(killTreeOnCancel(exec.CommandContext(ctx, "runuser", append([]string{"-u", srv.User, "--"}, args...)...)), stdio)
+}
+
+// killTreeOnCancel makes a timeout end cmd with all its children. Killing only runuser would leave
+// the actual command behind, and a hanging tmux client stays until its server answers again. Only
+// for the direct path of RunAsUser: it runs tmux calls and commands without a timeout, while the
+// login path also runs commands that are meant to survive a closed browser.
+func killTreeOnCancel(cmd *exec.Cmd) *exec.Cmd {
+	cmd.Cancel = func() error {
+		for _, s := range processTree(readHostProcesses(), []int{cmd.Process.Pid}) {
+			if s.pid == cmd.Process.Pid {
+				continue
+			}
+			if p, err := os.FindProcess(s.pid); err == nil {
+				_ = p.Kill()
+			}
+		}
+		return cmd.Process.Kill()
+	}
+	return cmd
 }
 
 // ProcessStats measures the processes in the server's tmux session, so several servers under one
@@ -256,7 +276,27 @@ func (HostRuntime) Discover(customPaths []string) ([]*GameServerInstance, error)
 			}
 		}
 	}
+	setTmuxStatuses(found)
 	return found, nil
+}
+
+// setTmuxStatuses asks tmux about all servers at once, so several hanging tmux servers take no
+// longer than one.
+func setTmuxStatuses(instances []*GameServerInstance) {
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for _, inst := range instances {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(inst *GameServerInstance) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if isTmuxSessionActive(HostRuntime{}, *inst) {
+				inst.Status = "running"
+			}
+		}(inst)
+	}
+	wg.Wait()
 }
 
 // scanServerDir detects LinuxGSM scripts in dir. When requireOwner is set, scripts must be owned
@@ -320,9 +360,6 @@ func scanServerDir(dir string, owner passwdEntry, requireOwner bool) []*GameServ
 				shortnameOfScript(dir, scriptName)),
 			UID: owner.UID,
 			GID: owner.GID,
-		}
-		if isTmuxSessionActive(HostRuntime{}, *inst) {
-			inst.Status = "running"
 		}
 		found = append(found, inst)
 	}

@@ -96,8 +96,13 @@ type CronSchedule struct {
 	Available []string          `json:"available,omitempty"`
 }
 
-// scanMaxAge is how long a server listing reuses the last discovery.
-const scanMaxAge = 3 * time.Second
+const (
+	// scanMaxAge is how long a server listing reuses the last discovery.
+	scanMaxAge = 3 * time.Second
+	// scanMaxWait is how long a listing waits for a running discovery before it answers with the
+	// last result. Discovery takes milliseconds unless a tmux hangs.
+	scanMaxWait = time.Second
+)
 
 type InstanceManager struct {
 	mu        sync.Mutex
@@ -106,8 +111,11 @@ type InstanceManager struct {
 	rt        Runtime
 	static    bool // tests: disable discovery from /etc/passwd and the filesystem
 
-	scanMu   sync.Mutex // one discovery at a time; taken before mu, never while holding it
-	lastScan time.Time
+	scanMu sync.Mutex // one discovery at a time; taken before mu, never while holding it
+
+	scanStateMu sync.Mutex
+	lastScan    time.Time
+	scanDone    chan struct{} // closed when the discovery started by a listing has finished
 
 	pathsMu     sync.RWMutex
 	customPaths []string
@@ -196,19 +204,17 @@ func (im *InstanceManager) GetInstances() []GameServerInstance {
 }
 
 // measureProcesses fills in CPU, RAM and PIDs. It runs without im.mu: every server takes at least
-// one tmux call, or an exec into its container in Docker mode.
+// one tmux call, or an exec into its container in Docker mode. The time per server is bounded, see
+// procStatsCache.measure, and all servers are measured at once.
 func (im *InstanceManager) measureProcesses(list []GameServerInstance) {
-	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	for i := range list {
 		if list[i].Status == "stopped" {
 			continue
 		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(item *GameServerInstance) {
 			defer wg.Done()
-			defer func() { <-sem }()
 			item.CPU, item.RAM, item.PIDs = im.rt.ProcessStats(*item)
 		}(&list[i])
 	}
@@ -260,13 +266,36 @@ func (im *InstanceManager) ScanInstances() {
 }
 
 // scanIfStale discovers the servers unless that just happened. Discovery asks tmux about every
-// server, and every open dashboard polls the list. Requests arriving during a scan wait for it and
-// use its result.
+// server, and every open dashboard polls the list. Listings share one discovery, which runs in the
+// background and may outlast them: while a tmux hangs they answer with the last result.
 func (im *InstanceManager) scanIfStale() {
-	im.scanMu.Lock()
-	defer im.scanMu.Unlock()
-	if time.Since(im.lastScan) >= scanMaxAge {
-		im.scanLocked()
+	if im.static {
+		return
+	}
+	im.scanStateMu.Lock()
+	if time.Since(im.lastScan) < scanMaxAge {
+		im.scanStateMu.Unlock()
+		return
+	}
+	done := im.scanDone
+	if done == nil {
+		done = make(chan struct{})
+		im.scanDone = done
+		go func() {
+			im.ScanInstances()
+			im.scanStateMu.Lock()
+			im.scanDone = nil
+			im.scanStateMu.Unlock()
+			close(done)
+		}()
+	}
+	im.scanStateMu.Unlock()
+
+	timer := time.NewTimer(scanMaxWait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
 }
 
@@ -309,10 +338,13 @@ func (im *InstanceManager) scanLocked() {
 		fmt.Println("Error discovering servers:", err)
 		return
 	}
-	im.lastScan = time.Now()
-
 	im.mu.Lock()
 	defer im.mu.Unlock()
+	defer func() {
+		im.scanStateMu.Lock()
+		im.lastScan = time.Now()
+		im.scanStateMu.Unlock()
+	}()
 	im.assignStableIDs(found)
 	detected := make(map[string]*GameServerInstance, len(found))
 	for _, inst := range found {

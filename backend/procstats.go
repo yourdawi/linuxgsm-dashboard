@@ -15,6 +15,10 @@ const (
 	// procStatsMaxAge is how long a measurement is reused. CPU usage is the difference between two
 	// measurements, which says little over a shorter time.
 	procStatsMaxAge = 2 * time.Second
+	// procStatsMaxWait is how long a listing waits for a measurement before it shows the last one.
+	procStatsMaxWait = time.Second
+	// procStatsParallel limits the measurements running at the same time.
+	procStatsParallel = 8
 	// userHZ is the unit of utime and stime in /proc/<pid>/stat. Linux fixes it at 100.
 	userHZ = 100
 )
@@ -145,8 +149,9 @@ func tmuxPanePIDs(rt Runtime, srv GameServerInstance) []int {
 // procStatsCache turns process samples into CPU usage: the CPU time used since the previous
 // measurement of the same server, divided by the time passed. 100 percent is one full core.
 type procStatsCache struct {
-	mu      sync.Mutex
-	entries map[string]*procStatsEntry
+	mu       sync.Mutex
+	entries  map[string]*procStatsEntry
+	inflight map[string]chan struct{}
 }
 
 type procStatsEntry struct {
@@ -157,15 +162,51 @@ type procStatsEntry struct {
 	pids  []int
 }
 
-var procStats = &procStatsCache{}
+var (
+	procStats      = &procStatsCache{}
+	procStatsSlots = make(chan struct{}, procStatsParallel)
+)
 
-// measure returns the usage of a server, reusing a recent measurement. collect runs without the
-// lock, it can take seconds in Docker mode.
+// measure returns the usage of a server, reusing a recent measurement. collect runs in the
+// background and can take seconds when a tmux hangs: after procStatsMaxWait the last values are
+// returned, and the running measurement is used by a later call.
 func (c *procStatsCache) measure(serverID string, collect func() []procSample) (float64, float64, []int) {
 	if cpu, ram, pids, ok := c.recent(serverID, time.Now()); ok {
 		return cpu, ram, pids
 	}
-	return c.update(serverID, collect(), time.Now())
+	c.mu.Lock()
+	done := c.inflight[serverID]
+	if done == nil {
+		done = make(chan struct{})
+		if c.inflight == nil {
+			c.inflight = make(map[string]chan struct{})
+		}
+		c.inflight[serverID] = done
+		go func() {
+			procStatsSlots <- struct{}{}
+			samples := collect()
+			<-procStatsSlots
+			c.update(serverID, samples, time.Now())
+			c.mu.Lock()
+			delete(c.inflight, serverID)
+			c.mu.Unlock()
+			close(done)
+		}()
+	}
+	c.mu.Unlock()
+
+	timer := time.NewTimer(procStatsMaxWait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[serverID]; ok {
+		return e.cpu, e.ram, e.pids
+	}
+	return 0, 0, nil
 }
 
 func (c *procStatsCache) recent(serverID string, now time.Time) (float64, float64, []int, bool) {
