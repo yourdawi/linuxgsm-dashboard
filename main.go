@@ -2329,6 +2329,8 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		Password   string `json:"password"`
 		InstallDir string `json:"install_dir"`
 		Lang       string `json:"lang"`
+		SteamUser  string `json:"steam_user"`
+		SteamPass  string `json:"steam_pass"`
 		// Node to install on (multi-node); empty installs on this machine.
 		Node string `json:"node"`
 	}
@@ -2347,6 +2349,11 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		writeError(w, http.StatusBadRequest, "Invalid password")
 		return
 	}
+	steam := backend.SteamLogin{User: strings.TrimSpace(payload.SteamUser), Pass: payload.SteamPass}
+	if !steam.Valid() {
+		writeError(w, http.StatusBadRequest, "Invalid Steam login")
+		return
+	}
 	installDir := strings.TrimSpace(payload.InstallDir)
 	if len(installDir) > 1 {
 		installDir = strings.TrimRight(installDir, "/")
@@ -2355,6 +2362,7 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		a.installOnNode(w, r, user, payload.Node, map[string]string{
 			"game": payload.Game, "user": payload.User, "password": payload.Password,
 			"install_dir": installDir, "lang": payload.Lang,
+			"steam_user": steam.User, "steam_pass": steam.Pass,
 		})
 		return
 	}
@@ -2367,7 +2375,7 @@ func (a *app) handleInstall(w http.ResponseWriter, r *http.Request, user backend
 		details += " in " + installDir
 	}
 	a.auth.LogAudit(user.Username, a.clientIP(r), "SERVER_INSTALL", details, "")
-	a.inst.InstallGame(w, r, payload.Game, payload.User, payload.Password, installDir, langOf(r, payload.Lang))
+	a.inst.InstallGame(w, r, payload.Game, payload.User, payload.Password, installDir, langOf(r, payload.Lang), steam)
 }
 
 func (a *app) handleGamesList(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {

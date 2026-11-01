@@ -111,9 +111,16 @@ func (HostRuntime) RunAsUser(ctx context.Context, srv GameServerInstance, stdio 
 	return runHostCmd(exec.CommandContext(ctx, "runuser", append([]string{"-u", srv.User, "--"}, args...)...), stdio)
 }
 
-// ProcessStats sums up all processes of the server's Linux user.
-func (HostRuntime) ProcessStats(srv GameServerInstance) (cpu float64, ram float64, pids []int) {
-	return GetProcessStatsForUser(srv.User)
+// ProcessStats measures the processes in the server's tmux session, so several servers under one
+// Linux user do not count each other.
+func (h HostRuntime) ProcessStats(srv GameServerInstance) (cpu float64, ram float64, pids []int) {
+	return procStats.measure(srv.ID, func() []procSample {
+		panes := tmuxPanePIDs(h, srv)
+		if len(panes) == 0 {
+			return nil
+		}
+		return processTree(readHostProcesses(), panes)
+	})
 }
 
 // -------------------------------------------------------------
@@ -588,6 +595,18 @@ func (HostRuntime) Install(ctx context.Context, req InstallRequest, logf func(st
 	// 3.5 Install the packages LinuxGSM needs as root; the game server user gets no sudo.
 	logLine(Msg(lang, "[INSTALL] Checking dependencies...", "[INSTALL] Prüfe Abhängigkeiten..."))
 	installDependencies(ctx, gameCmd, usesSteamCMD(ctx, gameCmd), lang, logf)
+
+	if req.Steam.User != "" {
+		uid, gid, err := fileOwnerIDs(homeDir)
+		if err == nil {
+			err = seedSteamLogin(filepath.Join(homeDir, "lgsm", "config-lgsm", gameCmd), req.Steam, uid, gid)
+		}
+		if err != nil {
+			logLine(Msg(lang, "[ERROR] Failed to store the Steam login: ", "[FEHLER] Steam-Login konnte nicht gespeichert werden: ") + err.Error())
+			return err
+		}
+		logLine(Msg(lang, "[INSTALL] Steam login stored in secrets-common.cfg.", "[INSTALL] Steam-Login in secrets-common.cfg gespeichert."))
+	}
 
 	// 4. Run game auto-install: runuser -l <user> -c "cd '<dir>' && ./'<gameCmd>' auto-install"
 	logLine(Msg(lang, "[INSTALL] Installing server via LinuxGSM (SteamCMD)...", "[INSTALL] Installiere Server via LinuxGSM (SteamCMD)..."))

@@ -362,3 +362,73 @@ func TestServerName(t *testing.T) {
 	s, _ := im.getServer("cssserver")
 	t.Errorf("name after details without a name = %q", s.Name)
 }
+
+// A split player response in every header layout, also with the parts in the wrong order.
+func TestA2SSplitLayouts(t *testing.T) {
+	marker := []byte{0xFE, 0xFF, 0xFF, 0xFF, 7, 0, 0, 0}
+	body := append([]byte{0xFF, 0xFF, 0xFF, 0xFF}, []byte("Dthe player list")...)
+	first, second := body[:9], body[9:]
+	part := func(header []byte, payload []byte) []byte {
+		return append(append(append([]byte(nil), marker...), header...), payload...)
+	}
+	cases := map[string][][]byte{
+		"source":           {part([]byte{2, 0, 0xE0, 0x04}, first), part([]byte{2, 1, 0xE0, 0x04}, second)},
+		"source old":       {part([]byte{2, 0}, first), part([]byte{2, 1}, second)},
+		"goldsrc":          {part([]byte{0x02}, first), part([]byte{0x12}, second)},
+		"goldsrc reversed": {part([]byte{0x12}, second), part([]byte{0x02}, first)},
+		"source reversed":  {part([]byte{2, 1, 0xE0, 0x04}, second), part([]byte{2, 0, 0xE0, 0x04}, first)},
+	}
+	for name, packets := range cases {
+		t.Run(name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			go func() {
+				buf := make([]byte, 64)
+				if _, err := server.Read(buf); err != nil {
+					return
+				}
+				for _, p := range packets {
+					if _, err := server.Write(p); err != nil {
+						return
+					}
+				}
+			}()
+			_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+			got, err := a2sExchange(client, []byte("req"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != "Dthe player list" {
+				t.Fatalf("payload = %q", got)
+			}
+		})
+	}
+}
+
+func TestA2SSplitRefusesInvalidParts(t *testing.T) {
+	marker := []byte{0xFE, 0xFF, 0xFF, 0xFF, 7, 0, 0, 0}
+	for name, header := range map[string][]byte{
+		"part number beyond total": {2, 2, 0, 0},
+		"no parts":                 {0, 0, 0, 0},
+		"too many parts":           {33, 0, 0, 0},
+	} {
+		p := append(append(append([]byte(nil), marker...), header...), 0xFF, 0xFF, 0xFF, 0xFF, 'D')
+		if resp, err := joinA2SSplit([][]byte{p}, a2sSplitSource); err == nil {
+			t.Errorf("%s: accepted: %q", name, resp)
+		}
+	}
+	compressed := []byte{0xFE, 0xFF, 0xFF, 0xFF, 7, 0, 0, 0x80, 1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		buf := make([]byte, 64)
+		_, _ = server.Read(buf)
+		_, _ = server.Write(compressed)
+	}()
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := a2sExchange(client, []byte("req")); err == nil {
+		t.Error("compressed response accepted")
+	}
+}

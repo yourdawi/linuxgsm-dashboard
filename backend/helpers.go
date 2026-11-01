@@ -255,6 +255,95 @@ type PortProbe struct {
 	Protocol    string `json:"protocol"`
 	Open        bool   `json:"open"`
 	Description string `json:"description"`
+	Status      string `json:"status,omitempty"` // result of a port check, see the portStatus constants
+}
+
+// Results of a port check. It runs on the server itself, so it cannot prove that a port is
+// reachable from the internet.
+const (
+	portStatusOpen       = "open"       // answers on the public IP
+	portStatusLocal      = "local"      // answers on the machine, but not on the public IP
+	portStatusClosed     = "closed"     // no answer
+	portStatusUntestable = "untestable" // UDP port of a protocol the dashboard does not speak
+)
+
+// UDP has no connection to test: a port only shows up as open if the server answers a request in
+// its own protocol. A silent port can still be fine.
+const (
+	portTestTCP = "tcp"
+	portTestA2S = "a2s"
+	portTestMCB = "mcbedrock"
+)
+
+// portTestFor picks the test of a port from the LinuxGSM querytype of the game, "" if there is
+// none. Only the query port of a Valve protocol game answers; if the game has no query port of its
+// own, that is the game port.
+func portTestFor(p PortProbe, querytype string, hasQueryPort bool) string {
+	if strings.EqualFold(p.Protocol, "TCP") {
+		return portTestTCP
+	}
+	d := strings.ToLower(p.Description)
+	isQuery := strings.Contains(d, "query") && !strings.Contains(d, "rcon")
+	isGame := strings.Contains(d, "game")
+	switch querytype {
+	case "protocol-valve":
+		if isQuery || (isGame && !hasQueryPort) {
+			return portTestA2S
+		}
+	case "mbe":
+		if isGame {
+			return portTestMCB
+		}
+	}
+	return ""
+}
+
+func runPortTest(test, host string, port int) bool {
+	switch test {
+	case portTestTCP:
+		return checkTCP(host, port)
+	case portTestA2S:
+		return checkUDPQuery(host, port)
+	case portTestMCB:
+		_, err := QueryBedrock(net.JoinHostPort(host, strconv.Itoa(port)), 2*time.Second)
+		return err == nil
+	}
+	return false
+}
+
+// probePort tests a port on the public IP ("" if unknown) and then on the local addresses.
+func probePort(test, publicIP string, localHosts []string, port int) string {
+	if test == "" {
+		return portStatusUntestable
+	}
+	if publicIP != "" && runPortTest(test, publicIP, port) {
+		return portStatusOpen
+	}
+	for _, host := range localHosts {
+		if runPortTest(test, host, port) {
+			return portStatusLocal
+		}
+	}
+	return portStatusClosed
+}
+
+// uniquePorts drops repeated entries of the same port and protocol, keeping all descriptions:
+// LinuxGSM lists a Source game port as both game and query port. The result is a new slice.
+func uniquePorts(ports []PortProbe) []PortProbe {
+	var out []PortProbe
+next:
+	for _, p := range ports {
+		for i := range out {
+			if out[i].Port == p.Port && strings.EqualFold(out[i].Protocol, p.Protocol) {
+				if !strings.Contains(out[i].Description, p.Description) {
+					out[i].Description += ", " + p.Description
+				}
+				continue next
+			}
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Request, serverID string) {
@@ -264,58 +353,57 @@ func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// 1. Resolve Public IP
 	publicIP, err := getPublicIP()
 	if err != nil {
-		publicIP = "127.0.0.1"
+		publicIP = ""
 	}
 
-	var probes []PortProbe
-	var configProbes []PortProbe
-	if len(srv.ParsedPorts) > 0 {
-		configProbes = make([]PortProbe, len(srv.ParsedPorts))
-		copy(configProbes, srv.ParsedPorts)
-	} else {
-		// Try to parse ports directly from config files
-		configProbes = parseServerPortsFromConfig(srv.Dir, filepath.Join(srv.Dir, srv.configLgsmRel()), srv.Script, srv.Game)
+	configLgsm := filepath.Join(srv.Dir, srv.configLgsmRel())
+	ports := srv.ParsedPorts
+	if len(ports) == 0 {
+		ports = parseServerPortsFromConfig(srv.Dir, configLgsm, srv.Script, srv.Game)
+	}
+	querytype := lgsmCfgValuesAt(srv.Dir, configLgsm, srv.Script)["querytype"]
+	if len(ports) == 0 && srv.Port > 0 {
+		proto := "UDP"
+		if isMinecraftJavaGame(srv.Game) {
+			proto = "TCP"
+		}
+		ports = []PortProbe{{Port: srv.Port, Protocol: proto, Description: "Game Port"}}
 	}
 
-	// If no probes could be parsed, fallback to heuristics
-	if len(configProbes) == 0 {
-		p := srv.Port
-		if p > 0 {
-			if srv.Game == "minecraft" || srv.Game == "mc" {
-				configProbes = append(configProbes, PortProbe{Port: p, Protocol: "TCP", Description: "Game Port"})
-				rcon := p + 10
-				if p == 25565 {
-					rcon = 25575
-				}
-				configProbes = append(configProbes, PortProbe{Port: rcon, Protocol: "TCP", Description: "RCON Port"})
-			} else {
-				configProbes = append(configProbes, PortProbe{Port: p, Protocol: "UDP", Description: "Game Port"})
-				configProbes = append(configProbes, PortProbe{Port: p + 1, Protocol: "UDP", Description: "Steam Query Port"})
-				if p != 27015 && p+1 != 27015 {
-					configProbes = append(configProbes, PortProbe{Port: 27015, Protocol: "UDP", Description: "Default Query Port"})
-				}
+	probes := uniquePorts(ports)
+	hasQueryPort := false
+	for _, p := range probes {
+		d := strings.ToLower(p.Description)
+		hasQueryPort = hasQueryPort || (strings.Contains(d, "query") && !strings.Contains(d, "rcon"))
+	}
+
+	localHosts := []string{"127.0.0.1"}
+	if srv.BindIP != "" && srv.BindIP != "0.0.0.0" && net.ParseIP(srv.BindIP) != nil {
+		localHosts = appendUniqueString(localHosts, srv.BindIP)
+	}
+	if p, ok := im.rt.(queryHostProvider); ok {
+		for _, h := range p.QueryHosts() {
+			if net.ParseIP(h) != nil {
+				localHosts = appendUniqueString(localHosts, h)
 			}
 		}
 	}
 
-	// Run probes and copy to final slice
-	for _, cp := range configProbes {
-		open := false
-		if strings.ToUpper(cp.Protocol) == "TCP" {
-			open = checkTCP(publicIP, cp.Port)
-		} else {
-			open = checkUDPQuery(publicIP, cp.Port)
-		}
-		probes = append(probes, PortProbe{
-			Port:        cp.Port,
-			Protocol:    cp.Protocol,
-			Open:        open,
-			Description: cp.Description,
-		})
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for i := range probes {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(p *PortProbe) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			p.Status = probePort(portTestFor(*p, querytype, hasQueryPort), publicIP, localHosts, p.Port)
+			p.Open = p.Status == portStatusOpen
+		}(&probes[i])
 	}
+	wg.Wait()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -395,6 +483,10 @@ func checkUDPQuery(ip string, port int) bool {
 	return buf[0] == 0xFF && buf[1] == 0xFF && buf[2] == 0xFF && buf[3] == 0xFF
 }
 
+func isMinecraftJavaGame(game string) bool {
+	return game == "minecraft" || minecraftJavaGames[game]
+}
+
 func parseServerPortsFromConfig(homeDir, configLgsm string, scriptName string, game string) []PortProbe {
 	// Game-specific overrides for port configurations
 	if scriptName == "mtaserver" || game == "multitheftauto" {
@@ -443,7 +535,7 @@ func parseServerPortsFromConfig(homeDir, configLgsm string, scriptName string, g
 		}
 	}
 
-	if scriptName == "mcserver" || scriptName == "minecraft" || game == "minecraft" || game == "mc" {
+	if scriptName == "mcserver" || scriptName == "minecraft" || isMinecraftJavaGame(game) {
 		mcConfig := filepath.Join(homeDir, "serverfiles", "server.properties")
 		file, err := os.Open(mcConfig)
 		if err == nil {
@@ -518,7 +610,7 @@ func parseServerPortsFromConfig(homeDir, configLgsm string, scriptName string, g
 	// 1. Game Port
 	if p, ok := parsedPorts["port"]; ok {
 		proto := "UDP"
-		if game == "minecraft" || game == "mc" {
+		if isMinecraftJavaGame(game) {
 			proto = "TCP"
 		}
 		probes = append(probes, PortProbe{
@@ -562,32 +654,6 @@ func parseServerPortsFromConfig(homeDir, configLgsm string, scriptName string, g
 			Protocol:    "UDP",
 			Description: "SourceTV Port",
 		})
-	}
-
-	// Heuristics for missing Query Port for Steam/UDP games
-	hasQuery := false
-	for _, p := range probes {
-		if p.Description == "Query Port" {
-			hasQuery = true
-			break
-		}
-	}
-
-	if !hasQuery && game != "minecraft" && game != "mc" {
-		if p, ok := parsedPorts["port"]; ok {
-			probes = append(probes, PortProbe{
-				Port:        p + 1,
-				Protocol:    "UDP",
-				Description: "Steam Query Port (Auto-detected)",
-			})
-			if p != 27015 && p+1 != 27015 {
-				probes = append(probes, PortProbe{
-					Port:        27015,
-					Protocol:    "UDP",
-					Description: "Default Query Port (Auto-detected)",
-				})
-			}
-		}
 	}
 
 	return probes

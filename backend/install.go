@@ -16,8 +16,8 @@ func (im *InstanceManager) ValidateInstall(gameCmd, username, installDir string)
 
 // InstallGame installs a new game server through the runtime and streams the progress.
 // installDir is optional; when empty the runtime picks the default location.
-func (im *InstanceManager) InstallGame(w http.ResponseWriter, r *http.Request, gameCmd, username, password, installDir, lang string) {
-	req := InstallRequest{GameCmd: gameCmd, Username: username, Password: password, Dir: installDir, Lang: lang}
+func (im *InstanceManager) InstallGame(w http.ResponseWriter, r *http.Request, gameCmd, username, password, installDir, lang string, steam SteamLogin) {
+	req := InstallRequest{GameCmd: gameCmd, Username: username, Password: password, Dir: installDir, Lang: lang, Steam: steam}
 	if err := im.rt.ValidateInstall(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

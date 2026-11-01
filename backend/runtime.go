@@ -80,11 +80,12 @@ type ExecIO struct {
 
 // InstallRequest describes a new game server installation.
 type InstallRequest struct {
-	GameCmd  string // LinuxGSM script name of the game, e.g. vhserver
-	Username string // Linux user to create (host runtime)
-	Password string // optional password of that user
-	Dir      string // optional installation directory, empty for the default
-	Lang     string // language of the progress messages
+	GameCmd  string     // LinuxGSM script name of the game, e.g. vhserver
+	Username string     // Linux user to create (host runtime)
+	Password string     // optional password of that user
+	Dir      string     // optional installation directory, empty for the default
+	Lang     string     // language of the progress messages
+	Steam    SteamLogin // optional Steam account for the installation
 }
 
 // ExitError reports a command that ran but exited with a non-zero code. Runtimes that do not

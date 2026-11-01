@@ -784,7 +784,7 @@ async function apiFetch(url, options = {}) {
         if (response.status === 401) {
             // Unauthorized, show login screen
             showLogin();
-            throw new Error('Nicht autorisiert');
+            throw new Error(t('error-unauthorized'));
         }
         return response;
     } catch (err) {
@@ -938,7 +938,7 @@ async function handleLogin(e) {
             el.loginError.style.display = 'block';
         }
     } catch (err) {
-        el.loginError.textContent = 'Serververbindung fehlgeschlagen';
+        el.loginError.textContent = t('login-connection-failed');
         el.loginError.style.display = 'block';
     }
 }
@@ -2117,6 +2117,15 @@ function renderGamesList() {
     });
 }
 
+// Some games can only be installed with a Steam account; the fields are required for those.
+function showSteamLoginFields(show) {
+    const steamUser = document.getElementById('install-steam-user');
+    const steamPass = document.getElementById('install-steam-pass');
+    document.getElementById('install-steam-group').classList.toggle('hidden', !show);
+    steamUser.required = steamPass.required = show;
+    steamUser.value = steamPass.value = '';
+}
+
 function selectGameForInstall(game, cardElement) {
     el.gamesContainer.querySelectorAll('.game-card').forEach(c => c.classList.remove('selected'));
     cardElement.classList.add('selected');
@@ -2128,6 +2137,7 @@ function selectGameForInstall(game, cardElement) {
     // Auto-populate default username (e.g. valheim -> valheimserver)
     el.installUsername.value = `${game.id}server`.replace(/[^a-z0-9_]/g, '');
     el.installPassword.value = '';
+    showSteamLoginFields(!!game.steam_login);
     applyInstallerMode();
     populateInstallTargets();
 
@@ -2237,12 +2247,15 @@ function handleGameInstall(e) {
     const password = el.installPassword.value;
     const installDirInput = document.getElementById('install-dir');
     const installDir = installDirInput ? installDirInput.value.trim() : '';
+    const steamUser = document.getElementById('install-steam-user').value.trim();
+    const steamPass = document.getElementById('install-steam-pass').value;
+    showSteamLoginFields(!!game.steam_login);
 
     runStreamModal({
         title: t('modal-stream-title-install').replace('{game}', game.name),
         runningText: t('status-installing-action'),
         url: '/api/games/install',
-        body: { game: game.cmd, user: username, password, install_dir: installDir, lang: state.language, node: installTarget().nodeId },
+        body: { game: game.cmd, user: username, password, install_dir: installDir, lang: state.language, node: installTarget().nodeId, steam_user: steamUser, steam_pass: steamPass },
         errorText: t('modal-stream-err-install')
     });
 }
@@ -3191,15 +3204,14 @@ TimeoutStopSec=5min
 WantedBy=multi-user.target`;
 
     // 2. Generate Cronjob template
-    const isDe = state.language === 'de';
     const cronCode = `# LinuxGSM ${server.script}: scheduled maintenance
-# 1. ${isDe ? 'Server auf Abstürze überwachen (alle 5 Minuten)' : 'Monitor server for crashes (every 5 minutes)'}
+# 1. ${t('template-cron-monitor')}
 */5 * * * * ${serverDir}/${server.script} monitor > /dev/null 2>&1
 
-# 2. ${isDe ? 'Automatische Updateprüfung (alle 30 Minuten, startet bei Update neu)' : 'Automatic update check (every 30 minutes, restarts on update)'}
+# 2. ${t('template-cron-update')}
 */30 * * * * ${serverDir}/${server.script} update > /dev/null 2>&1
 
-# 3. ${isDe ? 'Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)' : 'Weekly update of LinuxGSM itself (every Sunday at 00:00 AM)'}
+# 3. ${t('template-cron-lgsm')}
 0 0 * * 0 ${serverDir}/${server.script} update-lgsm > /dev/null 2>&1`;
 
     if (el.templateSystemd) el.templateSystemd.textContent = systemdCode;
@@ -3815,6 +3827,9 @@ const i18n = {
         "inst-dir-label": "Installation directory (optional)",
         "inst-dir-placeholder": "e.g. /mnt/ssd/gameservers/valheim",
         "inst-dir-help": "Leave empty to install into /home/<user>. The directory must not exist yet; its parent (e.g. the mount point of a second SSD) must exist.",
+        "inst-steam-user-label": "Steam username",
+        "inst-steam-pass-label": "Steam password",
+        "inst-steam-help": "LinuxGSM can only install this game with a Steam account. The login is stored in secrets-common.cfg of the server. Use a separate account without Steam Guard: with Steam Guard, SteamCMD waits for a code here and the installation fails. Some games also require that the account owns them.",
         "inst-warning-text": "The installation downloads SteamCMD and all game files. This can take 5-30 minutes depending on your internet connection.",
         "card-port": "Port",
         "status-offline": "Offline",
@@ -3872,12 +3887,114 @@ const i18n = {
         "modal-stream-err-install": "\n[ERROR] Installation stream connection interrupted.",
         "btn-portcheck": "Test Ports",
         "modal-portcheck-title": "Verify Port Reachability",
-        "modal-portcheck-scanning": "Testing reachability from the outside...",
+        "msg-port-check-failed": "Port check failed.",
+        "msg-deletion-failed": "Deletion failed.",
+        "msg-checking-for-updates": "Checking for updates...",
+        "msg-update-available": "Update Available",
+        "msg-a-new-version-is-available": "A new version is available!",
+        "msg-up-to-date": "Up to date",
+        "msg-dashboard-is-up-to-date": "Dashboard is up to date.",
+        "msg-error-checking-for-updates": "Error checking for updates.",
+        "msg-no-update-tag-available": "No update tag available.",
+        "msg-are-you-sure-you-want-to-update-the-dashboar": "Are you sure you want to update the dashboard? The connection will be briefly disconnected.",
+        "msg-downloading-and-verifying-the-update-please": "Downloading and verifying the update... Please wait.",
+        "msg-update-successful-dashboard-is-restarting": "Update successful! Dashboard is restarting...",
+        "msg-update-failed": "Update failed: ",
+        "msg-loading-users": "Loading users...",
+        "msg-no-users-found": "No users found.",
+        "msg-all-servers": "All Servers",
+        "msg-none": "None",
+        "msg-full-access": "Full Access",
+        "msg-delete": "Delete",
+        "msg-you": "You",
+        "msg-edit": "Edit",
+        "msg-failed-to-load-users": "Failed to load users.",
+        "msg-no-servers-installed": "No servers installed.",
+        "msg-create-new-user": "Create New User",
+        "msg-password": "Password",
+        "msg-edit-user": "Edit User: ",
+        "msg-new-password": "New Password",
+        "msg-username-is-required": "Username is required.",
+        "msg-password-is-required": "Password is required.",
+        "msg-saving": "Saving...",
+        "msg-failed-to-save": "Failed to save: ",
+        "msg-failed-to-delete-user": "Failed to delete user: ",
+        "msg-a-valid-cron-expression-is-required": "A valid Cron expression is required!",
+        "msg-error": "Error: ",
+        "msg-upload-failed": "Upload failed: ",
+        "msg-error-deleting-backup": "Error deleting backup: ",
+        "msg-restoring-backup": "Restoring backup...",
+        "msg-restore-failed": "Restore failed.",
+        "msg-general": "General",
+        "msg-alerts": " alerts",
+        "msg-alert-settings-saved-successfully": "Alert settings saved successfully.",
+        "msg-are-you-sure-you-want-to-install-the-systemd": "Are you sure you want to install the Systemd service for this server? This registers the server in the system autostart.",
+        "msg-systemd-service-successfully-installed-and-e": "Systemd service successfully installed and enabled!",
+        "msg-are-you-sure-you-want-to-write-the-linuxgsm": "Are you sure you want to write the LinuxGSM maintenance cronjobs? This will replace existing maintenance cronjobs for this server.",
+        "msg-cronjobs-successfully-written-to-crontab": "Cronjobs successfully written to crontab!",
+        "msg-bulk-action-failed": "Bulk action failed: ",
+        "msg-bulk-action-result-n": "Bulk action result:\n",
+        "msg-command-sent-successfully": "Command sent successfully!",
+        "msg-file-uploaded-successfully": "File uploaded successfully!",
+        "msg-error-uploading-file": "Error uploading file.",
+        "msg-parent-directory": "parent directory",
+        "msg-loading-file-content": "Loading file content...",
+        "msg-error-reading-file-content": "Error reading file content.",
+        "msg-binary-file-it-cannot-be-edited-in-the-brows": "Binary file: it cannot be edited in the browser. Use the download instead.",
+        "msg-file-saved-successfully": "File saved successfully!",
+        "msg-error-saving-file": "Error saving file.",
+        "msg-loading-audit-logs": "Loading audit logs...",
+        "msg-failed-to-load-audit-logs": "Failed to load audit logs",
+        "msg-access-denied-only-administrators-can-clone": "Access denied: Only administrators can clone instances.",
+        "msg-creating-instance": "Creating instance...",
+        "error-unauthorized": "Not authorized",
+        "files-action-download": "Download",
+        "files-action-edit": "Edit",
+        "files-empty": "Empty directory",
+        "files-kind-dir": "DIR",
+        "files-kind-file": "FILE",
+        "files-load-error": "Error loading files",
+        "games-sync-processing": "Processing games ({count} found so far)...",
+        "games-sync-running": "Synchronising...",
+        "login-connection-failed": "Could not reach the server",
+        "msg-backup-restore-title": "Backup Restore for {server}",
+        "msg-bulk-confirm": "Run \"{action}\" on {count} selected server(s)?",
+        "msg-delete-user-confirm": "Are you sure you want to permanently delete the user \"{user}\"?",
+        "msg-rcon-confirm": "Execute RCON command: {command}?",
+        "msg-server-deleted": "Server {server} deleted successfully.",
+        "overview-cores-empty": "Cores: --",
+        "overview-disk-empty": "Disk space: -- / --",
+        "overview-used-empty": "Used: -- / --",
+        "perm-label-alerts": "Alerts",
+        "perm-label-backup": "Backups",
+        "perm-label-config": "Configs",
+        "perm-label-console": "Console",
+        "perm-label-files": "File Manager",
+        "perm-label-restart": "Restart",
+        "perm-label-schedule": "Schedules",
+        "perm-label-start": "Start",
+        "perm-label-stop": "Stop",
+        "players-ban": "Ban",
+        "players-kick": "Kick",
+        "players-label": "Players",
+        "players-map": "Map",
+        "players-no-names": "The server does not report player names.",
+        "players-none": "No players online.",
+        "players-updated": "Updated",
+        "template-cron-lgsm": "Weekly update of LinuxGSM itself (every Sunday at 00:00)",
+        "template-cron-monitor": "Monitor server for crashes (every 5 minutes)",
+        "template-cron-update": "Automatic update check (every 30 minutes, restarts on update)",
+        "modal-portcheck-scanning": "Testing the ports from this server...",
+        "portcheck-ip-unknown": "unknown",
+        "portcheck-status-open": "Open",
+        "portcheck-status-local": "Local only",
+        "portcheck-status-closed": "Closed",
+        "portcheck-status-untestable": "Not testable",
         "modal-portcheck-public-ip": "Public IP Address:",
         "modal-portcheck-th-port": "Port",
         "modal-portcheck-th-proto": "Protocol",
         "modal-portcheck-th-status": "Status",
-        "modal-portcheck-help-note": "Note: If a port is shown as closed, ensure your server is running and port forwarding rules are correctly configured in both your router and system firewall.",
+        "modal-portcheck-help-note": "The test runs on the server itself and cannot prove that a port is reachable from the internet. Open: answers on the public IP. Local only: answers on this machine but not on the public IP, so check port forwarding and the firewall (many routers also do not allow this test from the inside). Closed: no answer, is the server running? Not testable: a UDP port only answers in the protocol of the game, which the dashboard cannot speak here. That says nothing about the port.",
         "modal-portcheck-close-btn": "Close",
         "btn-delete-server": "Delete",
         "modal-delete-title": "Delete Game Server",
@@ -4387,6 +4504,9 @@ const i18n = {
         "inst-dir-label": "Installationsverzeichnis (optional)",
         "inst-dir-placeholder": "z.B. /mnt/ssd/gameserver/valheim",
         "inst-dir-help": "Leer lassen für /home/<benutzer>. Das Verzeichnis darf noch nicht existieren, der übergeordnete Ordner (z.B. der Mountpoint einer zweiten SSD) muss existieren.",
+        "inst-steam-user-label": "Steam-Benutzername",
+        "inst-steam-pass-label": "Steam-Passwort",
+        "inst-steam-help": "LinuxGSM kann dieses Spiel nur mit einem Steam-Konto installieren. Der Login wird in der secrets-common.cfg des Servers gespeichert. Nutze ein eigenes Konto ohne Steam Guard: Mit Steam Guard wartet SteamCMD hier auf einen Code und die Installation schlägt fehl. Manche Spiele setzen außerdem voraus, dass das Konto sie besitzt.",
         "inst-warning-text": "Die Installation lädt SteamCMD und alle Spieldateien herunter. Dies kann je nach Spiel und Internetleitung 5-30 Minuten dauern.",
         "card-port": "Port",
         "status-offline": "Offline",
@@ -4442,12 +4562,114 @@ const i18n = {
         "modal-stream-err-install": "\n[FEHLER] Installations-Stream abgebrochen.",
         "btn-portcheck": "Ports prüfen",
         "modal-portcheck-title": "Port-Erreichbarkeit prüfen",
-        "modal-portcheck-scanning": "Prüfe Erreichbarkeit von außen...",
+        "msg-port-check-failed": "Port-Prüfung fehlgeschlagen.",
+        "msg-deletion-failed": "Löschen fehlgeschlagen.",
+        "msg-checking-for-updates": "Suche nach Updates...",
+        "msg-update-available": "Update verfügbar",
+        "msg-a-new-version-is-available": "Eine neue Version ist verfügbar!",
+        "msg-up-to-date": "Aktuell",
+        "msg-dashboard-is-up-to-date": "Dashboard ist auf dem neuesten Stand.",
+        "msg-error-checking-for-updates": "Fehler beim Überprüfen von Updates.",
+        "msg-no-update-tag-available": "Kein Update-Tag vorhanden.",
+        "msg-are-you-sure-you-want-to-update-the-dashboar": "Möchtest du das Dashboard wirklich aktualisieren? Die Verbindung wird kurz getrennt.",
+        "msg-downloading-and-verifying-the-update-please": "Update wird heruntergeladen und geprüft... Bitte warten.",
+        "msg-update-successful-dashboard-is-restarting": "Update erfolgreich! Dashboard startet neu...",
+        "msg-update-failed": "Update fehlgeschlagen: ",
+        "msg-loading-users": "Lade Benutzer...",
+        "msg-no-users-found": "Keine Benutzer gefunden.",
+        "msg-all-servers": "Alle Server",
+        "msg-none": "Keine",
+        "msg-full-access": "Voller Zugriff",
+        "msg-delete": "Löschen",
+        "msg-you": "Du",
+        "msg-edit": "Bearbeiten",
+        "msg-failed-to-load-users": "Fehler beim Laden der Benutzer.",
+        "msg-no-servers-installed": "Keine Server installiert.",
+        "msg-create-new-user": "Neuen Benutzer anlegen",
+        "msg-password": "Passwort",
+        "msg-edit-user": "Benutzer bearbeiten: ",
+        "msg-new-password": "Neues Passwort",
+        "msg-username-is-required": "Benutzername ist erforderlich.",
+        "msg-password-is-required": "Passwort ist erforderlich.",
+        "msg-saving": "Wird gespeichert...",
+        "msg-failed-to-save": "Fehler beim Speichern: ",
+        "msg-failed-to-delete-user": "Fehler beim Löschen des Benutzers: ",
+        "msg-a-valid-cron-expression-is-required": "Ein gültiger Cron-Ausdruck wird benötigt!",
+        "msg-error": "Fehler: ",
+        "msg-upload-failed": "Fehler beim Hochladen: ",
+        "msg-error-deleting-backup": "Fehler beim Löschen des Backups: ",
+        "msg-restoring-backup": "Wiederherstellung läuft...",
+        "msg-restore-failed": "Fehler bei der Wiederherstellung.",
+        "msg-general": "Allgemein",
+        "msg-alerts": "-Alerts",
+        "msg-alert-settings-saved-successfully": "Benachrichtigungs-Einstellungen erfolgreich gespeichert.",
+        "msg-are-you-sure-you-want-to-install-the-systemd": "Bist du sicher, dass du den Systemd-Dienst für diesen Server installieren möchtest? Dies registriert den Server im System-Autostart.",
+        "msg-systemd-service-successfully-installed-and-e": "Systemd-Dienst erfolgreich installiert und aktiviert!",
+        "msg-are-you-sure-you-want-to-write-the-linuxgsm": "Bist du sicher, dass du die LinuxGSM Wartungs-Cronjobs einrichten möchtest? Dies überschreibt bestehende Wartungs-Cronjobs dieses Servers.",
+        "msg-cronjobs-successfully-written-to-crontab": "Cronjobs erfolgreich in die Crontab geschrieben!",
+        "msg-bulk-action-failed": "Sammelaktion fehlgeschlagen: ",
+        "msg-bulk-action-result-n": "Ergebnis der Sammelaktion:\n",
+        "msg-command-sent-successfully": "Befehl erfolgreich gesendet!",
+        "msg-file-uploaded-successfully": "Datei erfolgreich hochgeladen!",
+        "msg-error-uploading-file": "Fehler beim Hochladen der Datei.",
+        "msg-parent-directory": "übergeordneter Ordner",
+        "msg-loading-file-content": "Lade Dateiinhalt...",
+        "msg-error-reading-file-content": "Fehler beim Lesen des Dateiinhalts.",
+        "msg-binary-file-it-cannot-be-edited-in-the-brows": "Binärdatei: sie kann im Browser nicht bearbeitet werden. Nutze den Download.",
+        "msg-file-saved-successfully": "Datei erfolgreich gespeichert!",
+        "msg-error-saving-file": "Fehler beim Speichern der Datei.",
+        "msg-loading-audit-logs": "Lade Audit-Logs...",
+        "msg-failed-to-load-audit-logs": "Fehler beim Laden der Audit-Logs",
+        "msg-access-denied-only-administrators-can-clone": "Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.",
+        "msg-creating-instance": "Erstelle Instanz...",
+        "error-unauthorized": "Nicht autorisiert",
+        "files-action-download": "Herunterladen",
+        "files-action-edit": "Bearbeiten",
+        "files-empty": "Leerer Ordner",
+        "files-kind-dir": "ORDNER",
+        "files-kind-file": "DATEI",
+        "files-load-error": "Dateien konnten nicht geladen werden",
+        "games-sync-processing": "Verarbeite Spiele (bisher {count} gefunden)...",
+        "games-sync-running": "Synchronisiere...",
+        "login-connection-failed": "Serververbindung fehlgeschlagen",
+        "msg-backup-restore-title": "Backup-Wiederherstellung für {server}",
+        "msg-bulk-confirm": "\"{action}\" für {count} ausgewählte Server ausführen?",
+        "msg-delete-user-confirm": "Möchtest du den Benutzer \"{user}\" wirklich unwiderruflich löschen?",
+        "msg-rcon-confirm": "RCON-Befehl ausführen: {command}?",
+        "msg-server-deleted": "Server {server} wurde erfolgreich gelöscht.",
+        "overview-cores-empty": "Kerne: --",
+        "overview-disk-empty": "Speicherplatz: -- / --",
+        "overview-used-empty": "Genutzt: -- / --",
+        "perm-label-alerts": "Benachrichtigungen",
+        "perm-label-backup": "Backups",
+        "perm-label-config": "Configs",
+        "perm-label-console": "Konsole",
+        "perm-label-files": "Dateimanager",
+        "perm-label-restart": "Restart",
+        "perm-label-schedule": "Zeitpläne",
+        "perm-label-start": "Start",
+        "perm-label-stop": "Stop",
+        "players-ban": "Bannen",
+        "players-kick": "Kicken",
+        "players-label": "Spieler",
+        "players-map": "Karte",
+        "players-no-names": "Der Server liefert keine Spielernamen.",
+        "players-none": "Keine Spieler online.",
+        "players-updated": "Stand",
+        "template-cron-lgsm": "Wöchentliches Update von LinuxGSM selbst (jeden Sonntag um 00:00 Uhr)",
+        "template-cron-monitor": "Server auf Abstürze überwachen (alle 5 Minuten)",
+        "template-cron-update": "Automatische Updateprüfung (alle 30 Minuten, startet bei Update neu)",
+        "modal-portcheck-scanning": "Prüfe die Ports von diesem Server aus...",
+        "portcheck-ip-unknown": "unbekannt",
+        "portcheck-status-open": "Offen",
+        "portcheck-status-local": "Nur lokal",
+        "portcheck-status-closed": "Geschlossen",
+        "portcheck-status-untestable": "Nicht prüfbar",
         "modal-portcheck-public-ip": "Öffentliche IP-Adresse:",
         "modal-portcheck-th-port": "Port",
         "modal-portcheck-th-proto": "Protokoll",
         "modal-portcheck-th-status": "Status",
-        "modal-portcheck-help-note": "Hinweis: Wenn ein Port als geschlossen angezeigt wird, stelle sicher, dass der Server läuft und die Port-Freigaben in deinem Router sowie in der Firewall korrekt eingerichtet sind.",
+        "modal-portcheck-help-note": "Der Test läuft auf dem Server selbst und kann nicht beweisen, dass ein Port aus dem Internet erreichbar ist. Offen: antwortet auf der öffentlichen IP. Nur lokal: antwortet auf diesem Rechner, aber nicht auf der öffentlichen IP. Prüfe Port-Freigaben und Firewall (viele Router erlauben diesen Test von innen auch gar nicht). Geschlossen: keine Antwort, läuft der Server? Nicht prüfbar: Ein UDP-Port antwortet nur im Protokoll des Spiels, das das Dashboard hier nicht spricht. Das sagt nichts über den Port aus.",
         "modal-portcheck-close-btn": "Schließen",
         "btn-delete-server": "Löschen",
         "modal-delete-title": "Gameserver löschen",
@@ -4866,6 +5088,26 @@ function applyLanguage(lang) {
     if (state.lastSettingsData) {
         renderSettingsMode(state.lastSettingsData);
     }
+    rerenderViewForLanguage();
+}
+
+// Lists of the open view are built from answers of the server and written once: fetch them again.
+// Forms stay as they are, redrawing them would lose unsaved input; they follow when opened again.
+function rerenderViewForLanguage() {
+    if (!state.currentUser) return;
+    switch (state.lastActiveView) {
+        case 'users': loadUsersList(); break;
+        case 'audit': loadAuditLogs(); break;
+        case 'installer': renderGamesList(); break;
+        case 'backups': loadBackupsList(); break;
+        case 'files': if (currentFilesServer) loadFilesTree(); break;
+        case 'settings': if (state.settingsSubtab === 'nodes') loadNodes(); break;
+        case 'console': {
+            const server = (state.servers || []).find(s => s.id === state.selectedConsoleServer);
+            if (server) renderConsoleGameActions(isReadOnlyNodeServer(server) || server.node_offline ? null : server);
+            break;
+        }
+    }
 }
 
 async function loadGamesList() {
@@ -4902,10 +5144,11 @@ function pollSyncProgress() {
             const statusData = await statusRes.json();
             
             if (statusData.status === 'syncing') {
-                el.gamesSyncProgressText.textContent = statusData.progress;
-                
                 // Match "Processing games (42 discovered so far)..."
                 const match = statusData.progress.match(/Processing games \((\d+)\s+discovered/i);
+                el.gamesSyncProgressText.textContent = match
+                    ? t('games-sync-processing').replace('{count}', match[1])
+                    : statusData.progress;
                 if (match) {
                     const parsed = parseInt(match[1], 10);
                     const percent = Math.min(95, Math.floor((parsed / 139) * 90) + 5);
@@ -4971,17 +5214,18 @@ async function checkServerPorts(serverId) {
         }
         const data = await res.json();
 
-        el.portcheckIp.textContent = data.public_ip;
+        el.portcheckIp.textContent = data.public_ip || t('portcheck-ip-unknown');
         el.portcheckTableBody.innerHTML = '';
 
-        data.probes.forEach(probe => {
+        const badges = { open: 'badge-success', local: 'badge-warning', closed: 'badge-danger', untestable: 'badge-secondary' };
+        (data.probes || []).forEach(probe => {
             const row = document.createElement('tr');
             row.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
-            
-            const badgeClass = probe.open ? 'badge badge-success' : 'badge badge-danger';
-            const statusText = probe.open ? 
-                (state.language === 'de' ? 'Offen' : 'Open') : 
-                (state.language === 'de' ? 'Geschlossen' : 'Closed');
+
+            // A node on an older 2.0.x reports only "open".
+            const status = badges[probe.status] ? probe.status : (probe.open ? 'open' : 'closed');
+            const badgeClass = `badge ${badges[status]}`;
+            const statusText = t(`portcheck-status-${status}`);
 
             row.innerHTML = `
                 <td style="padding: 0.75rem 0.5rem; text-align: left; font-family: monospace; font-size: 0.85rem;">
@@ -5002,7 +5246,7 @@ async function checkServerPorts(serverId) {
     } catch (err) {
         console.error('Port Check failed:', err);
         el.portcheckLoading.classList.add('hidden');
-        alert(state.language === 'de' ? 'Port-Prüfung fehlgeschlagen.' : 'Port check failed.');
+        alert(t('msg-port-check-failed'));
         el.modalPortcheck.classList.add('hidden');
     }
 }
@@ -5039,11 +5283,11 @@ async function confirmDeleteServer() {
             throw new Error('Delete API failed');
         }
         el.modalDelete.classList.add('hidden');
-        alert(state.language === 'de' ? `Server ${serverId} wurde erfolgreich gelöscht.` : `Server ${serverId} deleted successfully.`);
+        alert(t('msg-server-deleted').replace('{server}', serverId));
         refreshDashboard();
     } catch (err) {
         console.error('Failed to delete server:', err);
-        alert(state.language === 'de' ? 'Löschen fehlgeschlagen.' : 'Deletion failed.');
+        alert(t('msg-deletion-failed'));
         el.btnDeleteConfirmSubmit.disabled = false;
     }
 }
@@ -5090,7 +5334,7 @@ async function checkDashboardUpdate(manual = false) {
     if (!statusText) return;
     
     if (manual) {
-        messageArea.textContent = state.language === 'de' ? 'Suche nach Updates...' : 'Checking for updates...';
+        messageArea.textContent = t('msg-checking-for-updates');
         messageArea.className = 'info-message text-muted';
     }
     
@@ -5111,7 +5355,7 @@ async function checkDashboardUpdate(manual = false) {
         }
         
         if (data.has_update) {
-            statusText.textContent = state.language === 'de' ? 'Update verfügbar' : 'Update Available';
+            statusText.textContent = t('msg-update-available');
             statusText.className = 'info-value text-warning';
             newVersionText.textContent = data.latest_version;
             detailsRow.classList.remove('hidden');
@@ -5119,24 +5363,24 @@ async function checkDashboardUpdate(manual = false) {
             latestTagName = data.latest_version;
             
             if (manual) {
-                messageArea.textContent = state.language === 'de' ? 'Eine neue Version ist verfügbar!' : 'A new version is available!';
+                messageArea.textContent = t('msg-a-new-version-is-available');
                 messageArea.className = 'info-message text-warning';
             }
         } else {
-            statusText.textContent = state.language === 'de' ? 'Aktuell' : 'Up to date';
+            statusText.textContent = t('msg-up-to-date');
             statusText.className = 'info-value text-success';
             detailsRow.classList.add('hidden');
             btnTrigger.classList.add('hidden');
             
             if (manual) {
-                messageArea.textContent = state.language === 'de' ? 'Dashboard ist auf dem neuesten Stand.' : 'Dashboard is up to date.';
+                messageArea.textContent = t('msg-dashboard-is-up-to-date');
                 messageArea.className = 'info-message text-success';
             }
         }
     } catch (e) {
         console.error('Update check failed:', e);
         if (manual) {
-            messageArea.textContent = state.language === 'de' ? 'Fehler beim Überprüfen von Updates.' : 'Error checking for updates.';
+            messageArea.textContent = t('msg-error-checking-for-updates');
             messageArea.className = 'info-message text-danger';
         }
     }
@@ -5148,15 +5392,15 @@ async function triggerDashboardUpdate() {
     const btnCheck = document.getElementById('btn-check-update');
     
     if (!latestTagName) {
-        alert(state.language === 'de' ? 'Kein Update-Tag vorhanden.' : 'No update tag available.');
+        alert(t('msg-no-update-tag-available'));
         return;
     }
     
-    if (!confirm(state.language === 'de' ? 'Möchtest du das Dashboard wirklich aktualisieren? Die Verbindung wird kurz getrennt.' : 'Are you sure you want to update the dashboard? The connection will be briefly disconnected.')) {
+    if (!confirm(t('msg-are-you-sure-you-want-to-update-the-dashboar'))) {
         return;
     }
     
-    messageArea.textContent = state.language === 'de' ? 'Update wird heruntergeladen und geprüft... Bitte warten.' : 'Downloading and verifying the update... Please wait.';
+    messageArea.textContent = t('msg-downloading-and-verifying-the-update-please');
     messageArea.className = 'info-message text-warning';
     btnTrigger.disabled = true;
     btnCheck.disabled = true;
@@ -5169,7 +5413,7 @@ async function triggerDashboardUpdate() {
         });
         
         if (res.status === 200) {
-            messageArea.textContent = state.language === 'de' ? 'Update erfolgreich! Dashboard startet neu...' : 'Update successful! Dashboard is restarting...';
+            messageArea.textContent = t('msg-update-successful-dashboard-is-restarting');
             messageArea.className = 'info-message text-success';
             
             setTimeout(() => {
@@ -5181,7 +5425,7 @@ async function triggerDashboardUpdate() {
         }
     } catch (e) {
         console.error('Update failed:', e);
-        messageArea.textContent = (state.language === 'de' ? 'Update fehlgeschlagen: ' : 'Update failed: ') + e.message;
+        messageArea.textContent = (t('msg-update-failed')) + e.message;
         messageArea.className = 'info-message text-danger';
         btnTrigger.disabled = false;
         btnCheck.disabled = false;
@@ -5197,7 +5441,7 @@ async function loadUsersList() {
     const tbody = document.getElementById('users-list-body');
     if (!tbody) return;
     
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-muted);">${state.language === 'de' ? 'Lade Benutzer...' : 'Loading users...'}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-muted);">${t('msg-loading-users')}</td></tr>`;
     
     try {
         const res = await apiFetch('/api/admin/users');
@@ -5205,7 +5449,7 @@ async function loadUsersList() {
         
         tbody.innerHTML = '';
         if (users.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-muted);">${state.language === 'de' ? 'Keine Benutzer gefunden.' : 'No users found.'}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-muted);">${t('msg-no-users-found')}</td></tr>`;
             return;
         }
         
@@ -5218,48 +5462,37 @@ async function loadUsersList() {
                 '<span class="badge badge-secondary" style="font-size: 0.75rem;">User</span>';
                 
             let servers = user.role === 'admin' ? 
-                `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Alle Server' : 'All Servers'}</span>` : 
+                `<span class="text-muted" style="font-size: 0.8rem;">${t('msg-all-servers')}</span>` : 
                 (user.servers && user.servers.length > 0 ? 
                     user.servers.map(s => `<code style="font-size: 0.8rem;">${escapeHtml(s)}</code>`).join(', ') : 
-                    `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Keine' : 'None'}</span>`);
+                    `<span class="text-muted" style="font-size: 0.8rem;">${t('msg-none')}</span>`);
                     
             if (user.role !== 'admin' && user.nodes && user.nodes.length > 0) {
                 const chips = user.nodes.map(n => `<span class="node-chip">${escapeHtml(n)}</span>`).join(' ');
                 servers = user.servers && user.servers.length > 0 ? `${servers} ${chips}` : chips;
             }
             const perms = user.role === 'admin' ? 
-                `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Voller Zugriff' : 'Full Access'}</span>` : 
+                `<span class="text-muted" style="font-size: 0.8rem;">${t('msg-full-access')}</span>` : 
                 (user.permissions && user.permissions.length > 0 ? 
                     user.permissions.map(p => {
-                        let label = p;
-                        if (state.language === 'de') {
-                            if (p === 'start') label = 'Start';
-                            if (p === 'stop') label = 'Stop';
-                            if (p === 'restart') label = 'Restart';
-                            if (p === 'console') label = 'Konsole';
-                            if (p === 'config') label = 'Configs';
-                            if (p === 'files') label = 'Dateimanager';
-                            if (p === 'backup') label = 'Backups';
-                            if (p === 'schedule') label = 'Zeitpläne';
-                            if (p === 'alerts') label = 'Benachrichtigungen';
-                        }
+                        const label = i18n[state.language]?.[`perm-label-${p}`] || p;
                         return `<span class="badge badge-pulse" style="font-size: 0.7rem; background: rgba(255,255,255,0.05); color: var(--text-color); border: 1px solid var(--border-color);">${escapeHtml(label)}</span>`;
                     }).join(' ') : 
-                    `<span class="text-muted" style="font-size: 0.8rem;">${state.language === 'de' ? 'Keine' : 'None'}</span>`);
+                    `<span class="text-muted" style="font-size: 0.8rem;">${t('msg-none')}</span>`);
             
             const isSelf = state.currentUser && state.currentUser.username === user.username;
             const deleteBtn = isSelf ? 
-                `<button class="btn btn-danger btn-sm" disabled style="opacity: 0.4;">${state.language === 'de' ? 'Löschen' : 'Delete'}</button>` : 
-                `<button class="btn btn-danger btn-sm" onclick="deleteUser(${jsArg(user.username)})">${state.language === 'de' ? 'Löschen' : 'Delete'}</button>`;
+                `<button class="btn btn-danger btn-sm" disabled style="opacity: 0.4;">${t('msg-delete')}</button>` : 
+                `<button class="btn btn-danger btn-sm" onclick="deleteUser(${jsArg(user.username)})">${t('msg-delete')}</button>`;
                 
             tr.innerHTML = `
-                <td style="padding: 0.75rem;"><strong>${escapeHtml(user.username)}</strong> ${isSelf ? `<small class="text-muted">(${state.language === 'de' ? 'Du' : 'You'})</small>` : ''} ${user.totp_enabled ? `<span class="badge badge-primary" title="${t('twofa-title')}">2FA</span>` : ''}</td>
+                <td style="padding: 0.75rem;"><strong>${escapeHtml(user.username)}</strong> ${isSelf ? `<small class="text-muted">(${t('msg-you')})</small>` : ''} ${user.totp_enabled ? `<span class="badge badge-primary" title="${t('twofa-title')}">2FA</span>` : ''}</td>
                 <td style="padding: 0.75rem;">${roleBadge}</td>
                 <td style="padding: 0.75rem;">${servers}</td>
                 <td style="padding: 0.75rem;">${perms}</td>
                 <td style="padding: 0.75rem; text-align: right; display: flex; gap: 0.5rem; justify-content: flex-end;">
                     ${user.totp_enabled ? `<button class="btn btn-secondary btn-sm" onclick="resetUserTwoFactor(${jsArg(user.username)})">${t('twofa-btn-reset')}</button>` : ''}
-                    <button class="btn btn-secondary btn-sm" onclick="openEditUserModal(${jsArg(user.username)})">${state.language === 'de' ? 'Bearbeiten' : 'Edit'}</button>
+                    <button class="btn btn-secondary btn-sm" onclick="openEditUserModal(${jsArg(user.username)})">${t('msg-edit')}</button>
                     ${deleteBtn}
                 </td>
             `;
@@ -5267,7 +5500,7 @@ async function loadUsersList() {
         });
     } catch (e) {
         console.error('Failed to load users:', e);
-        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-danger);">${state.language === 'de' ? 'Fehler beim Laden der Benutzer.' : 'Failed to load users.'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-danger);">${t('msg-failed-to-load-users')}</td></tr>`;
     }
 }
 
@@ -5282,7 +5515,7 @@ async function populateUserServerCheckboxes() {
         if (res.status === 200) {
             const servers = await res.json();
             if (servers.length === 0) {
-                listDiv.innerHTML = `<span class="text-muted" style="grid-column: 1 / -1; font-size: 0.8rem; padding: 0.5rem;">${state.language === 'de' ? 'Keine Server installiert.' : 'No servers installed.'}</span>`;
+                listDiv.innerHTML = `<span class="text-muted" style="grid-column: 1 / -1; font-size: 0.8rem; padding: 0.5rem;">${t('msg-no-servers-installed')}</span>`;
                 return;
             }
             
@@ -5347,12 +5580,12 @@ async function openCreateUserModal() {
     const messageArea = document.getElementById('modal-user-message');
     const modal = document.getElementById('modal-user');
     
-    title.textContent = state.language === 'de' ? 'Neuen Benutzer anlegen' : 'Create New User';
+    title.textContent = t('msg-create-new-user');
     usernameInput.disabled = false;
     usernameInput.value = '';
     passwordInput.value = '';
     passwordInput.required = true;
-    passwordLabel.textContent = state.language === 'de' ? 'Passwort' : 'Password';
+    passwordLabel.textContent = t('msg-password');
     passwordHelp.classList.add('hidden');
     roleSelect.value = 'user';
     messageArea.innerHTML = '';
@@ -5375,12 +5608,12 @@ async function openEditUserModal(username) {
     const messageArea = document.getElementById('modal-user-message');
     const modal = document.getElementById('modal-user');
     
-    title.textContent = (state.language === 'de' ? 'Benutzer bearbeiten: ' : 'Edit User: ') + username;
+    title.textContent = (t('msg-edit-user')) + username;
     usernameInput.disabled = true;
     usernameInput.value = username;
     passwordInput.value = '';
     passwordInput.required = false;
-    passwordLabel.textContent = (state.language === 'de' ? 'Neues Passwort' : 'New Password') + ` (${state.language === 'de' ? 'optional' : 'optional'})`;
+    passwordLabel.textContent = (t('msg-new-password')) + ` (${'optional'})`;
     passwordHelp.classList.remove('hidden');
     messageArea.innerHTML = '';
     
@@ -5440,13 +5673,13 @@ async function saveUserForm() {
     const role = roleSelect.value;
     
     if (!username) {
-        messageArea.textContent = state.language === 'de' ? 'Benutzername ist erforderlich.' : 'Username is required.';
+        messageArea.textContent = t('msg-username-is-required');
         messageArea.className = 'info-message text-danger';
         return;
     }
     
     if (!currentEditUser && !password) {
-        messageArea.textContent = state.language === 'de' ? 'Passwort ist erforderlich.' : 'Password is required.';
+        messageArea.textContent = t('msg-password-is-required');
         messageArea.className = 'info-message text-danger';
         return;
     }
@@ -5469,7 +5702,7 @@ async function saveUserForm() {
         permissions = ['start', 'stop', 'restart', 'console', 'config', 'files', 'backup'];
     }
     
-    messageArea.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
+    messageArea.textContent = t('msg-saving');
     messageArea.className = 'info-message text-muted';
     
     try {
@@ -5511,13 +5744,13 @@ async function saveUserForm() {
         }
     } catch (e) {
         console.error('Failed to save user:', e);
-        messageArea.textContent = (state.language === 'de' ? 'Fehler beim Speichern: ' : 'Failed to save: ') + e.message;
+        messageArea.textContent = (t('msg-failed-to-save')) + e.message;
         messageArea.className = 'info-message text-danger';
     }
 }
 
 async function deleteUser(username) {
-    if (!confirm(state.language === 'de' ? `Möchtest du den Benutzer "${username}" wirklich unwiderruflich löschen?` : `Are you sure you want to permanently delete the user "${username}"?`)) {
+    if (!confirm(t('msg-delete-user-confirm').replace('{user}', username))) {
         return;
     }
     
@@ -5533,7 +5766,7 @@ async function deleteUser(username) {
         }
     } catch (e) {
         console.error('Failed to delete user:', e);
-        alert((state.language === 'de' ? 'Fehler beim Löschen des Benutzers: ' : 'Failed to delete user: ') + e.message);
+        alert((t('msg-failed-to-delete-user')) + e.message);
     }
 }
 
@@ -5748,7 +5981,7 @@ async function saveBackupSettings(e) {
     const serverId = state.selectedBackupServer;
     if (!serverId) return;
     
-    el.backupsSettingsMessage.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
+    el.backupsSettingsMessage.textContent = t('msg-saving');
     el.backupsSettingsMessage.className = 'info-message text-muted';
     el.backupsSettingsSaveBtn.disabled = true;
     
@@ -5759,7 +5992,7 @@ async function saveBackupSettings(e) {
             if (preset === 'custom') {
                 cronVal = el.backupsSettingCronCustom.value.trim();
                 if (!cronVal) {
-                    throw new Error(state.language === 'de' ? 'Ein gültiger Cron-Ausdruck wird benötigt!' : 'A valid Cron expression is required!');
+                    throw new Error(t('msg-a-valid-cron-expression-is-required'));
                 }
             } else {
                 cronVal = preset;
@@ -5789,13 +6022,13 @@ async function saveBackupSettings(e) {
             }, 3000);
         } else {
             const data = await res.json();
-            el.backupsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || t('backups-settings-save-error'));
+            el.backupsSettingsMessage.textContent = (t('msg-error')) + (data.error || t('backups-settings-save-error'));
             el.backupsSettingsMessage.className = 'info-message text-danger';
         }
     } catch (err) {
         el.backupsSettingsSaveBtn.disabled = false;
         console.error('Error saving backup settings:', err);
-        el.backupsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + err.message;
+        el.backupsSettingsMessage.textContent = (t('msg-error')) + err.message;
         el.backupsSettingsMessage.className = 'info-message text-danger';
     }
 }
@@ -5849,7 +6082,7 @@ async function handleBackupsUpload(e) {
                 const res = JSON.parse(xhr.responseText);
                 errorMsg = res.error || errorMsg;
             } catch (err) {}
-            alert((state.language === 'de' ? 'Fehler beim Hochladen: ' : 'Upload failed: ') + errorMsg);
+            alert((t('msg-upload-failed')) + errorMsg);
         }
     });
 
@@ -5887,11 +6120,11 @@ async function deleteBackup(serverId, filename) {
         if (res.status === 200 && data.status === 'ok') {
             loadBackupsList();
         } else {
-            alert((state.language === 'de' ? 'Fehler beim Löschen des Backups: ' : 'Error deleting backup: ') + (data.error || 'Unknown error'));
+            alert((t('msg-error-deleting-backup')) + (data.error || 'Unknown error'));
         }
     } catch (e) {
         console.error('Delete backup error:', e);
-        alert((state.language === 'de' ? 'Fehler beim Löschen des Backups: ' : 'Error deleting backup: ') + e.message);
+        alert((t('msg-error-deleting-backup')) + e.message);
     }
 }
 
@@ -5903,11 +6136,11 @@ function confirmRestoreBackup(serverId, filename) {
 
 function runBackupRestoreAction(serverId, filename) {
     runStreamModal({
-        title: (state.language === 'de' ? `Backup-Wiederherstellung für {server}` : `Backup Restore for {server}`).replace('{server}', serverId),
-        runningText: state.language === 'de' ? 'Wiederherstellung läuft...' : 'Restoring backup...',
+        title: t('msg-backup-restore-title').replace('{server}', serverId),
+        runningText: t('msg-restoring-backup'),
         url: `/api/servers/${encodeURIComponent(serverId)}/backups/restore`,
         body: { file: filename, lang: state.language },
-        errorText: state.language === 'de' ? 'Fehler bei der Wiederherstellung.' : 'Restore failed.',
+        errorText: t('msg-restore-failed'),
         onExit: () => loadBackupsList()
     });
 }
@@ -5995,7 +6228,7 @@ function renderAlertFields(data) {
         const general = svc.id === 'general';
         html += `<div class="form-group mb-3" data-alert-service="${escapeHtml(svc.id)}">`;
         if (general) {
-            html += `<div style="font-weight:600; margin-bottom:0.25rem;">${state.language === 'de' ? 'Allgemein' : 'General'}</div>`;
+            html += `<div style="font-weight:600; margin-bottom:0.25rem;">${t('msg-general')}</div>`;
             fields.forEach(f => {
                 html += f.switch
                     ? `<label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer;"><input type="checkbox" data-alert-key="${escapeHtml(f.key)}" ${isOn(f.key) ? 'checked' : ''}> <span>${escapeHtml(alertLabel(f.key))}</span>${alertSourceNote(sources, f.key)}</label>`
@@ -6004,7 +6237,7 @@ function renderAlertFields(data) {
         } else if (fields.length) {
             const sw = fields[0];
             const name = ALERT_SERVICE_NAMES[svc.id] || svc.id;
-            html += `<label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;"><input type="checkbox" data-alert-key="${escapeHtml(sw.key)}" ${isOn(sw.key) ? 'checked' : ''}> <span>${escapeHtml(name)}${state.language === 'de' ? '-Alerts' : ' alerts'}</span>${alertSourceNote(sources, sw.key)}</label>`;
+            html += `<label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; cursor:pointer;"><input type="checkbox" data-alert-key="${escapeHtml(sw.key)}" ${isOn(sw.key) ? 'checked' : ''}> <span>${escapeHtml(name)}${t('msg-alerts')}</span>${alertSourceNote(sources, sw.key)}</label>`;
             html += `<div class="mt-2${isOn(sw.key) ? '' : ' hidden'}" data-alert-details>`;
             fields.slice(1).forEach(f => { html += alertInputHtml(f, values, defaults, sources); });
             html += '</div>';
@@ -6040,7 +6273,7 @@ async function saveAlertSettings(e) {
     // Never save a form that was loaded for another server or did not load at all.
     if (!serverId || alertSettingsLoadedFor !== serverId) return;
 
-    el.alertsSettingsMessage.textContent = state.language === 'de' ? 'Wird gespeichert...' : 'Saving...';
+    el.alertsSettingsMessage.textContent = t('msg-saving');
     el.alertsSettingsMessage.className = 'info-message text-muted';
     el.alertsSettingsSaveBtn.disabled = true;
     const values = {};
@@ -6055,7 +6288,7 @@ async function saveAlertSettings(e) {
         });
         el.alertsSettingsSaveBtn.disabled = false;
         if (res.status === 200) {
-            el.alertsSettingsMessage.textContent = state.language === 'de' ? 'Benachrichtigungs-Einstellungen erfolgreich gespeichert.' : 'Alert settings saved successfully.';
+            el.alertsSettingsMessage.textContent = t('msg-alert-settings-saved-successfully');
             el.alertsSettingsMessage.className = 'info-message text-success';
             setTimeout(() => {
                 if (el.settingsServerSelect.value === serverId) el.alertsSettingsMessage.textContent = '';
@@ -6063,13 +6296,13 @@ async function saveAlertSettings(e) {
             loadAlertSettings();
         } else {
             const data = await res.json().catch(() => ({}));
-            el.alertsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || 'Unknown error');
+            el.alertsSettingsMessage.textContent = (t('msg-error')) + (data.error || 'Unknown error');
             el.alertsSettingsMessage.className = 'info-message text-danger';
         }
     } catch (err) {
         el.alertsSettingsSaveBtn.disabled = false;
         console.error('Error saving alert settings:', err);
-        el.alertsSettingsMessage.textContent = (state.language === 'de' ? 'Fehler: ' : 'Error: ') + err.message;
+        el.alertsSettingsMessage.textContent = (t('msg-error')) + err.message;
         el.alertsSettingsMessage.className = 'info-message text-danger';
     }
 }
@@ -6085,7 +6318,7 @@ async function installSystemdService() {
     const serverId = el.settingsServerSelect.value;
     if (!serverId) return;
     
-    if (!confirm(state.language === 'de' ? 'Bist du sicher, dass du den Systemd-Dienst für diesen Server installieren möchtest? Dies registriert den Server im System-Autostart.' : 'Are you sure you want to install the Systemd service for this server? This registers the server in the system autostart.')) {
+    if (!confirm(t('msg-are-you-sure-you-want-to-install-the-systemd'))) {
         return;
     }
     
@@ -6098,13 +6331,13 @@ async function installSystemdService() {
         const data = await res.json();
         
         if (res.status === 200 && data.status === 'ok') {
-            alert(state.language === 'de' ? 'Systemd-Dienst erfolgreich installiert und aktiviert!' : 'Systemd service successfully installed and enabled!');
+            alert(t('msg-systemd-service-successfully-installed-and-e'));
         } else {
-            alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || 'Unknown error'));
+            alert((t('msg-error')) + (data.error || 'Unknown error'));
         }
     } catch (err) {
         console.error('Systemd install error:', err);
-        alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + err.message);
+        alert((t('msg-error')) + err.message);
     } finally {
         el.settingsToolsBtnSystemd.disabled = false;
     }
@@ -6114,7 +6347,7 @@ async function installCronjobs() {
     const serverId = el.settingsServerSelect.value;
     if (!serverId) return;
     
-    if (!confirm(state.language === 'de' ? 'Bist du sicher, dass du die LinuxGSM Wartungs-Cronjobs einrichten möchtest? Dies überschreibt bestehende Wartungs-Cronjobs dieses Servers.' : 'Are you sure you want to write the LinuxGSM maintenance cronjobs? This will replace existing maintenance cronjobs for this server.')) {
+    if (!confirm(t('msg-are-you-sure-you-want-to-write-the-linuxgsm'))) {
         return;
     }
     
@@ -6127,13 +6360,13 @@ async function installCronjobs() {
         const data = await res.json();
         
         if (res.status === 200 && data.status === 'ok') {
-            alert(state.language === 'de' ? 'Cronjobs erfolgreich in die Crontab geschrieben!' : 'Cronjobs successfully written to crontab!');
+            alert(t('msg-cronjobs-successfully-written-to-crontab'));
         } else {
-            alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + (data.error || 'Unknown error'));
+            alert((t('msg-error')) + (data.error || 'Unknown error'));
         }
     } catch (err) {
         console.error('Cron install error:', err);
-        alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + err.message);
+        alert((t('msg-error')) + err.message);
     } finally {
         el.settingsToolsBtnCron.disabled = false;
     }
@@ -6215,9 +6448,8 @@ async function runBulkAction(action) {
     const checked = Array.from(document.querySelectorAll('.bulk-server-checkbox:checked')).map(cb => cb.dataset.id);
     if (checked.length === 0) return;
     
-    const confirmMsg = state.language === 'de' ? 
-        `Möchtest du die Aktion "${action}" für ${checked.length} ausgewählte Server ausführen?` :
-        `Execute bulk action "${action}" for ${checked.length} selected server(s)?`;
+    const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+    const confirmMsg = t('msg-bulk-confirm').replace('{action}', actionLabel).replace('{count}', checked.length);
 
     if (!confirm(confirmMsg)) return;
     
@@ -6228,37 +6460,35 @@ async function runBulkAction(action) {
         });
         const data = await res.json().catch(() => ({}));
         if (res.status !== 200) {
-            alert((state.language === 'de' ? 'Sammelaktion fehlgeschlagen: ' : 'Bulk action failed: ') + (data.error || res.status));
+            alert((t('msg-bulk-action-failed')) + (data.error || res.status));
             return;
         }
         // Report every server that did not simply succeed (offline or read-only node, warnings, errors).
         const problems = Object.entries(data).filter(([, result]) => result !== 'Success');
         if (problems.length > 0) {
             const name = (id) => { const s = state.servers.find(x => x.id === id); return s ? serverLabel(s) : id; };
-            alert((state.language === 'de' ? 'Ergebnis der Sammelaktion:\n' : 'Bulk action result:\n') +
+            alert((t('msg-bulk-action-result-n')) +
                 problems.map(([id, result]) => `${name(id)}: ${result}`).join('\n'));
         }
         refreshDashboard();
     } catch (e) {
         console.error('Bulk action error:', e);
-        alert((state.language === 'de' ? 'Sammelaktion fehlgeschlagen: ' : 'Bulk action failed: ') + e.message);
+        alert((t('msg-bulk-action-failed')) + e.message);
     }
 }
 
 function openPlayersModal(serverId) {
     const server = state.servers.find(s => s.id === serverId);
     if (!server || !el.modalPlayers) return;
-    const isDe = state.language === 'de';
-
-    el.modalPlayersTitle.textContent = `${server.name} - ${isDe ? 'Spieler' : 'Players'}`;
+    el.modalPlayersTitle.textContent = `${server.name} - ${t('players-label')}`;
 
     const query = server.query_data || {};
     const updated = query.updated ? new Date(query.updated).toLocaleTimeString() : '-';
     el.modalPlayersInfo.innerHTML = `
-        <span><strong>${isDe ? 'Karte' : 'Map'}:</strong> ${escapeHtml(query.map || '-')}</span>
-        <span><strong>${isDe ? 'Spieler' : 'Players'}:</strong> ${escapeHtml(query.num_players || 0)} / ${escapeHtml(query.max_players || 0)}${query.bots ? ` (${escapeHtml(query.bots)} Bots)` : ''}</span>
+        <span><strong>${t('players-map')}:</strong> ${escapeHtml(query.map || '-')}</span>
+        <span><strong>${t('players-label')}:</strong> ${escapeHtml(query.num_players || 0)} / ${escapeHtml(query.max_players || 0)}${query.bots ? ` (${escapeHtml(query.bots)} Bots)` : ''}</span>
         <span><strong>Ping:</strong> ${escapeHtml(query.ping || 0)} ms</span>
-        <span class="text-muted">${isDe ? 'Stand' : 'Updated'}: ${escapeHtml(updated)}</span>`;
+        <span class="text-muted">${t('players-updated')}: ${escapeHtml(updated)}</span>`;
 
     el.modalPlayersTbody.innerHTML = '';
     const players = query.players || [];
@@ -6266,8 +6496,8 @@ function openPlayersModal(serverId) {
 
     if (players.length === 0) {
         const msg = query.num_players > 0
-            ? (isDe ? 'Der Server liefert keine Spielernamen.' : 'The server does not report player names.')
-            : (isDe ? 'Keine Spieler online.' : 'No players online.');
+            ? t('players-no-names')
+            : t('players-none');
         el.modalPlayersTbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding:1.5rem;">${msg}</td></tr>`;
     } else {
         players.forEach(p => {
@@ -6277,8 +6507,8 @@ function openPlayersModal(serverId) {
                 <td>${escapeHtml(p.score || 0)}</td>
                 <td>${escapeHtml(p.time || '-')}</td>
                 <td class="text-right">${canKick && playerCommand(server, 'kick', p.name) ? `
-                    <button class="btn btn-secondary btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg(playerCommand(server, 'kick', p.name))})">Kick</button>` : ''}${canKick && playerCommand(server, 'ban', p.name) ? `
-                    <button class="btn btn-danger btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg(playerCommand(server, 'ban', p.name))})">Ban</button>` : ''}
+                    <button class="btn btn-secondary btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg(playerCommand(server, 'kick', p.name))})">${t('players-kick')}</button>` : ''}${canKick && playerCommand(server, 'ban', p.name) ? `
+                    <button class="btn btn-danger btn-xs" onclick="sendRconCommand(${jsArg(server.id)}, ${jsArg(playerCommand(server, 'ban', p.name))})">${t('players-ban')}</button>` : ''}
                 </td>
             `;
             el.modalPlayersTbody.appendChild(tr);
@@ -6310,7 +6540,7 @@ function closePlayersModal() {
 }
 
 async function sendRconCommand(serverId, command) {
-    const promptMsg = state.language === 'de' ? `RCON-Befehl ausführen: ${command}?` : `Execute RCON command: ${command}?`;
+    const promptMsg = t('msg-rcon-confirm').replace('{command}', command);
     if (!confirm(promptMsg)) return;
     try {
         const res = await apiFetch(`/api/servers/${serverId}/rcon`, {
@@ -6318,7 +6548,7 @@ async function sendRconCommand(serverId, command) {
             body: JSON.stringify({ command: command })
         });
         if (res.status === 200) {
-            alert(state.language === 'de' ? 'Befehl erfolgreich gesendet!' : 'Command sent successfully!');
+            alert(t('msg-command-sent-successfully'));
         }
     } catch (e) {
         console.error('RCON error:', e);
@@ -6659,13 +6889,13 @@ function initFileManager() {
                     body: formData
                 });
                 if (res.status === 200) {
-                    alert(state.language === 'de' ? 'Datei erfolgreich hochgeladen!' : 'File uploaded successfully!');
+                    alert(t('msg-file-uploaded-successfully'));
                     loadFilesTree();
                 } else {
-                    alert(state.language === 'de' ? 'Fehler beim Hochladen der Datei.' : 'Error uploading file.');
+                    alert(t('msg-error-uploading-file'));
                 }
             } catch (e) {
-                alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + e.message);
+                alert((t('msg-error')) + e.message);
             } finally {
                 el.filesInputUpload.value = '';
             }
@@ -6699,7 +6929,7 @@ async function loadFilesTree() {
             const files = await res.json();
             renderFilesTable(files);
         } else {
-            el.filesTableBody.innerHTML = `<tr><td colspan="4" class="text-danger text-center py-4">Error loading files</td></tr>`;
+            el.filesTableBody.innerHTML = `<tr><td colspan="4" class="text-danger text-center py-4">${t('files-load-error')}</td></tr>`;
         }
     } catch (e) {
         console.error('File manager error:', e);
@@ -6714,7 +6944,7 @@ function renderFilesTable(files) {
         const backTr = document.createElement('tr');
         backTr.innerHTML = `
             <td colspan="4" class="font-mono text-sm cursor-pointer hover:bg-black-10 py-2" onclick="navigateFilesUp()">
-                <strong>..</strong> <span class="text-muted">(${state.language === 'de' ? 'übergeordneter Ordner' : 'parent directory'})</span>
+                <strong>..</strong> <span class="text-muted">(${t('msg-parent-directory')})</span>
             </td>
         `;
         el.filesTableBody.appendChild(backTr);
@@ -6722,14 +6952,14 @@ function renderFilesTable(files) {
 
     if (!files || files.length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td colspan="4" class="text-muted text-center py-4">Empty Directory</td>`;
+        tr.innerHTML = `<td colspan="4" class="text-muted text-center py-4">${t('files-empty')}</td>`;
         el.filesTableBody.appendChild(tr);
         return;
     }
 
     files.forEach(f => {
         const tr = document.createElement('tr');
-        const icon = f.is_dir ? '<span class="file-kind is-dir">DIR</span>' : '<span class="file-kind">FILE</span>';
+        const icon = f.is_dir ? '<span class="file-kind is-dir">' + t('files-kind-dir') + '</span>' : '<span class="file-kind">' + t('files-kind-file') + '</span>';
         const sizeText = f.is_dir ? '--' : formatBytes(f.size);
 
         tr.innerHTML = `
@@ -6742,8 +6972,8 @@ function renderFilesTable(files) {
             <td class="text-sm text-muted">${escapeHtml(f.mod_time)}</td>
             <td>
                 ${f.is_dir ? '' : `
-                    <button class="btn btn-secondary btn-xs" onclick="openFileEditor(${jsArg(f.path)})">Edit</button>
-                    <a href="/api/servers/${currentFilesServer}/files/download?path=${encodeURIComponent(f.path)}" class="btn btn-secondary btn-xs" download style="text-decoration:none;">Download</a>
+                    <button class="btn btn-secondary btn-xs" onclick="openFileEditor(${jsArg(f.path)})">${t('files-action-edit')}</button>
+                    <a href="/api/servers/${currentFilesServer}/files/download?path=${encodeURIComponent(f.path)}" class="btn btn-secondary btn-xs" download style="text-decoration:none;">${t('files-action-download')}</a>
                 `}
             </td>
         `;
@@ -6796,7 +7026,7 @@ async function openFileEditor(path) {
     el.filesEditingFilename.textContent = path;
     el.filesEditorCard.classList.remove('hidden');
     setFileEditorEditable(false);
-    el.filesEditorTextarea.value = state.language === 'de' ? 'Lade Dateiinhalt...' : 'Loading file content...';
+    el.filesEditorTextarea.value = t('msg-loading-file-content');
 
     let text = null, error = '';
     try {
@@ -6813,13 +7043,11 @@ async function openFileEditor(path) {
     if (seq !== fileEditorSeq) return; // another file was opened meanwhile
 
     if (text === null) {
-        el.filesEditorTextarea.value = (state.language === 'de' ? 'Fehler beim Lesen des Dateiinhalts.' : 'Error reading file content.') + (error ? ` (${error})` : '');
+        el.filesEditorTextarea.value = (t('msg-error-reading-file-content')) + (error ? ` (${error})` : '');
         return;
     }
     if (text.includes('\u0000') || (text.match(/�/g) || []).length > 8) {
-        el.filesEditorTextarea.value = state.language === 'de'
-            ? 'Binärdatei: sie kann im Browser nicht bearbeitet werden. Nutze den Download.'
-            : 'Binary file: it cannot be edited in the browser. Use the download instead.';
+        el.filesEditorTextarea.value = t('msg-binary-file-it-cannot-be-edited-in-the-brows');
         return;
     }
     el.filesEditorTextarea.value = text;
@@ -6841,12 +7069,12 @@ async function saveFileContent() {
             })
         });
         if (res.status === 200) {
-            alert(state.language === 'de' ? 'Datei erfolgreich gespeichert!' : 'File saved successfully!');
+            alert(t('msg-file-saved-successfully'));
         } else {
-            alert(state.language === 'de' ? 'Fehler beim Speichern der Datei.' : 'Error saving file.');
+            alert(t('msg-error-saving-file'));
         }
     } catch (e) {
-        alert((state.language === 'de' ? 'Fehler: ' : 'Error: ') + e.message);
+        alert((t('msg-error')) + e.message);
     }
 }
 
@@ -6855,7 +7083,7 @@ async function saveFileContent() {
 // ----------------------------------------------------
 async function loadAuditLogs() {
     if (!el.auditTableBody) return;
-    el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">${state.language === 'de' ? 'Lade Audit-Logs...' : 'Loading audit logs...'}</td></tr>`;
+    el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">${t('msg-loading-audit-logs')}</td></tr>`;
 
     try {
         const res = await apiFetch('/api/system/audit');
@@ -6863,7 +7091,7 @@ async function loadAuditLogs() {
             const logs = await res.json();
             renderAuditTable(logs);
         } else {
-            el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">${state.language === 'de' ? 'Fehler beim Laden der Audit-Logs' : 'Failed to load audit logs'}</td></tr>`;
+            el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">${t('msg-failed-to-load-audit-logs')}</td></tr>`;
         }
     } catch (e) {
         el.auditTableBody.innerHTML = `<tr><td colspan="6" class="text-danger text-center py-4">${escapeHtml(e.message)}</td></tr>`;
@@ -6989,7 +7217,7 @@ let currentCloneServer = null;
 
 function openCloneModal(server) {
     if (!state.currentUser || state.currentUser.role !== 'admin') {
-        alert(state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.');
+        alert(t('msg-access-denied-only-administrators-can-clone'));
         return;
     }
     if (!el.modalCloneInstance) return;
@@ -7012,14 +7240,14 @@ async function handleCloneSubmit() {
     if (!state.currentUser || state.currentUser.role !== 'admin') {
         if (el.modalCloneMessage) {
             el.modalCloneMessage.className = 'info-message text-danger';
-            el.modalCloneMessage.textContent = state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.';
+            el.modalCloneMessage.textContent = t('msg-access-denied-only-administrators-can-clone');
         }
         return;
     }
 
     if (el.modalCloneMessage) {
         el.modalCloneMessage.className = 'info-message text-muted';
-        el.modalCloneMessage.textContent = state.language === 'de' ? 'Erstelle Instanz...' : 'Creating instance...';
+        el.modalCloneMessage.textContent = t('msg-creating-instance');
     }
 
     try {
@@ -7031,7 +7259,7 @@ async function handleCloneSubmit() {
         if (res.status === 403) {
             if (el.modalCloneMessage) {
                 el.modalCloneMessage.className = 'info-message text-danger';
-                el.modalCloneMessage.textContent = state.language === 'de' ? 'Zugriff verweigert: Nur Administratoren dürfen Instanzen klonen.' : 'Access denied: Only administrators can clone instances.';
+                el.modalCloneMessage.textContent = t('msg-access-denied-only-administrators-can-clone');
             }
             return;
         }

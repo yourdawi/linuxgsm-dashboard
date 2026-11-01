@@ -96,12 +96,18 @@ type CronSchedule struct {
 	Available []string          `json:"available,omitempty"`
 }
 
+// scanMaxAge is how long a server listing reuses the last discovery.
+const scanMaxAge = 3 * time.Second
+
 type InstanceManager struct {
 	mu        sync.Mutex
 	instances map[string]*GameServerInstance
 	configDir string
 	rt        Runtime
 	static    bool // tests: disable discovery from /etc/passwd and the filesystem
+
+	scanMu   sync.Mutex // one discovery at a time; taken before mu, never while holding it
+	lastScan time.Time
 
 	pathsMu     sync.RWMutex
 	customPaths []string
@@ -172,26 +178,41 @@ func NewStaticInstanceManager(configDir string, instances ...GameServerInstance)
 }
 
 func (im *InstanceManager) GetInstances() []GameServerInstance {
-	im.mu.Lock()
-	defer im.mu.Unlock()
+	im.scanIfStale()
 
-	im.ScanInstancesNoLock()
-
-	list := make([]GameServerInstance, 0, len(im.instances))
-	for _, inst := range im.instances {
-		item := *inst
-		if !im.static {
-			item.CPU, item.RAM, item.PIDs = im.rt.ProcessStats(item)
-		}
-		if item.Status == "running" {
-			item.QueryData = im.cachedQuery(item.ID)
+	list := im.snapshot()
+	if !im.static {
+		im.measureProcesses(list)
+	}
+	for i := range list {
+		if list[i].Status == "running" {
+			list[i].QueryData = im.cachedQuery(list[i].ID)
 		} else {
-			item.QueryData = QueryInfo{}
+			list[i].QueryData = QueryInfo{}
 		}
-		item.Disk = im.cachedDisk(item.Dir)
-		list = append(list, item)
+		list[i].Disk = im.cachedDisk(list[i].Dir)
 	}
 	return list
+}
+
+// measureProcesses fills in CPU, RAM and PIDs. It runs without im.mu: every server takes at least
+// one tmux call, or an exec into its container in Docker mode.
+func (im *InstanceManager) measureProcesses(list []GameServerInstance) {
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for i := range list {
+		if list[i].Status == "stopped" {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(item *GameServerInstance) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			item.CPU, item.RAM, item.PIDs = im.rt.ProcessStats(*item)
+		}(&list[i])
+	}
+	wg.Wait()
 }
 
 // snapshot returns copies of all known instances without rescanning.
@@ -230,10 +251,23 @@ func (im *InstanceManager) ServerExists(serverID string) bool {
 	return ok
 }
 
+// ScanInstances discovers the servers now. Use it after something changed; listings go through
+// scanIfStale.
 func (im *InstanceManager) ScanInstances() {
-	im.mu.Lock()
-	defer im.mu.Unlock()
-	im.ScanInstancesNoLock()
+	im.scanMu.Lock()
+	defer im.scanMu.Unlock()
+	im.scanLocked()
+}
+
+// scanIfStale discovers the servers unless that just happened. Discovery asks tmux about every
+// server, and every open dashboard polls the list. Requests arriving during a scan wait for it and
+// use its result.
+func (im *InstanceManager) scanIfStale() {
+	im.scanMu.Lock()
+	defer im.scanMu.Unlock()
+	if time.Since(im.lastScan) >= scanMaxAge {
+		im.scanLocked()
+	}
 }
 
 // IsSafeServerDir validates a directory that will be used as LinuxGSM root. The strict charset
@@ -263,7 +297,9 @@ func cleanSlashPath(p string) string {
 	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(p)))
 }
 
-func (im *InstanceManager) ScanInstancesNoLock() {
+// scanLocked runs a discovery; the caller holds scanMu, so an older result cannot replace a newer
+// one. Discovery can take seconds and runs without im.mu, which every request needs.
+func (im *InstanceManager) scanLocked() {
 	if im.static {
 		return
 	}
@@ -273,6 +309,10 @@ func (im *InstanceManager) ScanInstancesNoLock() {
 		fmt.Println("Error discovering servers:", err)
 		return
 	}
+	im.lastScan = time.Now()
+
+	im.mu.Lock()
+	defer im.mu.Unlock()
 	im.assignStableIDs(found)
 	detected := make(map[string]*GameServerInstance, len(found))
 	for _, inst := range found {

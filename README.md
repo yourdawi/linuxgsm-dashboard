@@ -61,9 +61,9 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 - Bulk actions: select several servers and start, stop, restart or update them together.
 - Tags for grouping servers (for example "Production" or "Cluster A") and a tag filter on the dashboard.
 - Adjustable number of card columns on the dashboard and in the game installer (each remembered separately); a fixed column count uses the full window width on large screens.
-- Game installer: list of all LinuxGSM games (synchronised from linuxgsm.com), creates the Linux user, bootstraps LinuxGSM and runs `auto-install`. An installation directory outside of `/home` can be chosen. A regular Linux user that already exists, for example from an earlier LinuxGSM setup, is reused if its home directory is missing, holds only dotfiles or already holds LinuxGSM for the same game.
+- Game installer: list of all LinuxGSM games (synchronised from linuxgsm.com), creates the Linux user, bootstraps LinuxGSM and runs `auto-install`. Games LinuxGSM can only install with a Steam account (Arma 3, DayZ, Terraria and others) ask for the login and store it in `secrets-common.cfg`; the account must not use Steam Guard. An installation directory outside of `/home` can be chosen. A regular Linux user that already exists, for example from an earlier LinuxGSM setup, is reused if its home directory is missing, holds only dotfiles or already holds LinuxGSM for the same game.
 - Multi-instance cloning: creates an additional instance (for example `vhserver-2`) as an independent copy of the script, including its instance config.
-- Port check: probes the configured game, query and RCON ports from the public IP.
+- Port check: tests the configured ports from the server itself, on the public IP and locally. TCP ports get a connection, UDP ports a query in the protocol LinuxGSM names for the game (Valve query, Minecraft Bedrock); any other UDP port is shown as not testable. The test cannot prove that a port is reachable from the internet.
 - Live status from the game server itself: map, player count, bots and a player list with playtime and score (kick and ban for users with the `console` permission). The dashboard queries running servers every 15 seconds via the Valve/Steam query protocol (A2S, used by most Steam games), the Minecraft Java server list ping and the Minecraft Bedrock ping. Games without a query protocol (for example TeamSpeak 3) simply show no player data.
 - Disk usage per server: allocated size of the server directory including backups, plus free space on the disk the server lives on. `serverfiles` and backup directories moved to another disk are included. The size is measured in the background every 10 minutes.
 - Server deletion, including its systemd service and cron entries. A Linux user that exists only for this server (its home directory is the server directory and holds nothing but LinuxGSM and dotfiles) is removed together with its home directory. Any other user, for example a personal account LinuxGSM was installed into, is kept; then only the server's script and configs are removed, and its LinuxGSM files once no other instance is left in the directory.
@@ -291,7 +291,7 @@ The dashboard picks the mode by itself: inside a container it uses Docker mode, 
 | Time zone of the schedules | time zone of the host | **Settings > General** (default: `TZ` or UTC) |
 | Restart after a crash | cron job `monitor` | health check of the official images, plus the optional `monitor` schedule |
 | Autostart at boot | systemd service per server | restart policy `unless-stopped` |
-| CPU, RAM and disk usage per server | Yes, per Linux user | Yes, per container |
+| CPU, RAM and disk usage per server | Yes, processes of the server's tmux session | Yes, per container |
 | Host monitoring (CPU, RAM, disk) | Yes | Yes, (disk: the file system of the dashboard container) |
 | Firewall status and opening ports | Yes, UFW/firewalld | No, manage the firewall on the host |
 | Additional server directories, custom installation directory | Yes | No, all servers live in `LGSM_DATA_DIR` |
@@ -549,7 +549,7 @@ When upgrading from version 1.0.7 or older:
 - The live query uses the local address or the `Server IP` reported by LinuxGSM (in Docker mode also the Docker host); servers that block queries from the host itself show no player data.
 - The file manager edits files as plain text, without syntax highlighting, and opens files up to 5 MB in the editor.
 - Before a game server is installed, the dashboard installs the packages LinuxGSM lists for that game itself (from LinuxGSM's dependency list on GitHub, Debian/Ubuntu and RHEL based systems); the game server user never gets `sudo`. Packages LinuxGSM adds from other repositories (Mono, .NET) are not covered; LinuxGSM names them if they are missing. The service runs with `ProtectSystem=true` (a read-only `/usr`), so package installs and LinuxGSM's `auto-install` run as transient systemd units (`systemd-run`) outside of that sandbox.
-- CPU and RAM are measured per Linux user, so instances that share a user show the same values. The same applies to disk usage when instances share a directory (marked in the tooltip).
+- CPU and RAM cover the processes in the server's tmux session (in Docker mode: the processes of the `linuxgsm` user in the container). 100 percent is one full core. CPU shows 0 until the second measurement. Disk usage is shared when instances share a directory (marked in the tooltip).
 
 ## Development
 

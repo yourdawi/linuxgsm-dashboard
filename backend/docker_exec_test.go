@@ -273,8 +273,8 @@ func newTestDockerRuntime(t *testing.T, e *execEngine) *DockerRuntime {
 
 func TestDockerRuntimeCommands(t *testing.T) {
 	e := newExecEngine(t, func(c execCall) (string, string, int) {
-		if c.Cmd[0] == "ps" {
-			return "  10  1.5  2048\n  11  0.5  1024\n", "", 0
+		if c.Cmd[0] == "sh" {
+			return "10 (srv) S 1 10 10 0 -1 4194304 1 0 0 0 150 50 0 0 20 0 1 0 100 1000 2 0 0 0\n11 (sh) S 10 10 10 0 -1 4194304 1 0 0 0 5 5 0 0 20 0 1 0 100 1000 1 0 0 0\n", "", 0
 		}
 		return "", "", 0
 	})
@@ -291,7 +291,7 @@ func TestDockerRuntimeCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	cpu, ram, pids := d.ProcessStats(srv)
-	if cpu != 2 || ram != 3072.0/1024/1024 || len(pids) != 2 {
+	if cpu != 0 || ram != float64(3*os.Getpagesize())/1024/1024/1024 || len(pids) != 2 {
 		t.Fatalf("unexpected stats %v %v %v", cpu, ram, pids)
 	}
 
@@ -299,7 +299,7 @@ func TestDockerRuntimeCommands(t *testing.T) {
 		"linuxgsm /app ./vhserver stop",
 		"linuxgsm /data tar -xf /data/backup/a.tar.zst -C /data",
 		"linuxgsm /data bash -lc 'rclone' 'copy' '/data/backup' 'remote:x y'",
-		"root  ps -u linuxgsm -o pid,%cpu,rss --no-headers",
+		"root  sh -c ps -u linuxgsm -o pid= | while read -r p; do cat /proc/$p/stat 2>/dev/null; done",
 	}
 	for i, c := range e.calls {
 		got := c.User + " " + c.WorkingDir + " " + strings.Join(c.Cmd, " ")

@@ -176,17 +176,19 @@ func (d *DockerRuntime) QueryHosts() []string {
 }
 
 func (d *DockerRuntime) ProcessStats(srv GameServerInstance) (float64, float64, []int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var out bytes.Buffer
-	_, err := d.client.Exec(ctx, srv.ID, DockerExecConfig{
-		Cmd:  []string{"ps", "-u", dockerServerUser, "-o", "pid,%cpu,rss", "--no-headers"},
-		User: "root",
-	}, ExecIO{Stdout: &out})
-	if err != nil {
-		return 0, 0, nil
-	}
-	return parsePsStats(&out)
+	return procStats.measure(srv.ID, func() []procSample {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var out bytes.Buffer
+		_, err := d.client.Exec(ctx, srv.ID, DockerExecConfig{
+			Cmd:  []string{"sh", "-c", "ps -u " + dockerServerUser + " -o pid= | while read -r p; do cat /proc/$p/stat 2>/dev/null; done"},
+			User: "root",
+		}, ExecIO{Stdout: &out})
+		if err != nil {
+			return nil
+		}
+		return parseProcStats(out.String())
+	})
 }
 
 // RunLGSM runs ./<script> in /app as the linuxgsm user. A start or restart of a server whose
@@ -386,6 +388,12 @@ func (d *DockerRuntime) Install(ctx context.Context, req InstallRequest, logf fu
 	}
 	if err := os.WriteFile(filepath.Join(cfgDir, "common.cfg"), []byte(commonCfgSeed), 0644); err != nil {
 		return fail("Failed to write common.cfg: ", "common.cfg konnte nicht geschrieben werden: ", err)
+	}
+	if req.Steam.User != "" {
+		if err := seedSteamLogin(cfgDir, req.Steam, 0, 0); err != nil {
+			_ = os.RemoveAll(dir)
+			return fail("Failed to store the Steam login: ", "Steam-Login konnte nicht gespeichert werden: ", err)
+		}
 	}
 
 	logLine(Msg(lang, "[INSTALL] Creating and starting the container...", "[INSTALL] Erstelle und starte den Container..."))
