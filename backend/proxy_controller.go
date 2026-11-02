@@ -2,6 +2,8 @@ package backend
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +22,17 @@ import (
 // no machine is ever contacted about the proxy.
 
 const proxyConfigFile = "proxy.json"
+
+// A connected node sends a keepalive every 25 seconds, which renews the session every 2 minutes.
+const proxyHandshakeMaxAge = 200
+
+// States of a link.
+const (
+	ProxyHealthConnected = "connected"
+	ProxyHealthWaiting   = "waiting" // no recent handshake: a firewall or the address is wrong
+	ProxyHealthBroken    = "broken"  // interface or rules are missing on a machine
+	ProxyHealthUnknown   = "unknown" // a machine cannot be asked
+)
 
 // ProxyLocal names this dashboard's own machine as a proxy or as a node.
 const ProxyLocal = "@local"
@@ -34,6 +48,8 @@ type ProxyLink struct {
 	TunnelIP       string         `json:"tunnel_ip"`
 	Forwards       []ProxyForward `json:"forwards"`
 	TargetIP       string         `json:"target_ip,omitempty"`
+	PresharedKey   string         `json:"preshared_key,omitempty"` // only for the two machines
+	EgressUsers    []string       `json:"egress_users,omitempty"`
 	// Warnings of the last setup, for the answer to the administrator.
 	Warnings []ProxyCheck `json:"-"`
 }
@@ -74,6 +90,9 @@ type ProxyController struct {
 
 	mu  sync.Mutex
 	cfg proxyConfig
+	// links is what readers see. A setup holds mu for minutes while packages are installed, and the
+	// server list must not wait for that.
+	links atomic.Pointer[[]ProxyLink]
 }
 
 // NewProxyController loads <configDir>/proxy.json; a missing file means the proxy is not in use.
@@ -81,6 +100,7 @@ func NewProxyController(configDir string, endpoint func(id string) (ProxyEndpoin
 	c := &ProxyController{path: filepath.Join(configDir, proxyConfigFile), endpoint: endpoint}
 	data, err := os.ReadFile(c.path)
 	if errors.Is(err, os.ErrNotExist) {
+		c.publishLinksLocked()
 		return c, nil
 	}
 	if err != nil {
@@ -89,10 +109,17 @@ func NewProxyController(configDir string, endpoint func(id string) (ProxyEndpoin
 	if err := json.Unmarshal(data, &c.cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w", proxyConfigFile, err)
 	}
+	c.publishLinksLocked()
 	return c, nil
 }
 
+func (c *ProxyController) publishLinksLocked() {
+	links := append([]ProxyLink{}, c.cfg.Links...)
+	c.links.Store(&links)
+}
+
 func (c *ProxyController) saveLocked() error {
+	c.publishLinksLocked()
 	data, err := json.MarshalIndent(c.cfg, "", "  ")
 	if err != nil {
 		return err
@@ -102,9 +129,7 @@ func (c *ProxyController) saveLocked() error {
 
 // Links returns a copy of the links.
 func (c *ProxyController) Links() []ProxyLink {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]ProxyLink{}, c.cfg.Links...)
+	return append([]ProxyLink{}, *c.links.Load()...)
 }
 
 // planFor builds the plan of one machine from a list of links.
@@ -118,13 +143,18 @@ func planFor(links []ProxyLink, id string) ProxyPlan {
 				Endpoint:       net.JoinHostPort(l.PublicHost, strconv.Itoa(l.ListenPort)),
 				Forwards:       l.Forwards,
 				TargetIP:       l.TargetIP,
+				PresharedKey:   l.PresharedKey,
+				EgressUsers:    l.EgressUsers,
 			}
 		}
 		if l.Proxy == id {
 			if plan.Proxy == nil {
 				plan.Proxy = &ProxySide{ListenPort: l.ListenPort}
 			}
-			plan.Proxy.Peers = append(plan.Proxy.Peers, ProxyPeer{PublicKey: l.NodePublicKey, TunnelIP: l.TunnelIP, Forwards: l.Forwards})
+			plan.Proxy.Peers = append(plan.Proxy.Peers, ProxyPeer{
+				PublicKey: l.NodePublicKey, TunnelIP: l.TunnelIP, Forwards: l.Forwards,
+				PresharedKey: l.PresharedKey, Egress: len(l.EgressUsers) > 0,
+			})
 		}
 	}
 	return plan
@@ -154,6 +184,8 @@ type ProxySetup struct {
 	ListenPort int            `json:"listen_port"`
 	Forwards   []ProxyForward `json:"forwards"`
 	TargetIP   string         `json:"target_ip"`
+	// EgressUsers send their outgoing traffic through the proxy; see NodeSide.
+	EgressUsers []string `json:"egress_users"`
 }
 
 func checkProxyPorts(links []ProxyLink, proxy, node string, forwards []ProxyForward, listenPort int) error {
@@ -212,6 +244,13 @@ func (c *ProxyController) Setup(ctx context.Context, req ProxySetup) (ProxyLink,
 	if req.TargetIP != "" && net.ParseIP(req.TargetIP) == nil {
 		return ProxyLink{}, errors.New("invalid target address")
 	}
+	if err := validateEgressUsers(req.EgressUsers); err != nil {
+		return ProxyLink{}, err
+	}
+	presharedKey := make([]byte, 32)
+	if _, err := rand.Read(presharedKey); err != nil {
+		return ProxyLink{}, err
+	}
 	proxyEP, err := c.endpoint(req.Proxy)
 	if err != nil {
 		return ProxyLink{}, fmt.Errorf("proxy: %w", err)
@@ -248,6 +287,7 @@ func (c *ProxyController) Setup(ctx context.Context, req ProxySetup) (ProxyLink,
 		Proxy: req.Proxy, Node: req.Node, PublicHost: req.PublicHost, ListenPort: req.ListenPort,
 		ProxyPublicKey: proxyInfo.PublicKey, NodePublicKey: nodeInfo.PublicKey,
 		TunnelIP: ip, Forwards: req.Forwards, TargetIP: req.TargetIP,
+		PresharedKey: base64.StdEncoding.EncodeToString(presharedKey), EgressUsers: req.EgressUsers,
 	}
 	links := append(append([]ProxyLink{}, c.cfg.Links...), link)
 	if err := c.pushLocked(ctx, links, proxyEP, nodeEP, req.Proxy, req.Node); err != nil {
@@ -263,6 +303,7 @@ func (c *ProxyController) Setup(ctx context.Context, req ProxySetup) (ProxyLink,
 			link.Warnings = append(link.Warnings, check)
 		}
 	}
+	link.PresharedKey = ""
 	return link, nil
 }
 
@@ -297,6 +338,39 @@ func (c *ProxyController) SetForwards(ctx context.Context, node string, forwards
 		return err
 	}
 	links[idx].Forwards = forwards
+	proxyEP, err := c.endpoint(links[idx].Proxy)
+	if err != nil {
+		return fmt.Errorf("proxy: %w", err)
+	}
+	nodeEP, err := c.endpoint(node)
+	if err != nil {
+		return fmt.Errorf("node: %w", err)
+	}
+	if err := c.pushLocked(ctx, links, proxyEP, nodeEP, links[idx].Proxy, node); err != nil {
+		return err
+	}
+	c.cfg.Links = links
+	return c.saveLocked()
+}
+
+// SetEgress chooses the Linux users of a node whose outgoing traffic leaves through the proxy.
+func (c *ProxyController) SetEgress(ctx context.Context, node string, users []string) error {
+	if err := validateEgressUsers(users); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	links := append([]ProxyLink{}, c.cfg.Links...)
+	idx := -1
+	for i, l := range links {
+		if l.Node == node {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return errors.New("this machine uses no proxy")
+	}
+	links[idx].EgressUsers = users
 	proxyEP, err := c.endpoint(links[idx].Proxy)
 	if err != nil {
 		return fmt.Errorf("proxy: %w", err)
@@ -408,12 +482,48 @@ func removeString(list []string, s string) []string {
 	return out
 }
 
+// ServerAddress tells how players reach a game port of a machine: the address through its proxy, and
+// whether the machine has a proxy at all.
+func (c *ProxyController) ServerAddress(machine string, port int) (string, bool) {
+	for _, l := range *c.links.Load() {
+		if l.Node != machine {
+			continue
+		}
+		for _, f := range l.Forwards {
+			if f.Port == port {
+				return net.JoinHostPort(l.PublicHost, strconv.Itoa(port)), true
+			}
+		}
+		return "", true
+	}
+	return "", false
+}
+
 // ProxyLinkView is a link with the state of both ends.
 type ProxyLinkView struct {
 	ProxyLink
 	PlayerAddress string           `json:"player_address"` // what players type in
+	Health        string           `json:"health"`
 	ProxyStatus   *ProxyHostStatus `json:"proxy_status,omitempty"`
 	NodeStatus    *ProxyHostStatus `json:"node_status,omitempty"`
+}
+
+// proxyLinkHealth says what is known about the tunnel. "Connected" does not prove that players get
+// through: a firewall of the provider can still block the game ports.
+func proxyLinkHealth(proxy, node *ProxyHostStatus) string {
+	if proxy == nil || node == nil {
+		return ProxyHealthUnknown
+	}
+	if !proxy.InterfaceUp || !proxy.RulesLoaded || !node.InterfaceUp || !node.RulesLoaded {
+		return ProxyHealthBroken
+	}
+	fresh := func(st *ProxyHostStatus) bool {
+		return st.LastHandshake > 0 && st.HandshakeAge <= proxyHandshakeMaxAge
+	}
+	if fresh(proxy) && fresh(node) {
+		return ProxyHealthConnected
+	}
+	return ProxyHealthWaiting
 }
 
 // View returns the links with their state. Offline machines have no state.
@@ -435,7 +545,9 @@ func (c *ProxyController) View(ctx context.Context) []ProxyLinkView {
 	}
 	for _, l := range links {
 		v := ProxyLinkView{ProxyLink: l, ProxyStatus: read(l.Proxy), NodeStatus: read(l.Node)}
+		v.PresharedKey = ""
 		v.PlayerAddress = l.PublicHost
+		v.Health = proxyLinkHealth(v.ProxyStatus, v.NodeStatus)
 		views = append(views, v)
 	}
 	return views

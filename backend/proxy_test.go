@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 var testWGKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
@@ -89,7 +90,7 @@ func TestProxyRules(t *testing.T) {
 		}
 	}
 
-	node := renderNodeRules(testNodePlan().Node, "192.168.0.177")
+	node := renderNodeRules(testNodePlan().Node, "192.168.0.177", nil)
 	for _, want := range []string{
 		`iifname "wg-lgsm" udp dport { 27015 } dnat ip to 192.168.0.177`, // answers of 0.0.0.0 sockets
 		`iifname "wg-lgsm" ct state new ct mark set 0x77`,
@@ -102,6 +103,268 @@ func TestProxyRules(t *testing.T) {
 	}
 	if strings.Contains(node, "masquerade") {
 		t.Errorf("node rules hide the player:\n%s", node)
+	}
+}
+
+func TestProxyEgressRules(t *testing.T) {
+	plan := testNodePlan()
+	node := renderNodeRules(plan.Node, "192.168.0.177", []int{1000, 1001})
+	for _, want := range []string{
+		"meta mark 0x78 return", // the outer packets of WireGuard keep the owner of the inner ones
+		"ct state new meta skuid { 1000, 1001 } ip daddr != { 0.0.0.0/8, 10.0.0.0/8",
+		"ct mark set 0x77",
+		`oifname "wg-lgsm" ip saddr != 10.77.0.2 snat ip to 10.77.0.2`,
+		"meta nfproto ipv6 meta skuid { 1000, 1001 }",
+		`oifname "wg-lgsm" tcp flags syn tcp option maxseg size set rt mtu`,
+		`iifname "wg-lgsm" udp dport { 27015 } dnat ip to 192.168.0.177`, // incoming stays the same
+	} {
+		if !strings.Contains(node, want) {
+			t.Errorf("node rules lack %q:\n%s", want, node)
+		}
+	}
+	// Mark first, so that a connection of these users is routed by its own new mark.
+	if strings.Index(node, "meta skuid { 1000, 1001 } ip daddr") > strings.Index(node, "ct mark 0x77 meta mark set") {
+		t.Errorf("the mark comes too late:\n%s", node)
+	}
+	plain := renderNodeRules(plan.Node, "192.168.0.177", nil)
+	for _, bad := range []string{"skuid", "snat", "ipv6"} {
+		if strings.Contains(plain, bad) {
+			t.Errorf("rules without outgoing traffic contain %q:\n%s", bad, plain)
+		}
+	}
+
+	side := testProxyPlan().Proxy
+	if rules := renderProxyRules(side, "eth0"); strings.Contains(rules, "masquerade") {
+		t.Errorf("a node without outgoing traffic got an exit:\n%s", rules)
+	}
+	side.Peers[0].Egress = true
+	proxy := renderProxyRules(side, "eth0")
+	for _, want := range []string{
+		`oifname "eth0" ip saddr 10.77.0.2 masquerade`,
+		`iifname "wg-lgsm" oifname "eth0" ip saddr 10.77.0.2 ip daddr { 0.0.0.0/8, 10.0.0.0/8`, // no way into private networks
+		`iifname "wg-lgsm" oifname "eth0" ip saddr 10.77.0.2 ct state new limit rate over`,
+	} {
+		if !strings.Contains(proxy, want) {
+			t.Errorf("proxy rules lack %q:\n%s", want, proxy)
+		}
+	}
+	if strings.Index(proxy, "ip daddr { 0.0.0.0/8") > strings.Index(proxy, "ip saddr 10.77.0.2 accept") {
+		t.Errorf("private networks are checked too late:\n%s", proxy)
+	}
+}
+
+func TestProxyRulesProtectTheProxy(t *testing.T) {
+	proxy := renderProxyRules(testProxyPlan().Proxy, "eth0")
+	for _, want := range []string{
+		"chain c_in",
+		`iifname "eth0" oifname "wg-lgsm" ct state new add @s_flows { ip saddr limit rate over`,
+		"flags dynamic,timeout",
+	} {
+		if !strings.Contains(proxy, want) {
+			t.Errorf("proxy rules lack %q:\n%s", want, proxy)
+		}
+	}
+	// Otherwise a flood passes before the limit.
+	if strings.Index(proxy, "add @s_flows") > strings.Index(proxy, `ip daddr 10.77.0.2 udp dport`) {
+		t.Errorf("the limit comes too late:\n%s", proxy)
+	}
+}
+
+func TestProxyEgressUsersOnTheNode(t *testing.T) {
+	h, f := newTestProxyHost(t)
+	ctx := context.Background()
+	h.lookupUID = func(name string) (int, error) {
+		switch name {
+		case "game":
+			return 1000, nil
+		case "toor":
+			return 0, nil
+		}
+		return 0, errors.New("unknown user")
+	}
+	h.NodeUsers = func() map[string]bool { return map[string]bool{"game": true, "toor": true, "gone": true} }
+	plan := testNodePlan()
+	plan.Node.EgressUsers = []string{"game"}
+	if err := h.Apply(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.stdin["nft -f -"], "skuid { 1000 }") {
+		t.Errorf("rules: %s", f.stdin["nft -f -"])
+	}
+	for _, c := range []struct{ user, want string }{
+		{"other", "no game server"}, // the dashboard cannot route a service of this machine
+		{"gone", "unknown user"},
+		{"toor", "is root"}, // another name for root would catch the tunnel and the agent
+		{"root", "invalid user"},
+		{"bad;name", "invalid user"},
+	} {
+		plan.Node.EgressUsers = []string{c.user}
+		if err := h.Apply(ctx, plan); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.user, err, c.want)
+		}
+	}
+}
+
+func TestProxyPresharedKey(t *testing.T) {
+	c, _ := newTestProxyController(t)
+	ctx := context.Background()
+	link, err := c.Setup(ctx, testSetup("lxc", 27015))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.PresharedKey != "" {
+		t.Error("the answer to the browser holds the key")
+	}
+	stored := c.Links()[0]
+	if !validProxyKey(stored.PresharedKey) {
+		t.Fatalf("key: %q", stored.PresharedKey)
+	}
+	if planFor(c.Links(), "lxc").Node.PresharedKey != stored.PresharedKey || planFor(c.Links(), "vps").Proxy.Peers[0].PresharedKey != stored.PresharedKey {
+		t.Error("both ends need the same key")
+	}
+	for _, v := range c.View(ctx) {
+		if v.PresharedKey != "" {
+			t.Error("the view holds the key")
+		}
+	}
+	conf := renderWGConfig(planFor(c.Links(), "lxc"), "PRIV")
+	if !strings.Contains(conf, "PresharedKey = "+stored.PresharedKey) || !strings.Contains(conf, "FwMark = 0x78") {
+		t.Errorf("config: %s", conf)
+	}
+}
+
+func TestProxySetEgress(t *testing.T) {
+	c, _ := newTestProxyController(t)
+	ctx := context.Background()
+	if _, err := c.Setup(ctx, testSetup("lxc", 27015)); err != nil {
+		t.Fatal(err)
+	}
+	if planFor(c.Links(), "vps").Proxy.Peers[0].Egress {
+		t.Error("outgoing traffic is on by default")
+	}
+	if err := c.SetEgress(ctx, "lxc", []string{"game"}); err != nil {
+		t.Fatal(err)
+	}
+	if !planFor(c.Links(), "vps").Proxy.Peers[0].Egress || len(planFor(c.Links(), "lxc").Node.EgressUsers) != 1 {
+		t.Errorf("plans: %+v", c.Links())
+	}
+	if err := c.SetEgress(ctx, "lxc", []string{"root"}); err == nil {
+		t.Error("root accepted")
+	}
+	if err := c.SetEgress(ctx, "unknown", nil); err == nil {
+		t.Error("unknown node accepted")
+	}
+}
+
+// A setup can take minutes; the server list asks for addresses all the time.
+func TestProxyAddressesDoNotWaitForASetup(t *testing.T) {
+	c, _ := newTestProxyController(t)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		c.ServerAddress("lxc", 27015)
+		c.Links()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked by a running setup")
+	}
+}
+
+func TestProxyServerAddress(t *testing.T) {
+	c, _ := newTestProxyController(t)
+	if _, err := c.Setup(context.Background(), testSetup("lxc", 27015)); err != nil {
+		t.Fatal(err)
+	}
+	if got, has := c.ServerAddress("lxc", 27015); got != "203.0.113.5:27015" || !has {
+		t.Errorf("published: %q %v", got, has)
+	}
+	if got, has := c.ServerAddress("lxc", 27016); got != "" || !has {
+		t.Errorf("not published: %q %v", got, has)
+	}
+	if got, has := c.ServerAddress("lxc2", 27015); got != "" || has {
+		t.Errorf("no proxy: %q %v", got, has)
+	}
+}
+
+func TestProxyDisplayIP(t *testing.T) {
+	dir := t.TempDir()
+	cfg := func(script string) string {
+		return filepath.Join(dir, script, "lgsm", "config-lgsm", script, script+".cfg")
+	}
+	mustWrite(t, cfg("one"), "port=\"27015\"\n")
+	mustWrite(t, cfg("two"), "port=\"27016\"\n")
+	mustWrite(t, cfg("own"), "displayip=\"play.example.com\"\n")
+	im := NewStaticInstanceManager(t.TempDir(),
+		GameServerInstance{ID: "one", User: "game", Script: "one", Dir: filepath.Join(dir, "one"), Port: 27015},
+		GameServerInstance{ID: "two", User: "game", Script: "two", Dir: filepath.Join(dir, "two"), Port: 27016},
+		GameServerInstance{ID: "own", User: "game", Script: "own", Dir: filepath.Join(dir, "own"), Port: 27017},
+	)
+	read := func(script string) string {
+		data, _ := os.ReadFile(cfg(script))
+		return string(data)
+	}
+	if err := im.ProxySyncDisplayIP(map[int]bool{27015: true, 27017: true}, "", "203.0.113.5"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(read("one"), `displayip="203.0.113.5"`) {
+		t.Errorf("published server: %s", read("one"))
+	}
+	if strings.Contains(read("two"), "displayip") {
+		t.Errorf("a server that is not published changed: %s", read("two"))
+	}
+	if !strings.Contains(read("own"), "play.example.com") || strings.Contains(read("own"), "203.0.113.5") {
+		t.Errorf("the administrator's value changed: %s", read("own"))
+	}
+	// The proxy moves to another address.
+	if err := im.ProxySyncDisplayIP(map[int]bool{27015: true}, "203.0.113.5", "198.51.100.7"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(read("one"), "198.51.100.7") || strings.Contains(read("one"), "203.0.113.5") {
+		t.Errorf("moved: %s", read("one"))
+	}
+	// The proxy is removed: only its own value goes.
+	if err := im.ProxySyncDisplayIP(nil, "198.51.100.7", ""); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(read("one"), "displayip") || !strings.Contains(read("one"), "port=") {
+		t.Errorf("removed: %s", read("one"))
+	}
+	if !strings.Contains(read("own"), "play.example.com") {
+		t.Errorf("the administrator's value went: %s", read("own"))
+	}
+}
+
+func TestProxyHostKeepsDisplayIP(t *testing.T) {
+	h, _ := newTestProxyHost(t)
+	ctx := context.Background()
+	type call struct {
+		ports         map[int]bool
+		oldHost, host string
+	}
+	var calls []call
+	h.SyncDisplayIP = func(ports map[int]bool, oldHost, newHost string) error {
+		calls = append(calls, call{ports, oldHost, newHost})
+		return nil
+	}
+	if err := h.Apply(ctx, testNodePlan()); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].host != "203.0.113.5" || !calls[0].ports[27015] {
+		t.Fatalf("calls: %+v", calls)
+	}
+	h.Reconcile(ctx)
+	if last := calls[len(calls)-1]; last.oldHost != "203.0.113.5" || last.host != "203.0.113.5" {
+		t.Errorf("reconcile: %+v", last)
+	}
+	if err := h.Teardown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if last := calls[len(calls)-1]; last.oldHost != "203.0.113.5" || last.host != "" || len(last.ports) != 0 {
+		t.Errorf("teardown: %+v", last)
 	}
 }
 
@@ -372,6 +635,102 @@ func TestProxyApplyLeavesAnUnchangedPlanAlone(t *testing.T) {
 	}
 }
 
+// ufw, Docker and cloud images drop what our nft table accepts, so the tunnel needs its own rules.
+func TestProxyOpensOtherFirewalls(t *testing.T) {
+	h, f := newTestProxyHost(t)
+	ctx := context.Background()
+	f.fail = map[string]string{"iptables -w 5 -C": "Bad rule", "ip6tables -w 5 -C": "Bad rule"}
+	if err := h.Apply(ctx, testProxyPlan()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"iptables -w 5 -I INPUT -p udp --dport 51820 -j ACCEPT",
+		"ip6tables -w 5 -I INPUT -p udp --dport 51820 -j ACCEPT",
+		"iptables -w 5 -I FORWARD -i wg-lgsm -j ACCEPT",
+		"iptables -w 5 -I FORWARD -o wg-lgsm -j ACCEPT",
+	} {
+		if !f.called(want) {
+			t.Errorf("missing %q in %q", want, f.calls)
+		}
+	}
+	// ufw or Docker arrive later and the rule is gone: the next round puts it back.
+	f.calls = nil
+	h.Reconcile(ctx)
+	if !f.called("iptables -w 5 -I FORWARD -i wg-lgsm") {
+		t.Errorf("not restored: %q", f.calls)
+	}
+	f.calls, f.fail = nil, nil
+	if err := h.Teardown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !f.called("iptables -w 5 -D FORWARD -i wg-lgsm -j ACCEPT") || !f.called("ip6tables -w 5 -D INPUT") {
+		t.Errorf("rules stayed: %q", f.calls)
+	}
+}
+
+func TestProxyLeavesRulesOfTheAdministrator(t *testing.T) {
+	h, f := newTestProxyHost(t)
+	ctx := context.Background()
+	if err := h.Apply(ctx, testProxyPlan()); err != nil { // every check finds its rule
+		t.Fatal(err)
+	}
+	if f.called("iptables -w 5 -I") {
+		t.Errorf("added a rule that exists: %q", f.calls)
+	}
+	f.calls = nil
+	if err := h.Teardown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.called("iptables -w 5 -D") {
+		t.Errorf("removed a rule of the administrator: %q", f.calls)
+	}
+}
+
+func TestProxyFirewallProblems(t *testing.T) {
+	h, f := newTestProxyHost(t)
+	ctx := context.Background()
+	f.fail = map[string]string{"sh -c command -v iptables": "", "sh -c command -v ip6tables": ""}
+	if err := h.Apply(ctx, testProxyPlan()); err != nil {
+		t.Fatal(err)
+	}
+	if f.called("iptables -w") || f.called("ip6tables -w") {
+		t.Errorf("no iptables here, still used: %q", f.calls)
+	}
+	if st := h.Status(ctx); st.Error != "" {
+		t.Errorf("error without a reason: %q", st.Error)
+	}
+
+	// A rule that cannot be set shows in the status and does not stop the proxy.
+	f.fail = map[string]string{"iptables -w 5 -C": "", "iptables -w 5 -I": "no chain"}
+	if err := h.Apply(ctx, testProxyPlan()); err != nil {
+		t.Fatal(err)
+	}
+	if st := h.Status(ctx); !strings.Contains(st.Error, "no chain") {
+		t.Errorf("status: %+v", st)
+	}
+}
+
+func TestProxyLinkHealth(t *testing.T) {
+	up := func(age int64) *ProxyHostStatus {
+		return &ProxyHostStatus{InterfaceUp: true, RulesLoaded: true, LastHandshake: 1000, HandshakeAge: age}
+	}
+	for _, c := range []struct {
+		name        string
+		proxy, node *ProxyHostStatus
+		want        string
+	}{
+		{"both fresh", up(30), up(40), ProxyHealthConnected},
+		{"offline", nil, up(30), ProxyHealthUnknown},
+		{"old handshake", up(30), up(proxyHandshakeMaxAge + 1), ProxyHealthWaiting},
+		{"never", &ProxyHostStatus{InterfaceUp: true, RulesLoaded: true}, up(30), ProxyHealthWaiting},
+		{"rules gone", &ProxyHostStatus{InterfaceUp: true, LastHandshake: 1000}, up(30), ProxyHealthBroken},
+	} {
+		if got := proxyLinkHealth(c.proxy, c.node); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
 func TestProxyTeardownLeavesNothing(t *testing.T) {
 	h, f := newTestProxyHost(t)
 	ctx := context.Background()
@@ -411,7 +770,7 @@ func TestProxyChecks(t *testing.T) {
 	h, f := newTestProxyHost(t)
 	f.fail = map[string]string{"ip link add wg-lgsm-probe": "Unknown device type"}
 	f.out = map[string]string{
-		"iptables -S FORWARD":                 "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n",
+		"firewall-cmd --state":                "running\n",
 		"ip -4 route show to match 10.77.0.1": "10.77.0.0/16 dev tun0\ndefault via 1.2.3.4 dev eth0\n",
 	}
 	got := map[string]ProxyCheck{}
@@ -424,7 +783,7 @@ func TestProxyChecks(t *testing.T) {
 	if c := got["subnet"]; c.OK || !c.Fatal || !strings.Contains(c.Detail, "tun0") {
 		t.Errorf("subnet: %+v", c)
 	}
-	if c := got["firewall"]; c.OK || c.Fatal || !strings.Contains(c.Detail, "DOCKER-USER") {
+	if c := got["firewall"]; c.OK || c.Fatal || !strings.Contains(c.Detail, "firewall-cmd") {
 		t.Errorf("firewall: %+v", c)
 	}
 	if !f.called("ip link del wg-lgsm-probe") {

@@ -566,6 +566,9 @@
                     <button class="settings-subtab-btn" id="settings-tab-btn-nodes" data-subtab="nodes">
                         <span data-i18n="settings-subtab-nodes">Nodes</span>
                     </button>
+                    <button class="settings-subtab-btn" id="settings-tab-btn-proxy" data-subtab="proxy">
+                        <span data-i18n="settings-subtab-proxy">Proxy</span>
+                    </button>
                 </div>
 
                 <!-- Shared Server Selection Bar (visible when on server, cron, or alerts tab) -->
@@ -885,6 +888,50 @@
                             <div id="firewall-message-text" class="text-muted" style="font-size:0.8rem; line-height:1.4; margin-bottom:0.75rem;"></div>
                             <div id="firewall-rules-box" class="hidden" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:0.75rem; border-radius:6px; font-family:var(--font-mono); font-size:0.8rem; max-height:120px; overflow-y:auto;"></div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Proxy: players connect through another machine (administrators only) -->
+                <div id="settings-subtab-panel-proxy" class="settings-subtab-panel hidden">
+                    <div class="settings-card glass-panel mb-4">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                            <h3 style="margin:0;" data-i18n="proxy-list-title">Proxy</h3>
+                            <button type="button" class="btn btn-secondary btn-sm" id="proxy-refresh" data-i18n="nodes-refresh">Aktualisieren</button>
+                        </div>
+                        <p class="text-muted" style="font-size:0.85rem;" data-i18n="proxy-desc">Spieler verbinden sich mit der Adresse des Proxys, der Server braucht keinen offenen Port. Der Gameserver sieht trotzdem die echte IP der Spieler.</p>
+                        <div id="proxy-list" class="nodes-list mt-3"></div>
+                    </div>
+                    <div class="settings-card glass-panel mb-4">
+                        <h3 style="margin-top:0;" data-i18n="proxy-setup-title">Proxy einrichten</h3>
+                        <p class="text-muted" style="font-size:0.85rem;" data-i18n="proxy-setup-desc">Erst dieser Schritt ändert etwas: Auf beiden Maschinen werden wireguard-tools und nftables installiert, soweit sie fehlen, der Tunnel wird eingerichtet und die Firewall der Maschine dafür geöffnet. Beim Entfernen wird das zurückgenommen.</p>
+                        <form id="proxy-setup-form">
+                            <div class="form-group">
+                                <label for="proxy-setup-proxy" data-i18n="proxy-setup-proxy">Proxy (mit öffentlicher IP)</label>
+                                <select id="proxy-setup-proxy" class="form-control" required></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-setup-node" data-i18n="proxy-setup-node">Maschine mit den Gameservern</label>
+                                <select id="proxy-setup-node" class="form-control" required></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-setup-host" data-i18n="proxy-setup-host">Öffentliche Adresse des Proxys</label>
+                                <input type="text" id="proxy-setup-host" class="form-control" required autocomplete="off" spellcheck="false" placeholder="203.0.113.5">
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-setup-ports" data-i18n="proxy-setup-ports">Ports</label>
+                                <input type="text" id="proxy-setup-ports" class="form-control" required autocomplete="off" spellcheck="false" placeholder="27015/udp, 27015/tcp">
+                                <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;" data-i18n="proxy-setup-ports-hint">Vorgeschlagen aus den erkannten Gameservern. Der Node lehnt Ports ab, die zu keinem Gameserver gehören.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-setup-egress" data-i18n="proxy-setup-egress">Ausgehender Verkehr über den Proxy (Linux-Benutzer, optional)</label>
+                                <input type="text" id="proxy-setup-egress" class="form-control" autocomplete="off" spellcheck="false" placeholder="game">
+                                <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;" data-i18n="proxy-setup-egress-hint">Für Steam-Spiele empfohlen: Dann sieht Steam die Adresse des Proxys statt deines Anschlusses. Alles dieses Benutzers läuft dann über den Proxy, auch Updates mit vielen GB.</p>
+                                <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;" id="proxy-setup-egress-found"></p>
+                            </div>
+                            <p class="text-muted" style="font-size:0.85rem;" data-i18n="proxy-setup-cloud">Hat dein Anbieter eine eigene Firewall (Cloud-Firewall, Security Group), öffne dort UDP 51820 und die Spielports. Das kann das Dashboard nicht von hier aus.</p>
+                            <div id="proxy-setup-message" class="info-message"></div>
+                            <button type="submit" class="btn btn-primary" id="proxy-setup-btn" data-i18n="proxy-setup-btn">Proxy einrichten</button>
+                        </form>
                     </div>
                 </div>
 

@@ -522,7 +522,7 @@ function initApp() {
     el.settingsToolsBtnCron.addEventListener('click', installCronjobs);
     
     // Settings sub-tab navigation
-    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes'];
+    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes', 'proxy'];
     settingsSubtabs.forEach(tab => {
         const btn = document.getElementById(`settings-tab-btn-${tab}`);
         if (btn) {
@@ -530,6 +530,7 @@ function initApp() {
         }
     });
     initNodesPanel();
+    initProxyPanel();
 
     // Backups listeners
     el.backupsServerSelect.addEventListener('change', handleBackupsServerChange);
@@ -1487,6 +1488,12 @@ function fillServerCardStats(card, server) {
     const playersBtn = card.querySelector('[data-field="players"]');
     if (playersBtn) playersBtn.disabled = !online;
 
+    set('proxy-address', server.proxy_address || '');
+    const proxyRow = card.querySelector('[data-field="proxy"]');
+    if (proxyRow) proxyRow.classList.toggle('hidden', !server.proxy_address);
+    const proxyOffer = card.querySelector('[data-field="proxy-offer"]');
+    if (proxyOffer) proxyOffer.classList.toggle('hidden', !server.proxy_available || !!server.node_offline);
+
     const busy = serverStatusInfo(server).busy;
     card.querySelectorAll('.btn-server-action').forEach(btn => { btn.disabled = busy; });
 }
@@ -1561,6 +1568,7 @@ function createServerCard(server) {
     const statusDot = server.node_offline ? 'status-offline' : status.dot;
     const statusText = server.node_offline ? t('card-node-offline') : status.text;
     const dirTitle = server.dir ? ` title="${escapeHtml(server.dir)}"` : '';
+    const isAdminUser = !!(state.currentUser && state.currentUser.role === 'admin');
 
     card.innerHTML = `
         <header class="sc-head">
@@ -1574,6 +1582,12 @@ function createServerCard(server) {
                     ${nodeChip}
                     ${tag}
                 </div>
+                <div class="sc-proxy hidden" data-field="proxy">
+                    <span>${t('card-proxy-label')}</span>
+                    <button type="button" class="link-btn mono" data-field="proxy-address" title="${t('card-proxy-copy')}" onclick="copyProxyAddress(this)"></button>
+                    ${isAdminUser ? `<button type="button" class="link-btn" data-field="proxy-unpublish" onclick="setServerOnProxy(${id}, false)">${t('card-proxy-unpublish')}</button>` : ''}
+                </div>
+                ${isAdminUser ? `<div class="sc-proxy hidden" data-field="proxy-offer"><button type="button" class="link-btn" onclick="setServerOnProxy(${id}, true)">${t('card-proxy-publish')}</button></div>` : ''}
             </div>
             <span class="status-pill"><span class="status-dot ${statusDot}"></span>${statusText}</span>
         </header>
@@ -2676,6 +2690,7 @@ function allowedSettingsSubtabs() {
         alerts: hasPerm('alerts'),
         security: isAdmin && capable('firewall'),
         nodes: isAdmin,
+        proxy: isAdmin,
     };
 }
 
@@ -2701,7 +2716,7 @@ function applySettingsPermissions() {
 function switchSettingsSubtab(subtabName) {
     if (!allowedSettingsSubtabs()[subtabName]) subtabName = 'general';
     state.settingsSubtab = subtabName;
-    const subtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes'];
+    const subtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes', 'proxy'];
     subtabs.forEach(tab => {
         const btn = document.getElementById(`settings-tab-btn-${tab}`);
         const panel = document.getElementById(`settings-subtab-panel-${tab}`);
@@ -2723,6 +2738,391 @@ function switchSettingsSubtab(subtabName) {
             if (state.lastActiveView === 'settings' && state.settingsSubtab === 'nodes') loadNodes();
         }, 5000);
     }
+    // Every status asks both machines of a link, so less often than the node list.
+    if (subtabName === 'proxy') {
+        loadProxy();
+        state.nodesInterval = setInterval(() => {
+            if (state.lastActiveView === 'settings' && state.settingsSubtab === 'proxy') loadProxy();
+        }, 15000);
+    }
+}
+
+// -------------------------------------------------------------
+// Proxy (players connect through another machine)
+// -------------------------------------------------------------
+
+function initProxyPanel() {
+    const form = document.getElementById('proxy-setup-form');
+    if (!form) return;
+    document.getElementById('proxy-refresh').addEventListener('click', loadProxy);
+    form.addEventListener('submit', submitProxySetup);
+    document.getElementById('proxy-setup-node').addEventListener('change', suggestProxyPorts);
+    document.getElementById('proxy-setup-proxy').addEventListener('change', suggestProxyHost);
+}
+
+async function copyProxyAddress(button) {
+    const address = button.textContent;
+    try {
+        await navigator.clipboard.writeText(address);
+        button.textContent = t('nodes-copied');
+        setTimeout(() => { button.textContent = address; }, 1500);
+    } catch (e) {
+        // Clipboard access needs HTTPS.
+        prompt(t('card-proxy-copy'), address);
+    }
+}
+
+// setServerOnProxy adds the ports of one server to its machine's proxy or takes them off. Ports of
+// other servers stay.
+async function setServerOnProxy(serverId, publish) {
+    const server = (state.servers || []).find(s => s.id === serverId);
+    if (!server) return;
+    const machine = server.node || '@local';
+    const ports = serverProxyPorts(server);
+    try {
+        const res = await apiFetch('/api/admin/proxy');
+        if (!res.ok) throw new Error(String(res.status));
+        const data = await res.json();
+        const link = (data.links || []).find(l => l.node === machine);
+        if (!link) return;
+        const has = (list, f) => list.some(o => o.port === f.port && o.protocol === f.protocol);
+        const forwards = publish
+            ? [...link.forwards, ...ports.filter(f => !has(link.forwards, f))]
+            : link.forwards.filter(f => !has(ports, f));
+        if (forwards.length === 0) {
+            alert(t('card-proxy-last'));
+            return;
+        }
+        if (!publish && !confirm(t('card-proxy-unpublish-confirm').replace('{name}', server.name))) return;
+        const put = await apiFetch('/api/admin/proxy/forwards', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ node: machine, forwards }),
+        });
+        if (!put.ok) {
+            const failure = await put.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${failure.error || put.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    fetchServers();
+}
+
+function proxyMachineName(id) {
+    const machine = (state.proxyMachines || []).find(m => m.id === id);
+    if (!machine) return id;
+    return id === '@local' ? t('proxy-this-dashboard') : machine.name;
+}
+
+function formatProxyForwards(forwards) {
+    return (forwards || []).map(f => `${f.port}/${f.protocol}`).join(', ');
+}
+
+// parseProxyPorts reads "27015/udp, 27020": a port without a protocol means both. Null when invalid.
+function parseProxyPorts(text) {
+    const forwards = [];
+    const add = (port, protocol) => {
+        if (!forwards.some(f => f.port === port && f.protocol === protocol)) forwards.push({ port, protocol });
+    };
+    for (const part of text.split(/[\s,;]+/).filter(Boolean)) {
+        const match = /^(\d{1,5})(?:\/(udp|tcp))?$/i.exec(part);
+        if (!match) return null;
+        const port = Number(match[1]);
+        if (match[2]) add(port, match[2].toLowerCase());
+        else { add(port, 'udp'); add(port, 'tcp'); }
+    }
+    return forwards.length ? forwards : null;
+}
+
+// The game ports of a server, from what the dashboard knows. Client ports only go out.
+function serverProxyPorts(server) {
+    const forwards = [];
+    const add = (port, protocol) => {
+        if (port >= 1024 && !forwards.some(f => f.port === port && f.protocol === protocol)) forwards.push({ port, protocol });
+    };
+    if (server.port) { add(server.port, 'udp'); add(server.port, 'tcp'); }
+    (server.parsed_ports || [])
+        .filter(p => !/client/i.test(p.description || ''))
+        .forEach(p => add(p.port, String(p.protocol || '').toLowerCase()));
+    return forwards;
+}
+
+function detectedProxyPorts(machine) {
+    const forwards = [];
+    (state.servers || [])
+        .filter(s => (machine === '@local' ? !s.node : s.node === machine))
+        .forEach(s => serverProxyPorts(s).forEach(f => {
+            if (!forwards.some(o => o.port === f.port && o.protocol === f.protocol)) forwards.push(f);
+        }));
+    return forwards;
+}
+
+// parseProxyUsers reads "game, cs2": a list of Linux users. Null when invalid.
+function parseProxyUsers(text) {
+    const users = text.split(/[\s,;]+/).filter(Boolean);
+    return users.every(u => /^[a-z_][a-z0-9_-]*$/.test(u)) ? users : null;
+}
+
+function proxyUsersOf(machine) {
+    const users = (state.servers || [])
+        .filter(s => (machine === '@local' ? !s.node : s.node === machine))
+        .map(s => s.user)
+        .filter(Boolean);
+    return Array.from(new Set(users));
+}
+
+function showProxyUsers() {
+    const found = document.getElementById('proxy-setup-egress-found');
+    const users = proxyUsersOf(document.getElementById('proxy-setup-node').value);
+    found.textContent = users.length ? t('proxy-setup-egress-found').replace('{users}', users.join(', ')) : '';
+}
+
+function suggestProxyPorts() {
+    showProxyUsers();
+    const input = document.getElementById('proxy-setup-ports');
+    // Keep what the administrator typed.
+    if (input.value && input.value !== state.proxySuggestedPorts) return;
+    state.proxySuggestedPorts = formatProxyForwards(detectedProxyPorts(document.getElementById('proxy-setup-node').value));
+    input.value = state.proxySuggestedPorts;
+}
+
+function suggestProxyHost() {
+    const input = document.getElementById('proxy-setup-host');
+    if (input.value && input.value !== state.proxySuggestedHost) return;
+    const local = document.getElementById('proxy-setup-proxy').value === '@local';
+    state.proxySuggestedHost = local ? window.location.hostname : '';
+    input.value = state.proxySuggestedHost;
+}
+
+function fillProxySelect(id, machines, links, usable) {
+    const select = document.getElementById(id);
+    if (document.activeElement === select) return;
+    const current = select.value;
+    select.innerHTML = machines.map(m => {
+        const problem = m.available ? usable(m, links) : (m.problem ? t('proxy-problem-' + m.problem) : '');
+        const label = proxyMachineName(m.id) + (problem ? ` (${problem})` : '');
+        return `<option value="${escapeHtml(m.id)}" ${problem ? 'disabled' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+    const options = Array.from(select.options);
+    const keep = options.find(o => o.value === current && !o.disabled);
+    const first = options.find(o => !o.disabled);
+    select.value = keep ? keep.value : (first ? first.value : '');
+}
+
+function proxyHealthBadge(link) {
+    const kinds = { connected: 'success', waiting: 'warning', broken: 'danger', unknown: 'secondary' };
+    const health = kinds[link.health] ? link.health : 'unknown';
+    return `<span class="badge badge-${kinds[health]}">${t('proxy-health-' + health)}</span>`;
+}
+
+function renderProxyLinks(links) {
+    const list = document.getElementById('proxy-list');
+    if (links.length === 0) {
+        list.innerHTML = `<p class="text-muted mb-0">${t('proxy-empty')}</p>`;
+        return;
+    }
+    const rows = links.map(link => {
+        const node = jsArg(link.node);
+        const ps = link.proxy_status || {};
+        const ns = link.node_status || {};
+        const age = ns.last_handshake ? t('proxy-handshake-age').replace('{s}', ns.handshake_age || 0) : t('proxy-handshake-none');
+        const problems = [ps.error, ns.error].filter(Boolean)
+            .map(p => `<div class="node-problem">${escapeHtml(p)}</div>`).join('');
+        const hint = link.health === 'waiting' ? `<div class="node-problem">${escapeHtml(t('proxy-health-waiting-hint'))}</div>` : '';
+        return `
+            <tr>
+                <td><strong>${escapeHtml(proxyMachineName(link.node))}</strong><div class="node-sub">${escapeHtml(t('proxy-via').replace('{proxy}', proxyMachineName(link.proxy)))}</div></td>
+                <td class="mono">${escapeHtml(link.player_address)}</td>
+                <td class="mono">${escapeHtml(formatProxyForwards(link.forwards))}</td>
+                <td>${proxyHealthBadge(link)}${hint}${problems}<div class="node-sub">${escapeHtml(age)}</div><div class="node-sub">${escapeHtml((link.egress_users || []).length ? t('proxy-egress-on').replace('{users}', link.egress_users.join(', ')) : t('proxy-egress-off'))}</div></td>
+                <td>${escapeHtml(formatBytes(ns.rx_bytes || 0))} / ${escapeHtml(formatBytes(ns.tx_bytes || 0))}</td>
+                <td>
+                    <div class="node-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="editProxyPorts(${node})">${t('proxy-edit-ports')}</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="editProxyEgress(${node})">${t('proxy-edit-egress')}</button>
+                        <button type="button" class="btn btn-danger btn-sm" onclick="removeProxy(${node})">${t('nodes-remove')}</button>
+                    </div>
+                </td>
+            </tr>`;
+    }).join('');
+    list.innerHTML = `
+        <div class="nodes-list-scroll">
+            <table>
+                <thead><tr>
+                    <th>${t('proxy-col-machine')}</th><th>${t('proxy-col-address')}</th><th>${t('proxy-col-ports')}</th>
+                    <th>${t('proxy-col-tunnel')}</th><th>${t('proxy-col-traffic')}</th><th></th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+        <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;">${escapeHtml(t('proxy-connected-note'))}</p>`;
+}
+
+async function loadProxy() {
+    const list = document.getElementById('proxy-list');
+    if (!list) return;
+    let data;
+    try {
+        const res = await apiFetch('/api/admin/proxy');
+        if (!res.ok) return;
+        data = await res.json();
+    } catch (e) {
+        return;
+    }
+    const links = data.links || [];
+    state.proxyMachines = data.machines || [];
+    renderProxyLinks(links);
+    // A proxy can serve several nodes; a machine has one role.
+    fillProxySelect('proxy-setup-proxy', state.proxyMachines, links, m => {
+        return links.some(l => l.node === m.id) ? t('proxy-problem-uses-proxy') : '';
+    });
+    fillProxySelect('proxy-setup-node', state.proxyMachines, links, m => {
+        if (links.some(l => l.node === m.id)) return t('proxy-problem-uses-proxy');
+        return links.some(l => l.proxy === m.id) ? t('proxy-problem-is-proxy') : '';
+    });
+    const proxySelect = document.getElementById('proxy-setup-proxy');
+    const nodeSelect = document.getElementById('proxy-setup-node');
+    if (nodeSelect.value === proxySelect.value && document.activeElement !== nodeSelect) {
+        const other = Array.from(nodeSelect.options).find(o => !o.disabled && o.value !== proxySelect.value);
+        if (other) nodeSelect.value = other.value;
+    }
+    suggestProxyPorts();
+    suggestProxyHost();
+}
+
+async function submitProxySetup(ev) {
+    ev.preventDefault();
+    const message = document.getElementById('proxy-setup-message');
+    const button = document.getElementById('proxy-setup-btn');
+    const say = (text, css) => {
+        message.textContent = text;
+        message.className = css ? `info-message ${css}` : 'info-message';
+    };
+    const forwards = parseProxyPorts(document.getElementById('proxy-setup-ports').value);
+    if (!forwards) {
+        say(t('proxy-ports-invalid'), 'text-danger');
+        return;
+    }
+    const egressUsers = parseProxyUsers(document.getElementById('proxy-setup-egress').value);
+    if (!egressUsers) {
+        say(t('proxy-users-invalid'), 'text-danger');
+        return;
+    }
+    button.disabled = true;
+    say(t('proxy-setting-up'));
+    try {
+        const res = await apiFetch('/api/admin/proxy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                proxy: document.getElementById('proxy-setup-proxy').value,
+                node: document.getElementById('proxy-setup-node').value,
+                public_host: document.getElementById('proxy-setup-host').value.trim(),
+                forwards,
+                egress_users: egressUsers,
+            }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            say(`${t('nodes-error')}: ${data.error || res.status}`, 'text-danger');
+        } else {
+            const warnings = (data.warnings || []).map(w => w.detail).filter(Boolean);
+            const done = t('proxy-setup-done');
+            say(warnings.length ? `${done} ${warnings.join(' ')}` : done, warnings.length ? 'text-warning' : 'text-success');
+            document.getElementById('proxy-setup-ports').value = '';
+            document.getElementById('proxy-setup-egress').value = '';
+            state.proxySuggestedPorts = '';
+        }
+    } catch (e) {
+        say(t('connection-error'), 'text-danger');
+    }
+    button.disabled = false;
+    loadProxy();
+}
+
+async function editProxyPorts(node) {
+    let current = '';
+    try {
+        const res = await apiFetch('/api/admin/proxy');
+        const data = await res.json();
+        const link = (data.links || []).find(l => l.node === node);
+        current = link ? formatProxyForwards(link.forwards) : '';
+    } catch (e) {
+        alert(t('connection-error'));
+        return;
+    }
+    const answer = prompt(t('proxy-edit-ports-prompt'), current);
+    if (answer === null) return;
+    const forwards = parseProxyPorts(answer);
+    if (!forwards) {
+        alert(t('proxy-ports-invalid'));
+        return;
+    }
+    try {
+        const res = await apiFetch('/api/admin/proxy/forwards', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ node, forwards }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    loadProxy();
+}
+
+async function editProxyEgress(node) {
+    let current = '';
+    try {
+        const res = await apiFetch('/api/admin/proxy');
+        const data = await res.json();
+        const link = (data.links || []).find(l => l.node === node);
+        current = link ? (link.egress_users || []).join(', ') : '';
+    } catch (e) {
+        alert(t('connection-error'));
+        return;
+    }
+    const found = proxyUsersOf(node);
+    const question = t('proxy-edit-egress-prompt') + (found.length ? ` ${t('proxy-setup-egress-found').replace('{users}', found.join(', '))}` : '');
+    const answer = prompt(question, current);
+    if (answer === null) return;
+    const users = parseProxyUsers(answer);
+    if (!users) {
+        alert(t('proxy-users-invalid'));
+        return;
+    }
+    try {
+        const res = await apiFetch('/api/admin/proxy/egress', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ node, users }),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    loadProxy();
+}
+
+async function removeProxy(node) {
+    if (!confirm(t('proxy-remove-confirm').replace('{name}', proxyMachineName(node)))) return;
+    try {
+        const res = await apiFetch(`/api/admin/proxy?node=${encodeURIComponent(node)}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`${t('nodes-error')}: ${data.error || res.status}`);
+        }
+    } catch (e) {
+        alert(t('connection-error'));
+    }
+    loadProxy();
 }
 
 // -------------------------------------------------------------
@@ -3600,6 +4000,12 @@ const i18n = {
         "card-players": "Players",
         "card-map": "Map",
         "card-disk": "Disk",
+        "card-proxy-label": "Players:",
+        "card-proxy-copy": "Copy the address for players",
+        "card-proxy-publish": "Publish through the proxy",
+        "card-proxy-unpublish": "Take off the proxy",
+        "card-proxy-unpublish-confirm": "Take {name} off the proxy? Players can no longer connect through it.",
+        "card-proxy-last": "This is the last server on the proxy. Remove the proxy under Settings > Proxy instead.",
         "card-more": "More",
         "card-select": "Select server",
         "card-edit-tag": "Edit tag",
@@ -4255,6 +4661,55 @@ const i18n = {
         "nodes-rename-prompt": "New name of the node:",
         "nodes-repair": "Pair again",
         "nodes-repair-confirm": "Create a new pairing command for \"{name}\"? Once it is used, the current installation of the node can no longer connect. Assignments and tags are kept.",
+        "settings-subtab-proxy": "Proxy",
+        "proxy-list-title": "Proxy",
+        "proxy-desc": "Players connect to the address of the proxy and the server needs no open port. The game server still sees the players' real IP.",
+        "proxy-empty": "No proxy is set up. Nothing of it is installed on any machine.",
+        "proxy-setup-title": "Set up proxy",
+        "proxy-setup-desc": "Only this step changes anything: both machines get wireguard-tools and nftables if they are missing, the tunnel is set up and the machine's firewall is opened for it. Removing it takes all of this back.",
+        "proxy-setup-proxy": "Proxy (with a public IP)",
+        "proxy-setup-node": "Machine with the game servers",
+        "proxy-setup-host": "Public address of the proxy",
+        "proxy-setup-ports": "Ports",
+        "proxy-setup-ports-hint": "Suggested from the detected game servers. A node refuses ports that belong to no game server.",
+        "proxy-setup-cloud": "If your provider has its own firewall (cloud firewall, security group), open UDP 51820 and the game ports there. The dashboard cannot do that from here.",
+        "proxy-setup-btn": "Set up proxy",
+        "proxy-setting-up": "Setting up, installing packages can take a few minutes...",
+        "proxy-setup-done": "The proxy is set up.",
+        "proxy-ports-invalid": "Please enter ports like 27015/udp, 27015/tcp.",
+        "proxy-this-dashboard": "This dashboard",
+        "proxy-problem-offline": "offline",
+        "proxy-problem-needs_update": "needs an update",
+        "proxy-problem-read_only": "read-only",
+        "proxy-problem-not_allowed": "disabled on this node",
+        "proxy-problem-docker_mode": "not in Docker mode yet",
+        "proxy-problem-uses-proxy": "already uses a proxy",
+        "proxy-problem-is-proxy": "is a proxy",
+        "proxy-via": "via {proxy}",
+        "proxy-col-machine": "Machine",
+        "proxy-col-address": "Address for players",
+        "proxy-col-ports": "Ports",
+        "proxy-col-tunnel": "Tunnel",
+        "proxy-col-traffic": "Received / sent",
+        "proxy-health-connected": "Tunnel connected",
+        "proxy-health-waiting": "No connection",
+        "proxy-health-waiting-hint": "No recent handshake. Check the address of the proxy and whether the provider's firewall allows UDP 51820.",
+        "proxy-health-broken": "Tunnel incomplete",
+        "proxy-health-unknown": "Unknown, machine offline",
+        "proxy-handshake-age": "Last handshake {s} s ago",
+        "proxy-handshake-none": "No handshake yet",
+        "proxy-connected-note": "A connected tunnel does not prove that players get through: a firewall of the provider can still block the game ports. Test it with a game client from outside.",
+        "proxy-setup-egress": "Outgoing traffic through the proxy (Linux users, optional)",
+        "proxy-setup-egress-hint": "Recommended for Steam games: Steam then sees the proxy's address instead of your line. Everything of this user goes through the proxy, including updates of many GB.",
+        "proxy-setup-egress-found": "Users of the game servers on this machine: {users}",
+        "proxy-users-invalid": "Please enter Linux users like game, cs2.",
+        "proxy-egress-on": "Outgoing through the proxy: {users}",
+        "proxy-egress-off": "Incoming only",
+        "proxy-edit-egress": "Outgoing traffic",
+        "proxy-edit-egress-prompt": "Linux users whose outgoing traffic goes through the proxy, empty for none. Restart their game servers afterwards.",
+        "proxy-edit-ports": "Change ports",
+        "proxy-edit-ports-prompt": "Ports, for example 27015/udp, 27015/tcp:",
+        "proxy-remove-confirm": "Remove the proxy of {name}? Players can no longer connect through it. Tunnel, rules and the packages installed for it are removed.",
         "nodes-remove": "Remove",
         "nodes-remove-confirm": "Remove the node \"{name}\"? It is disconnected at once, and its user assignments and tags are deleted. The game servers on the node are not touched.",
         "nodes-error": "Error",
@@ -4280,6 +4735,12 @@ const i18n = {
         "card-players": "Spieler",
         "card-map": "Karte",
         "card-disk": "Speicher",
+        "card-proxy-label": "Spieler:",
+        "card-proxy-copy": "Adresse für Spieler kopieren",
+        "card-proxy-publish": "Über Proxy veröffentlichen",
+        "card-proxy-unpublish": "Vom Proxy nehmen",
+        "card-proxy-unpublish-confirm": "{name} vom Proxy nehmen? Spieler können sich dann nicht mehr darüber verbinden.",
+        "card-proxy-last": "Das ist der letzte Server auf dem Proxy. Entferne stattdessen den Proxy unter Einstellungen > Proxy.",
         "card-more": "Mehr",
         "card-select": "Server auswählen",
         "card-edit-tag": "Tag bearbeiten",
@@ -4935,6 +5396,55 @@ const i18n = {
         "nodes-rename-prompt": "Neuer Name des Nodes:",
         "nodes-repair": "Neu koppeln",
         "nodes-repair-confirm": "Neuen Pairing-Befehl für \"{name}\" erstellen? Sobald er benutzt wird, kann sich die bisherige Installation des Nodes nicht mehr verbinden. Zuweisungen und Tags bleiben erhalten.",
+        "settings-subtab-proxy": "Proxy",
+        "proxy-list-title": "Proxy",
+        "proxy-desc": "Spieler verbinden sich mit der Adresse des Proxys, der Server braucht keinen offenen Port. Der Gameserver sieht trotzdem die echte IP der Spieler.",
+        "proxy-empty": "Es ist kein Proxy eingerichtet. Auf keiner Maschine ist etwas davon installiert.",
+        "proxy-setup-title": "Proxy einrichten",
+        "proxy-setup-desc": "Erst dieser Schritt ändert etwas: Auf beiden Maschinen werden wireguard-tools und nftables installiert, soweit sie fehlen, der Tunnel wird eingerichtet und die Firewall der Maschine dafür geöffnet. Beim Entfernen wird das zurückgenommen.",
+        "proxy-setup-proxy": "Proxy (mit öffentlicher IP)",
+        "proxy-setup-node": "Maschine mit den Gameservern",
+        "proxy-setup-host": "Öffentliche Adresse des Proxys",
+        "proxy-setup-ports": "Ports",
+        "proxy-setup-ports-hint": "Vorgeschlagen aus den erkannten Gameservern. Der Node lehnt Ports ab, die zu keinem Gameserver gehören.",
+        "proxy-setup-cloud": "Hat dein Anbieter eine eigene Firewall (Cloud-Firewall, Security Group), öffne dort UDP 51820 und die Spielports. Das kann das Dashboard nicht von hier aus.",
+        "proxy-setup-btn": "Proxy einrichten",
+        "proxy-setting-up": "Wird eingerichtet, das Installieren der Pakete kann einige Minuten dauern...",
+        "proxy-setup-done": "Der Proxy ist eingerichtet.",
+        "proxy-ports-invalid": "Bitte gib Ports wie 27015/udp, 27015/tcp ein.",
+        "proxy-this-dashboard": "Dieses Dashboard",
+        "proxy-problem-offline": "offline",
+        "proxy-problem-needs_update": "braucht ein Update",
+        "proxy-problem-read_only": "nur lesen",
+        "proxy-problem-not_allowed": "auf diesem Node deaktiviert",
+        "proxy-problem-docker_mode": "im Docker-Modus noch nicht möglich",
+        "proxy-problem-uses-proxy": "nutzt schon einen Proxy",
+        "proxy-problem-is-proxy": "ist ein Proxy",
+        "proxy-via": "über {proxy}",
+        "proxy-col-machine": "Maschine",
+        "proxy-col-address": "Adresse für Spieler",
+        "proxy-col-ports": "Ports",
+        "proxy-col-tunnel": "Tunnel",
+        "proxy-col-traffic": "Empfangen / gesendet",
+        "proxy-health-connected": "Tunnel verbunden",
+        "proxy-health-waiting": "Keine Verbindung",
+        "proxy-health-waiting-hint": "Kein aktueller Handshake. Prüfe die Adresse des Proxys und ob die Firewall des Anbieters UDP 51820 erlaubt.",
+        "proxy-health-broken": "Tunnel unvollständig",
+        "proxy-health-unknown": "Unbekannt, Maschine offline",
+        "proxy-handshake-age": "Letzter Handshake vor {s} s",
+        "proxy-handshake-none": "Noch kein Handshake",
+        "proxy-connected-note": "Ein verbundener Tunnel beweist nicht, dass Spieler durchkommen: Eine Firewall des Anbieters kann die Spielports trotzdem blockieren. Teste es mit einem Spielclient von außen.",
+        "proxy-setup-egress": "Ausgehender Verkehr über den Proxy (Linux-Benutzer, optional)",
+        "proxy-setup-egress-hint": "Für Steam-Spiele empfohlen: Dann sieht Steam die Adresse des Proxys statt deines Anschlusses. Alles dieses Benutzers läuft dann über den Proxy, auch Updates mit vielen GB.",
+        "proxy-setup-egress-found": "Benutzer der Gameserver auf dieser Maschine: {users}",
+        "proxy-users-invalid": "Bitte gib Linux-Benutzer wie game, cs2 ein.",
+        "proxy-egress-on": "Ausgehend über den Proxy: {users}",
+        "proxy-egress-off": "Nur eingehend",
+        "proxy-edit-egress": "Ausgehender Verkehr",
+        "proxy-edit-egress-prompt": "Linux-Benutzer, deren ausgehender Verkehr über den Proxy läuft, leer für keine. Starte danach ihre Gameserver neu.",
+        "proxy-edit-ports": "Ports ändern",
+        "proxy-edit-ports-prompt": "Ports, zum Beispiel 27015/udp, 27015/tcp:",
+        "proxy-remove-confirm": "Proxy von {name} entfernen? Spieler können sich dann nicht mehr darüber verbinden. Tunnel, Regeln und die dafür installierten Pakete werden entfernt.",
         "nodes-remove": "Entfernen",
         "nodes-remove-confirm": "Node \"{name}\" entfernen? Er wird sofort getrennt, seine Benutzerzuweisungen und Tags werden gelöscht. Die Gameserver auf dem Node bleiben unberührt.",
         "nodes-error": "Fehler",
@@ -5113,7 +5623,10 @@ function rerenderViewForLanguage() {
         case 'installer': renderGamesList(); break;
         case 'backups': loadBackupsList(); break;
         case 'files': if (currentFilesServer) loadFilesTree(); break;
-        case 'settings': if (state.settingsSubtab === 'nodes') loadNodes(); break;
+        case 'settings':
+            if (state.settingsSubtab === 'nodes') loadNodes();
+            if (state.settingsSubtab === 'proxy') loadProxy();
+            break;
         case 'console': {
             const server = (state.servers || []).find(s => s.id === state.selectedConsoleServer);
             if (server) renderConsoleGameActions(isReadOnlyNodeServer(server) || server.node_offline ? null : server);

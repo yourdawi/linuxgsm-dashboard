@@ -623,6 +623,7 @@ func (a *app) routes() http.Handler {
 
 	mux.HandleFunc("/api/admin/proxy", a.requireAdmin(a.handleProxy))
 	mux.HandleFunc("/api/admin/proxy/forwards", methodOnly(http.MethodPut, a.requireAdmin(a.handleProxyForwards)))
+	mux.HandleFunc("/api/admin/proxy/egress", methodOnly(http.MethodPut, a.requireAdmin(a.handleProxyEgress)))
 	mux.HandleFunc("/api/admin/nodes", a.requireAdmin(a.handleNodes))
 	mux.HandleFunc("/api/admin/nodes/update", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeUpdate)))
 	mux.HandleFunc("/api/admin/nodes/delete", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeDelete)))
@@ -941,6 +942,7 @@ func (a *app) visibleServers(user backend.User) []backend.GameServerInstance {
 		}
 	}
 	servers = append(servers, a.nodeServers()...)
+	a.addProxyAddresses(servers)
 	if user.IsAdmin() {
 		return servers
 	}
@@ -951,6 +953,21 @@ func (a *app) visibleServers(user backend.User) []backend.GameServerInstance {
 		}
 	}
 	return filtered
+}
+
+func (a *app) addProxyAddresses(servers []backend.GameServerInstance) {
+	if a.proxies == nil {
+		return
+	}
+	for i := range servers {
+		machine := servers[i].Node
+		if machine == "" {
+			machine = backend.ProxyLocal
+		}
+		address, hasProxy := a.proxies.ServerAddress(machine, servers[i].Port)
+		servers[i].ProxyAddress = address
+		servers[i].ProxyAvailable = hasProxy && address == "" && servers[i].Port > 0
+	}
 }
 
 func (a *app) handleListServers(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
@@ -3421,6 +3438,8 @@ func newProxyHost(configDir string, caps backend.Capabilities, instances *backen
 	}
 	h := backend.NewProxyHost(configDir)
 	h.NodePorts = instances.ProxyNodePorts
+	h.NodeUsers = instances.ProxyNodeUsers
+	h.SyncDisplayIP = instances.ProxySyncDisplayIP
 	return h
 }
 
@@ -3599,6 +3618,29 @@ func (a *app) handleProxyForwards(w http.ResponseWriter, r *http.Request, admin 
 		return
 	}
 	a.auth.LogAudit(admin.Username, a.clientIP(r), "PROXY_PORTS", fmt.Sprintf("Changed the proxy ports of %s: %d", payload.Node, len(payload.Forwards)), "")
+	writeOK(w)
+}
+
+// PUT /api/admin/proxy/egress chooses the users whose outgoing traffic leaves through the proxy.
+func (a *app) handleProxyEgress(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	var payload struct {
+		Node  string   `json:"node"`
+		Users []string `json:"users"`
+	}
+	if !decodeJSON(w, r, &payload, 64*1024) {
+		return
+	}
+	if !validProxyMachine(payload.Node) {
+		writeError(w, http.StatusBadRequest, "Invalid machine")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	if err := a.proxies.SetEgress(ctx, payload.Node, payload.Users); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.LogAudit(admin.Username, a.clientIP(r), "PROXY_EGRESS", fmt.Sprintf("Outgoing traffic of %s through the proxy: %s", payload.Node, strings.Join(payload.Users, ", ")), "")
 	writeOK(w)
 }
 

@@ -12,8 +12,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,6 +74,7 @@ type ProxyHostStatus struct {
 	InterfaceUp   bool   `json:"interface_up"`
 	RulesLoaded   bool   `json:"rules_loaded"`
 	LastHandshake int64  `json:"last_handshake,omitempty"` // Unix time, newest of all peers
+	HandshakeAge  int64  `json:"handshake_age,omitempty"`  // seconds, by the clock of this machine
 	RxBytes       int64  `json:"rx_bytes,omitempty"`
 	TxBytes       int64  `json:"tx_bytes,omitempty"`
 	Error         string `json:"error,omitempty"`
@@ -82,6 +85,11 @@ type proxyState struct {
 	Installed []string `json:"installed,omitempty"`
 	// Sysctls holds values changed by the proxy with their previous value.
 	Sysctls map[string]string `json:"sysctls,omitempty"`
+	// Firewall lists the iptables rules the proxy added, so that an identical rule of the
+	// administrator stays. Format: tool chain spec..., separated by spaces.
+	Firewall []string `json:"firewall,omitempty"`
+	// DisplayIP is the address written to displayip, needed to take it back.
+	DisplayIP string `json:"display_ip,omitempty"`
 }
 
 // ProxyHost applies the proxy plan of this machine.
@@ -91,15 +99,47 @@ type ProxyHost struct {
 	// NodePorts lists the game ports of this machine. A node refuses other ports, so a dashboard
 	// cannot publish its other services. Nil means no check.
 	NodePorts func() map[string]bool
+	// NodeUsers lists the Linux users of the game servers of this machine. Only their traffic may
+	// leave through the proxy. Nil means no check.
+	NodeUsers func() map[string]bool
+	lookupUID func(name string) (int, error)
+	// SyncDisplayIP keeps LinuxGSM's displayip at the address of the proxy. Nil means no change.
+	SyncDisplayIP func(ports map[int]bool, oldHost, newHost string) error
 
 	mu       sync.Mutex
 	lastLoad string // rules and config of the last load, to notice changed addresses
 	lastErr  string
+	fwErr    string
 }
 
 // NewProxyHost creates the host side; nothing happens until a plan arrives.
 func NewProxyHost(configDir string) *ProxyHost {
-	return &ProxyHost{dir: configDir, run: defaultProxyRunner}
+	return &ProxyHost{dir: configDir, run: defaultProxyRunner, lookupUID: lookupProxyUID}
+}
+
+func lookupProxyUID(name string) (int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(u.Uid)
+}
+
+// egressUIDs resolves the users on this machine. Root would send the tunnel itself into the tunnel.
+func (h *ProxyHost) egressUIDs(users []string) ([]int, error) {
+	uids := make([]int, 0, len(users))
+	for _, name := range users {
+		uid, err := h.lookupUID(name)
+		if err != nil {
+			return nil, fmt.Errorf("user %s for outgoing traffic: %w", name, err)
+		}
+		if uid == 0 {
+			return nil, fmt.Errorf("user %s for outgoing traffic is root", name)
+		}
+		uids = append(uids, uid)
+	}
+	sort.Ints(uids)
+	return uids, nil
 }
 
 func (h *ProxyHost) path(name string) string { return filepath.Join(h.dir, name) }
@@ -245,19 +285,18 @@ func (h *ProxyHost) Check(ctx context.Context, asProxy bool) []ProxyCheck {
 		}
 		add("subnet", clash == "", true, map[bool]string{true: "", false: "The tunnel network " + proxySubnet + " is already in use here: " + clash}[clash == ""])
 	}
-	if asProxy {
-		// nft cannot override other firewalls: a packet has to pass all of them.
-		if out, err := h.run(ctx, "", "iptables", "-S", "FORWARD"); err == nil && strings.Contains(out, "-P FORWARD DROP") {
-			detail := "Another firewall drops forwarded packets (FORWARD policy DROP), so players may not get through."
-			if strings.Contains(out, "DOCKER") {
-				detail += " Docker sets this; allow the game ports in the DOCKER-USER chain."
-			}
-			add("firewall", false, false, detail)
-		} else if out, err := h.run(ctx, "", "ufw", "status"); err == nil && strings.Contains(out, "Status: active") {
-			add("firewall", false, false, "ufw is active: allow the game ports with `ufw route allow` and the WireGuard port with `ufw allow`.")
+	// ufw, Docker and plain iptables are handled by syncFirewallLocked. firewalld has its own table,
+	// and an accept elsewhere does not override its reject.
+	if out, err := h.run(ctx, "", "firewall-cmd", "--state"); err == nil && strings.Contains(out, "running") {
+		detail := "firewalld is running and blocks the tunnel. Run: firewall-cmd --permanent --zone=trusted --add-interface=" + proxyInterface
+		if asProxy {
+			detail += ", then allow the WireGuard port and run firewall-cmd --reload."
 		} else {
-			add("firewall", true, false, "")
+			detail += " and firewall-cmd --reload."
 		}
+		add("firewall", false, false, detail)
+	} else {
+		add("firewall", true, false, "")
 	}
 	return checks
 }
@@ -346,6 +385,14 @@ func (h *ProxyHost) Apply(ctx context.Context, plan ProxyPlan) error {
 			}
 		}
 	}
+	if s := plan.Node; s != nil && h.NodeUsers != nil && len(s.EgressUsers) > 0 {
+		allowed := h.NodeUsers()
+		for _, name := range s.EgressUsers {
+			if !allowed[name] {
+				return fmt.Errorf("user %s runs no game server on this machine", name)
+			}
+		}
+	}
 	if s := plan.Proxy; s != nil {
 		if err := h.checkPortsFree(ctx, s); err != nil {
 			return err
@@ -354,6 +401,8 @@ func (h *ProxyHost) Apply(ctx context.Context, plan ProxyPlan) error {
 	if err := h.loadLocked(ctx, plan); err != nil {
 		return err
 	}
+	h.syncFirewallLocked(ctx, plan)
+	h.syncDisplayIPLocked(plan)
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		return err
@@ -394,7 +443,7 @@ func (h *ProxyHost) checkPortsFree(ctx context.Context, s *ProxySide) error {
 }
 
 // loadLocked brings the machine to the plan. Unchanged state is left alone, so a running tunnel is
-// not touched. force loads even then.
+// not touched.
 func (h *ProxyHost) loadLocked(ctx context.Context, plan ProxyPlan) error {
 	privateKey, _, err := h.privateKey()
 	if err != nil {
@@ -412,7 +461,11 @@ func (h *ProxyHost) loadLocked(ctx context.Context, plan ProxyPlan) error {
 		if target == "" {
 			target = primary
 		}
-		rules = renderNodeRules(plan.Node, target)
+		uids, err := h.egressUIDs(plan.Node.EgressUsers)
+		if err != nil {
+			return err
+		}
+		rules = renderNodeRules(plan.Node, target, uids)
 	}
 	config := renderWGConfig(plan, privateKey)
 	wanted := rules + config
@@ -479,6 +532,115 @@ func (h *ProxyHost) loadLocked(ctx context.Context, plan ProxyPlan) error {
 	return nil
 }
 
+// proxyFirewallRules lists what iptables has to let through for this plan. A packet has to pass every
+// firewall of the machine, and an accept in our nft table does not override a drop of ufw, Docker
+// or a cloud image's iptables rules. These rules accept the whole tunnel because our nft table
+// decides what may use it: it drops every port that is not forwarded.
+func proxyFirewallRules(plan ProxyPlan) []string {
+	if plan.Proxy != nil {
+		port := strconv.Itoa(plan.Proxy.ListenPort)
+		return []string{
+			"iptables INPUT -p udp --dport " + port + " -j ACCEPT",
+			"ip6tables INPUT -p udp --dport " + port + " -j ACCEPT",
+			"iptables FORWARD -i " + proxyInterface + " -j ACCEPT",
+			"iptables FORWARD -o " + proxyInterface + " -j ACCEPT",
+		}
+	}
+	return []string{"iptables INPUT -i " + proxyInterface + " -j ACCEPT"}
+}
+
+func (h *ProxyHost) runFirewallRule(ctx context.Context, action, rule string) (string, error) {
+	fields := strings.Fields(rule)
+	args := append([]string{"-w", "5", action, fields[1]}, fields[2:]...)
+	return h.run(ctx, "", fields[0], args...)
+}
+
+// syncFirewallLocked puts the rules at the top of their chains and removes rules of an old plan. It
+// also runs on every round, because ufw or Docker may arrive after the setup. A failure is reported
+// in the status and does not stop the tunnel: without another firewall nothing is missing.
+func (h *ProxyHost) syncFirewallLocked(ctx context.Context, plan ProxyPlan) {
+	st := h.loadState()
+	wanted := proxyFirewallRules(plan)
+	kept := st.Firewall[:0:0]
+	changed := false
+	for _, rule := range st.Firewall {
+		if containsString(wanted, rule) {
+			kept = append(kept, rule)
+		} else {
+			_, _ = h.runFirewallRule(ctx, "-D", rule)
+			changed = true
+		}
+	}
+	st.Firewall = kept
+	problem := ""
+	for _, rule := range wanted {
+		tool := strings.Fields(rule)[0]
+		if _, err := h.run(ctx, "", "sh", "-c", "command -v "+tool); err != nil {
+			continue // no such firewall here
+		}
+		if _, err := h.runFirewallRule(ctx, "-C", rule); err == nil {
+			continue
+		}
+		if out, err := h.runFirewallRule(ctx, "-I", rule); err != nil {
+			// Without IPv6 in the kernel ip6tables fails, and nothing is missing.
+			if tool == "iptables" {
+				problem = "opening the firewall failed: " + lastLines(out, 2)
+			}
+			continue
+		}
+		st.Firewall = appendUniqueString(st.Firewall, rule)
+		changed = true
+	}
+	if changed {
+		if err := h.saveState(st); err != nil && problem == "" {
+			problem = err.Error()
+		}
+	}
+	if problem != "" && problem != h.fwErr {
+		fmt.Printf("[PROXY] %s\n", problem)
+	}
+	h.fwErr = problem
+}
+
+// syncDisplayIPLocked also runs on every round, for servers that are added later. A failure is reported
+// in the status: it only changes what alerts show.
+func (h *ProxyHost) syncDisplayIPLocked(plan ProxyPlan) {
+	if h.SyncDisplayIP == nil {
+		return
+	}
+	st := h.loadState()
+	ports := map[int]bool{}
+	host := ""
+	if s := plan.Node; s != nil {
+		if parsed, _, err := net.SplitHostPort(s.Endpoint); err == nil {
+			host = parsed
+		}
+		for _, f := range s.Forwards {
+			ports[f.Port] = true
+		}
+	}
+	if host == "" && st.DisplayIP == "" {
+		return
+	}
+	err := h.SyncDisplayIP(ports, st.DisplayIP, host)
+	if err == nil && st.DisplayIP != host {
+		st.DisplayIP = host
+		err = h.saveState(st)
+	}
+	if err != nil && h.fwErr == "" {
+		h.fwErr = "updating displayip failed: " + err.Error()
+	}
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // ensureNodeRoute sends marked connections, and only those, through the tunnel.
 func (h *ProxyHost) ensureNodeRoute(ctx context.Context) error {
 	h.removeNodeRoute(ctx)
@@ -529,7 +691,10 @@ func (h *ProxyHost) Reconcile(ctx context.Context) {
 			fmt.Printf("[PROXY] %v\n", err)
 		}
 		h.lastErr = err.Error()
+		return
 	}
+	h.syncFirewallLocked(ctx, plan)
+	h.syncDisplayIPLocked(plan)
 }
 
 // Teardown removes everything of the proxy from this machine.
@@ -543,10 +708,18 @@ func (h *ProxyHost) teardownLocked(ctx context.Context) error {
 	st := h.loadState()
 	_, planErr := os.Stat(h.path(proxyPlanFile))
 	_, keyErr := os.Stat(h.path(proxyKeyFile))
-	if planErr != nil && keyErr != nil && len(st.Installed) == 0 && len(st.Sysctls) == 0 {
+	if planErr != nil && keyErr != nil && len(st.Installed) == 0 && len(st.Sysctls) == 0 && len(st.Firewall) == 0 {
 		return nil // never set up: run nothing
 	}
 	h.removeNodeRoute(ctx)
+	for _, rule := range st.Firewall {
+		_, _ = h.runFirewallRule(ctx, "-D", rule)
+	}
+	if h.SyncDisplayIP != nil && st.DisplayIP != "" {
+		if err := h.SyncDisplayIP(nil, st.DisplayIP, ""); err != nil {
+			fmt.Printf("[PROXY] updating displayip failed: %v\n", err)
+		}
+	}
 	_, _ = h.run(ctx, "", "nft", "delete", "table", "inet", proxyTableProxy)
 	_, _ = h.run(ctx, "", "nft", "delete", "table", "inet", proxyTableNode)
 	_, _ = h.run(ctx, "", "ip", "link", "del", proxyInterface)
@@ -564,7 +737,7 @@ func (h *ProxyHost) teardownLocked(ctx context.Context) error {
 			_, _ = h.run(ctx, "", "dnf", append([]string{"remove", "-y", "-q"}, st.Installed...)...)
 		}
 	}
-	h.lastLoad, h.lastErr = "", ""
+	h.lastLoad, h.lastErr, h.fwErr = "", "", ""
 	var firstErr error
 	for _, name := range []string{proxyPlanFile, proxyKeyFile, proxyStateFile} {
 		if err := os.Remove(h.path(name)); err != nil && !errors.Is(err, os.ErrNotExist) && firstErr == nil {
@@ -579,6 +752,9 @@ func (h *ProxyHost) Status(ctx context.Context) ProxyHostStatus {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	st := ProxyHostStatus{Error: h.lastErr}
+	if st.Error == "" {
+		st.Error = h.fwErr
+	}
 	plan, err := h.loadPlan()
 	if err != nil {
 		st.Error = err.Error()
@@ -602,6 +778,9 @@ func (h *ProxyHost) Status(ctx context.Context) ProxyHostStatus {
 	}
 	if out, err := h.run(ctx, "", "wg", "show", proxyInterface, "dump"); err == nil {
 		parseWGDump(out, &st)
+	}
+	if st.LastHandshake > 0 {
+		st.HandshakeAge = time.Now().Unix() - st.LastHandshake
 	}
 	return st
 }

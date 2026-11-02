@@ -696,6 +696,15 @@ body.installer-wide .main-content:has(#view-installer:not(.hidden)) { max-width:
     overflow: hidden;
     text-overflow: ellipsis;
 }
+.sc-proxy {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.15rem 0.6rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 0.1rem;
+}
 .sc-meta {
     display: flex;
     flex-wrap: wrap;

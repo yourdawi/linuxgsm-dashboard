@@ -27,6 +27,7 @@ const (
 	proxyRouteTable  = "7701"
 	proxyRulePrio    = "7701"
 	proxyFlowMark    = "0x77"
+	proxyTunnelMark  = "0x78" // outer WireGuard packets, which keep the owner of the inner packet
 	proxyDefaultPort = 51820
 	proxyNodePort    = 51821
 	// The tunnel carries IPv4 inside IPv4 or IPv6 and has to fit a PPPoE line.
@@ -46,6 +47,10 @@ type ProxyPeer struct {
 	PublicKey string         `json:"public_key"`
 	TunnelIP  string         `json:"tunnel_ip"`
 	Forwards  []ProxyForward `json:"forwards"`
+	// PresharedKey adds post-quantum protection; it reaches both ends over the hybrid TLS tunnel.
+	PresharedKey string `json:"preshared_key,omitempty"`
+	// Egress lets this node reach the internet through the proxy.
+	Egress bool `json:"egress,omitempty"`
 }
 
 // ProxySide makes this machine a proxy.
@@ -61,7 +66,11 @@ type NodeSide struct {
 	Endpoint       string         `json:"endpoint"` // host:port of the proxy
 	Forwards       []ProxyForward `json:"forwards"`
 	// TargetIP is the address the game server is bound to; empty is the machine's primary address.
-	TargetIP string `json:"target_ip,omitempty"`
+	TargetIP     string `json:"target_ip,omitempty"`
+	PresharedKey string `json:"preshared_key,omitempty"`
+	// EgressUsers are the Linux users whose outgoing traffic leaves through the proxy, so that for
+	// example Steam sees the proxy's address. Empty means incoming traffic only.
+	EgressUsers []string `json:"egress_users,omitempty"`
 }
 
 // ProxyPlan is what one machine has to do. Without a side there is nothing to do.
@@ -158,6 +167,9 @@ func (p ProxyPlan) Validate() error {
 			if !validTunnelIP(peer.TunnelIP) || seen[peer.TunnelIP] {
 				return errors.New("invalid tunnel address of a node")
 			}
+			if peer.PresharedKey != "" && !validProxyKey(peer.PresharedKey) {
+				return errors.New("invalid preshared key of a node")
+			}
 			seen[peer.TunnelIP] = true
 			all = append(all, peer.Forwards...)
 		}
@@ -182,9 +194,34 @@ func (p ProxyPlan) Validate() error {
 		if s.TargetIP != "" && net.ParseIP(s.TargetIP) == nil {
 			return errors.New("invalid target address")
 		}
+		if s.PresharedKey != "" && !validProxyKey(s.PresharedKey) {
+			return errors.New("invalid preshared key")
+		}
+		if err := validateEgressUsers(s.EgressUsers); err != nil {
+			return err
+		}
 	}
 	return nil
 }
+
+func validateEgressUsers(users []string) error {
+	for _, name := range users {
+		if !IsValidLinuxUsername(name) || name == "root" {
+			return fmt.Errorf("invalid user for outgoing traffic: %q", name)
+		}
+	}
+	return nil
+}
+
+// proxyNoEgress are addresses that never leave through the proxy: a node keeps its LAN, and a node
+// cannot reach the private network or the metadata service of its proxy.
+const proxyNoEgress = "{ 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 }"
+
+// Limits on the proxy. Players open few connections, floods and abuse of the proxy's address many.
+const (
+	proxyNewFlowLimit   = "rate over 30/second burst 60 packets"   // per source, towards the game ports
+	proxyEgressNewLimit = "rate over 100/second burst 200 packets" // per node, towards the internet
+)
 
 // portSet renders the ports of one protocol as an nft set, "" when there are none.
 func portSet(forwards []ProxyForward, protocol string) string {
@@ -214,8 +251,14 @@ func replaceTable(name, body string) string {
 // address stays: no SNAT. Traffic of other interfaces is none of these rules' business; a host with
 // Docker or a VPN keeps working.
 func renderProxyRules(s *ProxySide, publicIface string) string {
-	var pre, fwd strings.Builder
+	var pre, fwd, egress, snat strings.Builder
 	for _, peer := range s.Peers {
+		if peer.Egress {
+			fmt.Fprintf(&egress, "    iifname %q oifname %q ip saddr %s ip daddr %s drop\n", proxyInterface, publicIface, peer.TunnelIP, proxyNoEgress)
+			fmt.Fprintf(&egress, "    iifname %q oifname %q ip saddr %s ct state new limit %s drop\n", proxyInterface, publicIface, peer.TunnelIP, proxyEgressNewLimit)
+			fmt.Fprintf(&egress, "    iifname %q oifname %q ip saddr %s accept\n", proxyInterface, publicIface, peer.TunnelIP)
+			fmt.Fprintf(&snat, "    oifname %q ip saddr %s masquerade\n", publicIface, peer.TunnelIP)
+		}
 		for _, proto := range []string{"udp", "tcp"} {
 			set := portSet(peer.Forwards, proto)
 			if set == "" {
@@ -225,14 +268,23 @@ func renderProxyRules(s *ProxySide, publicIface string) string {
 			fmt.Fprintf(&fwd, "    iifname %q oifname %q ip daddr %s %s dport %s accept\n", publicIface, proxyInterface, peer.TunnelIP, proto, set)
 		}
 	}
-	body := "  chain c_pre {\n    type nat hook prerouting priority dstnat; policy accept;\n" + pre.String() + "  }\n" +
+	body := "  set s_flows {\n    type ipv4_addr; size 65535; flags dynamic,timeout; timeout 1m;\n  }\n" +
+		// The tunnel gives a node no way to the services of its proxy.
+		"  chain c_in {\n    type filter hook input priority filter; policy accept;\n" +
+		fmt.Sprintf("    iifname %q ct state established,related accept\n", proxyInterface) +
+		fmt.Sprintf("    iifname %q meta l4proto icmp accept\n    iifname %q drop\n  }\n", proxyInterface, proxyInterface) +
+		"  chain c_pre {\n    type nat hook prerouting priority dstnat; policy accept;\n" + pre.String() + "  }\n" +
 		"  chain c_fwd {\n    type filter hook forward priority filter; policy accept;\n" +
 		fmt.Sprintf("    iifname %q tcp flags syn tcp option maxseg size set rt mtu\n", proxyInterface) +
 		fmt.Sprintf("    oifname %q tcp flags syn tcp option maxseg size set rt mtu\n", proxyInterface) +
 		fmt.Sprintf("    iifname %q ct state established,related accept\n", proxyInterface) +
 		fmt.Sprintf("    oifname %q ct state established,related accept\n", proxyInterface) +
-		fwd.String() +
+		fmt.Sprintf("    iifname %q oifname %q ct state new add @s_flows { ip saddr limit %s } drop\n", publicIface, proxyInterface, proxyNewFlowLimit) +
+		fwd.String() + egress.String() +
 		fmt.Sprintf("    iifname %q drop\n    oifname %q drop\n  }\n", proxyInterface, proxyInterface)
+	if snat.Len() > 0 {
+		body += "  chain c_snat {\n    type nat hook postrouting priority srcnat; policy accept;\n" + snat.String() + "  }\n"
+	}
 	return replaceTable(proxyTableProxy, body)
 }
 
@@ -243,7 +295,11 @@ func renderProxyRules(s *ProxySide, publicIface string) string {
 // the route to the player as its source, which is the LAN address. Without the DNAT that answer
 // would not belong to the connection, would not get the mark and would leave through the home line,
 // revealing its address to the player.
-func renderNodeRules(s *NodeSide, targetIP string) string {
+//
+// With egressUIDs, new connections of these users get the same mark and leave through the tunnel
+// with the tunnel address as their source. Answers to players keep working as above, also for other
+// users on this machine and for players in its LAN, because they belong to an incoming connection.
+func renderNodeRules(s *NodeSide, targetIP string, egressUIDs []int) string {
 	var in, nat strings.Builder
 	for _, proto := range []string{"udp", "tcp"} {
 		set := portSet(s.Forwards, proto)
@@ -260,8 +316,26 @@ func renderNodeRules(s *NodeSide, targetIP string) string {
 		"  chain c_mangle {\n    type filter hook prerouting priority mangle; policy accept;\n" +
 		fmt.Sprintf("    iifname %q ct state new ct mark set %s\n  }\n", proxyInterface, proxyFlowMark) +
 		"  chain c_out {\n    type route hook output priority mangle; policy accept;\n" +
-		fmt.Sprintf("    ct mark %s meta mark set %s\n  }\n", proxyFlowMark, proxyFlowMark) +
-		"  chain c_nat {\n    type nat hook prerouting priority dstnat; policy accept;\n" + nat.String() + "  }\n"
+		fmt.Sprintf("    meta mark %s return\n", proxyTunnelMark)
+	if len(egressUIDs) > 0 {
+		uids := make([]string, len(egressUIDs))
+		for i, uid := range egressUIDs {
+			uids[i] = strconv.Itoa(uid)
+		}
+		users := "{ " + strings.Join(uids, ", ") + " }"
+		body += fmt.Sprintf("    ct state new meta skuid %s ip daddr != %s ct mark set %s\n", users, proxyNoEgress, proxyFlowMark)
+		body += fmt.Sprintf("    ct mark %s meta mark set %s\n  }\n", proxyFlowMark, proxyFlowMark)
+		// IPv6 would pass the tunnel, which only carries IPv4, and show the home address.
+		body += "  chain c_out6 {\n    type filter hook output priority filter; policy accept;\n" +
+			fmt.Sprintf("    meta mark %s return\n", proxyTunnelMark) +
+			fmt.Sprintf("    meta nfproto ipv6 meta skuid %s ip6 daddr != { ::1, fe80::/10, fc00::/7 } reject\n  }\n", users)
+		body += fmt.Sprintf("  chain c_snat {\n    type nat hook postrouting priority srcnat; policy accept;\n    oifname %q ip saddr != %s snat ip to %s\n  }\n", proxyInterface, s.TunnelIP, s.TunnelIP)
+		// The socket chose its packet size for the LAN route.
+		body += fmt.Sprintf("  chain c_mss {\n    type filter hook postrouting priority mangle; policy accept;\n    oifname %q tcp flags syn tcp option maxseg size set rt mtu\n  }\n", proxyInterface)
+	} else {
+		body += fmt.Sprintf("    ct mark %s meta mark set %s\n  }\n", proxyFlowMark, proxyFlowMark)
+	}
+	body += "  chain c_nat {\n    type nat hook prerouting priority dstnat; policy accept;\n" + nat.String() + "  }\n"
 	return replaceTable(proxyTableNode, body)
 }
 
@@ -274,15 +348,21 @@ func renderWGConfig(plan ProxyPlan, privateKey string) string {
 		fmt.Fprintf(&b, "ListenPort = %d\n", s.ListenPort)
 		for _, peer := range s.Peers {
 			fmt.Fprintf(&b, "\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\n", peer.PublicKey, peer.TunnelIP)
+			if peer.PresharedKey != "" {
+				fmt.Fprintf(&b, "PresharedKey = %s\n", peer.PresharedKey)
+			}
 		}
 	}
 	if s := plan.Node; s != nil {
 		// Without a fixed port every syncconf binds a new one, and the proxy sends to the old one
 		// until the next keepalive of the node. Players lose their packets in that gap.
-		fmt.Fprintf(&b, "ListenPort = %d\n", proxyNodePort)
+		fmt.Fprintf(&b, "ListenPort = %d\nFwMark = %s\n", proxyNodePort, proxyTunnelMark)
 		// Replies go to any player, so the proxy may send any source. This does not route the
 		// machine through the tunnel: only marked connections use it.
 		fmt.Fprintf(&b, "\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25\n", s.ProxyPublicKey, s.Endpoint)
+		if s.PresharedKey != "" {
+			fmt.Fprintf(&b, "PresharedKey = %s\n", s.PresharedKey)
+		}
 	}
 	return b.String()
 }

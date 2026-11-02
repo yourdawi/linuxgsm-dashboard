@@ -91,6 +91,42 @@ func (e TunnelProxyEndpoint) Status(ctx context.Context) (ProxyHostStatus, error
 	return out, err
 }
 
+// ProxySyncDisplayIP sets LinuxGSM's displayip of the servers on the given ports, so that alerts and
+// details show the address of the proxy and not the home line. A value set by the administrator
+// stays. Values the proxy set are taken back from servers that are no longer published.
+func (im *InstanceManager) ProxySyncDisplayIP(ports map[int]bool, oldHost, newHost string) error {
+	var firstErr error
+	for _, srv := range im.snapshot() {
+		values, _, _, _ := alertState(srv)
+		current := values["displayip"]
+		if current != "" && current != oldHost && current != newHost {
+			continue
+		}
+		wanted := ""
+		if ports[srv.Port] {
+			wanted = newHost
+		}
+		if current == wanted {
+			continue
+		}
+		if err := im.SaveAlertSettings(srv.ID, map[string]string{"displayip": wanted}); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("%s: %w", srv.ID, err)
+		}
+	}
+	return firstErr
+}
+
+// ProxyNodeUsers lists the Linux users of the game servers of this machine.
+func (im *InstanceManager) ProxyNodeUsers() map[string]bool {
+	users := map[string]bool{}
+	for _, srv := range im.snapshot() {
+		if srv.User != "" {
+			users[srv.User] = true
+		}
+	}
+	return users
+}
+
 // ProxyNodePorts lists the game ports of this machine as "udp/27015". A node only opens these.
 func (im *InstanceManager) ProxyNodePorts() map[string]bool {
 	ports := map[string]bool{}
