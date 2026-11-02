@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,22 @@ import (
 type HostRuntime struct{}
 
 func (HostRuntime) Name() string { return "host" }
+
+// QueryHosts adds the machine's primary address to the live query targets: srcds bound to 0.0.0.0
+// receives queries on 127.0.0.1 but does not answer them. Dialing UDP sends nothing, it only picks
+// the route.
+func (HostRuntime) QueryHosts() []string {
+	conn, err := net.Dial("udp4", "192.0.2.1:9")
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return nil
+	}
+	return []string{addr.IP.String()}
+}
 
 func (HostRuntime) Capabilities() Capabilities {
 	return Capabilities{

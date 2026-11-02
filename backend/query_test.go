@@ -213,6 +213,16 @@ func TestDiskScanStoresResultsAndTimeout(t *testing.T) {
 	}
 }
 
+func TestHostQueryHosts(t *testing.T) {
+	var provider queryHostProvider = HostRuntime{}
+	for _, host := range provider.QueryHosts() { // none on a machine without a default route
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil || ip.IsUnspecified() {
+			t.Errorf("host = %q", host)
+		}
+	}
+}
+
 func TestQueryTargets(t *testing.T) {
 	srv := GameServerInstance{Game: "cs2", Port: 27015, ParsedPorts: []PortProbe{
 		{Port: 27015, Description: "Game"}, {Port: 27020, Description: "Query"}, {Port: 27050, Description: "RCON"},

@@ -58,7 +58,8 @@ type queryTarget struct {
 }
 
 // queryHostProvider is implemented by runtimes that know further addresses where game servers
-// answer queries (Docker mode: the Docker host as seen from the dashboard container).
+// answer queries (Docker mode: the Docker host as seen from the dashboard container; host mode:
+// the machine's primary address).
 type queryHostProvider interface {
 	QueryHosts() []string
 }
