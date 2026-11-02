@@ -413,6 +413,7 @@ Set it up under **Settings > Proxy**. Both machines have to be in this dashboard
 
 Things to know:
 
+- **Where the dashboard runs.** Both machines connect to the dashboard, so the machine with the public IP usually is the dashboard itself. A dashboard at home without a public address cannot use a rented proxy yet.
 - **On the server card.** A published server shows the address for players. Administrators can publish a server or take it off from there. Its `displayip` is set to the proxy, so that LinuxGSM's alerts and details show that address; a value you set yourself stays.
 - **Provider firewall.** The dashboard cannot open a firewall of your provider (cloud firewall, security group). Open UDP 51820 and the game ports there. firewalld also has to be opened by hand; the setup tells you how.
 - **"Tunnel connected" is about the tunnel.** It does not prove that players get through, because a provider firewall can still block the game ports. Test with a game client from outside.

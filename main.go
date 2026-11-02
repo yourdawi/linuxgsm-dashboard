@@ -3723,7 +3723,9 @@ func runProxyDown(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if err := backend.NewProxyHost(*configDir).Teardown(ctx); err != nil {
+	h := backend.NewProxyHost(*configDir)
+	h.SyncDisplayIP = backend.ProxyDownSyncDisplayIP(*configDir)
+	if err := h.Teardown(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
 		return 1
 	}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Paths of the proxy on an agent.
@@ -114,6 +115,24 @@ func (im *InstanceManager) ProxySyncDisplayIP(ports map[int]bool, oldHost, newHo
 		}
 	}
 	return firstErr
+}
+
+// ProxyDownSyncDisplayIP is ProxySyncDisplayIP for the uninstaller, where no dashboard runs: without
+// it LinuxGSM would keep announcing the proxy. It looks for game servers only when displayip was
+// set, and starts none of the dashboard's background loops.
+func ProxyDownSyncDisplayIP(configDir string) func(ports map[int]bool, oldHost, newHost string) error {
+	return func(ports map[int]bool, oldHost, newHost string) error {
+		im := &InstanceManager{
+			instances:    make(map[string]*GameServerInstance),
+			configDir:    configDir,
+			rt:           HostRuntime{},
+			detailsTried: make(map[string]time.Time),
+		}
+		im.customPaths = im.loadCustomPaths()
+		hostConfigDir = configDir
+		im.ScanInstances()
+		return im.ProxySyncDisplayIP(ports, oldHost, newHost)
+	}
 }
 
 // ProxyNodeUsers lists the Linux users of the game servers of this machine.
