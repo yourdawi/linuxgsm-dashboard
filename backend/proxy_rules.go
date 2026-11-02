@@ -28,6 +28,7 @@ const (
 	proxyRulePrio    = "7701"
 	proxyFlowMark    = "0x77"
 	proxyDefaultPort = 51820
+	proxyNodePort    = 51821
 	// The tunnel carries IPv4 inside IPv4 or IPv6 and has to fit a PPPoE line.
 	proxyTunnelMTU = 1380
 	proxySubnet    = "10.77.0.0/24"
@@ -73,7 +74,7 @@ type ProxyPlan struct {
 func (p ProxyPlan) Empty() bool { return p.Proxy == nil && p.Node == nil }
 
 // proxyReservedPorts would lock out the machine or collide with its own services.
-var proxyReservedPorts = map[int]bool{22: true, 53: true, 80: true, 443: true, 8080: true, proxyDefaultPort: true}
+var proxyReservedPorts = map[int]bool{22: true, 53: true, 80: true, 443: true, 8080: true, proxyDefaultPort: true, proxyNodePort: true}
 
 var reProxyHost = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
 
@@ -276,6 +277,9 @@ func renderWGConfig(plan ProxyPlan, privateKey string) string {
 		}
 	}
 	if s := plan.Node; s != nil {
+		// Without a fixed port every syncconf binds a new one, and the proxy sends to the old one
+		// until the next keepalive of the node. Players lose their packets in that gap.
+		fmt.Fprintf(&b, "ListenPort = %d\n", proxyNodePort)
 		// Replies go to any player, so the proxy may send any source. This does not route the
 		// machine through the tunnel: only marked connections use it.
 		fmt.Fprintf(&b, "\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25\n", s.ProxyPublicKey, s.Endpoint)

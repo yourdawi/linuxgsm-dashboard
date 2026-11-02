@@ -351,7 +351,7 @@ func (h *ProxyHost) Apply(ctx context.Context, plan ProxyPlan) error {
 			return err
 		}
 	}
-	if err := h.loadLocked(ctx, plan, true); err != nil {
+	if err := h.loadLocked(ctx, plan); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(plan, "", "  ")
@@ -395,7 +395,7 @@ func (h *ProxyHost) checkPortsFree(ctx context.Context, s *ProxySide) error {
 
 // loadLocked brings the machine to the plan. Unchanged state is left alone, so a running tunnel is
 // not touched. force loads even then.
-func (h *ProxyHost) loadLocked(ctx context.Context, plan ProxyPlan, force bool) error {
+func (h *ProxyHost) loadLocked(ctx context.Context, plan ProxyPlan) error {
 	privateKey, _, err := h.privateKey()
 	if err != nil {
 		return err
@@ -416,7 +416,7 @@ func (h *ProxyHost) loadLocked(ctx context.Context, plan ProxyPlan, force bool) 
 	}
 	config := renderWGConfig(plan, privateKey)
 	wanted := rules + config
-	if !force && wanted == h.lastLoad && h.loadedLocked(ctx, plan) {
+	if wanted == h.lastLoad && h.loadedLocked(ctx, plan) {
 		return nil
 	}
 
@@ -524,7 +524,7 @@ func (h *ProxyHost) Reconcile(ctx context.Context) {
 	if plan.Empty() {
 		return
 	}
-	if err := h.loadLocked(ctx, plan, false); err != nil {
+	if err := h.loadLocked(ctx, plan); err != nil {
 		if err.Error() != h.lastErr {
 			fmt.Printf("[PROXY] %v\n", err)
 		}

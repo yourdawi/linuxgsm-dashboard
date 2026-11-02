@@ -107,7 +107,7 @@ func TestProxyRules(t *testing.T) {
 
 func TestProxyWGConfig(t *testing.T) {
 	conf := renderWGConfig(testNodePlan(), "PRIV")
-	for _, want := range []string{"PrivateKey = PRIV", "Endpoint = 203.0.113.5:51820", "AllowedIPs = 0.0.0.0/0", "PersistentKeepalive = 25"} {
+	for _, want := range []string{"PrivateKey = PRIV", "Endpoint = 203.0.113.5:51820", "AllowedIPs = 0.0.0.0/0", "PersistentKeepalive = 25", "ListenPort = 51821"} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("node config lacks %q:\n%s", want, conf)
 		}
@@ -344,6 +344,31 @@ func TestProxyReconcile(t *testing.T) {
 	h.Reconcile(ctx)
 	if !strings.Contains(f.stdin["nft -f -"], "dnat ip to 192.168.0.200") {
 		t.Errorf("rules: %s", f.stdin["nft -f -"])
+	}
+}
+
+// The dashboard sends the plan every minute. Loading it again would disturb a running tunnel.
+func TestProxyApplyLeavesAnUnchangedPlanAlone(t *testing.T) {
+	h, f := newTestProxyHost(t)
+	ctx := context.Background()
+	plan := testNodePlan()
+	if err := h.Apply(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	f.calls = nil
+	if err := h.Apply(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if f.called("nft -f") || f.called("wg syncconf") {
+		t.Errorf("reloaded without a change: %q", f.calls)
+	}
+
+	plan.Node.Endpoint = "203.0.113.6:51820"
+	if err := h.Apply(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if !f.called("wg syncconf") {
+		t.Errorf("a changed plan was not loaded: %q", f.calls)
 	}
 }
 
