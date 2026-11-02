@@ -208,7 +208,8 @@ func checkProxyPorts(links []ProxyLink, proxy, node string, forwards []ProxyForw
 }
 
 // Setup is the click on "set up proxy": it prepares both machines, which installs the packages
-// there, checks them and only then loads the plans. A failure leaves the proxy as it was.
+// there, checks them and only then loads the plans. A failure leaves both machines as they were,
+// so a refused setup does not leave packages or keys behind.
 func (c *ProxyController) Setup(ctx context.Context, req ProxySetup) (ProxyLink, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -260,6 +261,13 @@ func (c *ProxyController) Setup(ctx context.Context, req ProxySetup) (ProxyLink,
 		return ProxyLink{}, fmt.Errorf("node: %w", err)
 	}
 
+	done := false
+	defer func() {
+		if !done {
+			_ = proxyEP.Apply(ctx, planFor(c.cfg.Links, req.Proxy))
+			_ = nodeEP.Apply(ctx, planFor(c.cfg.Links, req.Node))
+		}
+	}()
 	proxyInfo, err := proxyEP.Prepare(ctx, true)
 	if err != nil {
 		return ProxyLink{}, fmt.Errorf("proxy: %w", err)
@@ -294,6 +302,7 @@ func (c *ProxyController) Setup(ctx context.Context, req ProxySetup) (ProxyLink,
 		return ProxyLink{}, err
 	}
 	c.cfg.Links = links
+	done = true
 	c.cfg.Cleanup = removeString(removeString(c.cfg.Cleanup, req.Proxy), req.Node)
 	if err := c.saveLocked(); err != nil {
 		return ProxyLink{}, err

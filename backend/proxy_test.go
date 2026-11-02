@@ -945,8 +945,14 @@ func TestProxySetupStopsOnChecksAndRollsBack(t *testing.T) {
 	if !errors.As(err, &setupErr) || setupErr.Machine != "node" {
 		t.Fatalf("err = %v", err)
 	}
-	if len(eps["vps"].plans) != 0 || len(c.Links()) != 0 {
-		t.Error("loaded despite the check")
+	if len(c.Links()) != 0 {
+		t.Error("link stored despite the check")
+	}
+	// Prepare installed packages on both machines; an empty plan takes them back.
+	for _, id := range []string{"vps", "lxc"} {
+		if len(eps[id].plans) == 0 || !eps[id].last().Empty() {
+			t.Errorf("%s not cleaned up after the refusal: %+v", id, eps[id].plans)
+		}
 	}
 
 	// The node refuses after the proxy has loaded: the proxy goes back.

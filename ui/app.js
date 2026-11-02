@@ -2891,7 +2891,9 @@ function suggestProxyHost() {
     const input = document.getElementById('proxy-setup-host');
     if (input.value && input.value !== state.proxySuggestedHost) return;
     const local = document.getElementById('proxy-setup-proxy').value === '@local';
-    state.proxySuggestedHost = local ? window.location.hostname : '';
+    const host = window.location.hostname;
+    const loopback = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+    state.proxySuggestedHost = local && !loopback ? host : '';
     input.value = state.proxySuggestedHost;
 }
 
