@@ -107,6 +107,9 @@ func migrateSystemdService() {
 
 func main() {
 	// `lgsm-dashboard agent ...` runs the agent of a node instead of the dashboard.
+	if len(os.Args) > 1 && os.Args[1] == "proxy-down" {
+		os.Exit(runProxyDown(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		os.Exit(runAgentCommand(os.Args[2:]))
 	}
@@ -230,11 +233,17 @@ func main() {
 		limiter:        backend.NewLoginLimiter(),
 		updater:        updater,
 		releases:       releases,
+		proxyHost:      newProxyHost(*configDirFlag, caps, instances),
 		configDir:      *configDirFlag,
 		uiFS:           subFS,
 		secureCookies:  *secureCookiesFlag,
 		trustProxy:     *trustProxyFlag,
 		maxUploadBytes: *maxUploadMBFlag << 20,
+	}
+
+	if err := application.initProxy(); err != nil {
+		fmt.Printf("[FATAL] Failed to load the proxy configuration: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Per-request read/write deadlines are applied by middleware so long running streams (SSE,
@@ -272,7 +281,9 @@ type app struct {
 	crawler   *backend.GameCrawler
 	limiter   *backend.LoginLimiter
 	updater   *backend.Updater
-	releases  *backend.Updater // reads the release notes, also in Docker mode
+	releases  *backend.Updater         // reads the release notes, also in Docker mode
+	proxyHost *backend.ProxyHost       // proxy on this machine, nil in Docker mode
+	proxies   *backend.ProxyController // proxy links, dashboard only
 	configDir string
 	uiFS      fs.FS
 
@@ -610,6 +621,9 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/release-notes", a.requireAdmin(a.handleReleaseNotes))
 	mux.HandleFunc("/api/admin/update/trigger", methodOnly(http.MethodPost, a.requireAdmin(a.handleUpdateTrigger)))
 
+	mux.HandleFunc("/api/admin/proxy", a.requireAdmin(a.handleProxy))
+	mux.HandleFunc("/api/admin/proxy/forwards", methodOnly(http.MethodPut, a.requireAdmin(a.handleProxyForwards)))
+	mux.HandleFunc("/api/admin/proxy/egress", methodOnly(http.MethodPut, a.requireAdmin(a.handleProxyEgress)))
 	mux.HandleFunc("/api/admin/nodes", a.requireAdmin(a.handleNodes))
 	mux.HandleFunc("/api/admin/nodes/update", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeUpdate)))
 	mux.HandleFunc("/api/admin/nodes/delete", methodOnly(http.MethodPost, a.requireAdmin(a.handleNodeDelete)))
@@ -928,6 +942,7 @@ func (a *app) visibleServers(user backend.User) []backend.GameServerInstance {
 		}
 	}
 	servers = append(servers, a.nodeServers()...)
+	a.addProxyAddresses(servers)
 	if user.IsAdmin() {
 		return servers
 	}
@@ -938,6 +953,21 @@ func (a *app) visibleServers(user backend.User) []backend.GameServerInstance {
 		}
 	}
 	return filtered
+}
+
+func (a *app) addProxyAddresses(servers []backend.GameServerInstance) {
+	if a.proxies == nil {
+		return
+	}
+	for i := range servers {
+		machine := servers[i].Node
+		if machine == "" {
+			machine = backend.ProxyLocal
+		}
+		address, hasProxy := a.proxies.ServerAddress(machine, servers[i].Port)
+		servers[i].ProxyAddress = address
+		servers[i].ProxyAvailable = hasProxy && address == "" && servers[i].Port > 0
+	}
 }
 
 func (a *app) handleListServers(w http.ResponseWriter, r *http.Request, user backend.User, _ string) {
@@ -2765,6 +2795,12 @@ func (a *app) handleNodeDelete(w http.ResponseWriter, r *http.Request, admin bac
 		writeError(w, http.StatusBadRequest, "Invalid node")
 		return
 	}
+	// While the tunnel still exists, so the node can remove the proxy from itself.
+	if a.proxies != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		a.proxies.ForgetNode(ctx, payload.ID)
+		cancel()
+	}
 	if err := a.agents.RemoveNode(payload.ID); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -2836,6 +2872,8 @@ func (a *app) agentRouteTable() []agentRoute {
 		{backend.AgentHelloPath, read, a.handleAgentHello},
 		{backend.AgentCSRPath, map[string]string{http.MethodPost: accessMaintenance}, a.handleAgentCSR},
 		{backend.AgentCertPath, map[string]string{http.MethodPost: accessMaintenance}, a.handleAgentCert},
+		{backend.AgentProxyPath, map[string]string{http.MethodGet: backend.AccessRead, http.MethodPut: accessInHandler}, a.handleAgentProxy},
+		{backend.AgentProxyPreparePath, map[string]string{http.MethodPost: accessInHandler}, a.handleAgentProxyPrepare},
 		{"/api/servers", read, a.requireAuth(a.handleListServers)},
 		{"/api/servers/bulk", map[string]string{http.MethodPost: accessInHandler}, a.requireAuth(a.handleBulk)},
 		{"/api/servers/", map[string]string{http.MethodGet: accessInHandler, http.MethodPost: accessInHandler}, a.requireAuth(a.handleServer)},
@@ -2935,6 +2973,7 @@ func (a *app) handleAgentHello(w http.ResponseWriter, r *http.Request) {
 		AllowSelfUpdate: p.AllowSelfUpdate,
 		FastDLURL:       a.fastdlURL,
 		Servers:         servers,
+		Proxy:           a.proxyHost != nil && !p.DenyProxy && p.Mode == backend.AgentModeReadWrite,
 	})
 }
 
@@ -2976,6 +3015,8 @@ func runAgent(configDir string, maxUploadBytes int64, fastdlPort int, fastdlURL 
 		agentMode:      true,
 		fastdlURL:      strings.TrimSpace(fastdlURL),
 	}
+	a.proxyHost = newProxyHost(configDir, caps, a.inst)
+	a.startProxyLoop(context.Background())
 	load := func() (backend.AgentIdentity, error) {
 		// The policy is re-read for every connection, so `agent mode` applies on reconnect.
 		policy := backend.LoadAgentPolicy(configDir)
@@ -3030,6 +3071,7 @@ func runAgentCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent run [--config-dir <dir>] [--max-upload-mb <MiB>] [--fastdl-port <port>] [--fastdl-url <url>]")
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent status [--config-dir <dir>]")
 		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent mode read-only|read-write [--config-dir <dir>]")
+		fmt.Fprintln(os.Stderr, "  lgsm-dashboard agent proxy on|off [--config-dir <dir>]")
 		return 2
 	}
 	if len(args) == 0 {
@@ -3122,6 +3164,23 @@ func runAgentCommand(args []string) int {
 			return 1
 		}
 		fmt.Printf("[OK] Access mode set to %s. It applies from the next connection; the dashboard may restrict it further.\n", policy.Mode)
+		return 0
+
+	case "proxy":
+		if err := fset.Parse(args); err != nil {
+			return 2
+		}
+		positional = append(positional, fset.Args()...)
+		if len(positional) != 1 || (positional[0] != "on" && positional[0] != "off") {
+			return usage()
+		}
+		policy := backend.LoadAgentPolicy(*configDir)
+		policy.DenyProxy = positional[0] == "off"
+		if err := backend.SaveAgentPolicy(*configDir, policy); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
+			return 1
+		}
+		fmt.Printf("[OK] Game traffic proxy %s on this machine. It applies from the next connection.\n", map[bool]string{true: "disallowed", false: "allowed"}[policy.DenyProxy])
 		return 0
 
 	default:
@@ -3363,4 +3422,313 @@ func (a *app) serveFastDLFile(w http.ResponseWriter, r *http.Request, serverID, 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", attachmentDisposition(info.Name()))
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
+// -------------------------------------------------------------
+// Game traffic proxy
+// -------------------------------------------------------------
+
+// proxyLoopInterval is how often machines check that they still match their plan.
+const proxyLoopInterval = time.Minute
+
+// newProxyHost returns nil in Docker mode, where the dashboard cannot change the host's network.
+func newProxyHost(configDir string, caps backend.Capabilities, instances *backend.InstanceManager) *backend.ProxyHost {
+	if caps.Runtime != "host" {
+		return nil
+	}
+	h := backend.NewProxyHost(configDir)
+	h.NodePorts = instances.ProxyNodePorts
+	h.NodeUsers = instances.ProxyNodeUsers
+	h.SyncDisplayIP = instances.ProxySyncDisplayIP
+	instances.ProxyPortHost = h.PublishedHost
+	return h
+}
+
+// initProxy sets up the controller. Nothing is contacted until an administrator sets up a proxy.
+func (a *app) initProxy() error {
+	controller, err := backend.NewProxyController(a.configDir, a.proxyEndpoint)
+	if err != nil {
+		return err
+	}
+	a.proxies = controller
+	a.startProxyLoop(context.Background())
+	return nil
+}
+
+// startProxyLoop keeps this machine at its plan, also without a dashboard, and on a dashboard the
+// other machines too. Without a setup each round ends right away.
+func (a *app) startProxyLoop(ctx context.Context) {
+	go func() {
+		for {
+			if a.proxyHost != nil {
+				roundCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+				a.proxyHost.Reconcile(roundCtx)
+				cancel()
+			}
+			if a.proxies != nil {
+				roundCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+				a.proxies.Sync(roundCtx)
+				cancel()
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(proxyLoopInterval):
+			}
+		}
+	}()
+}
+
+func (a *app) proxyEndpoint(id string) (backend.ProxyEndpoint, error) {
+	if id == backend.ProxyLocal {
+		if a.proxyHost == nil {
+			return nil, errors.New("the proxy is not available in Docker mode yet")
+		}
+		return backend.LocalProxyEndpoint{Host: a.proxyHost}, nil
+	}
+	if a.agents == nil || !backend.IsValidNodeID(id) {
+		return nil, errors.New("unknown machine")
+	}
+	st := a.agents.Hub.Status(id)
+	client, ok := a.agents.Hub.Tunnel(id)
+	if !ok || !st.Online {
+		return nil, fmt.Errorf("node %s is offline", id)
+	}
+	if !st.Compatible {
+		return nil, fmt.Errorf("node %s needs an update", id)
+	}
+	return backend.TunnelProxyEndpoint{Client: client}, nil
+}
+
+// proxyCandidate is a machine an administrator can choose.
+type proxyCandidate struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	Problem   string `json:"problem,omitempty"`
+}
+
+func (a *app) proxyCandidates() []proxyCandidate {
+	local := proxyCandidate{ID: backend.ProxyLocal, Name: "This dashboard", Available: a.proxyHost != nil}
+	if a.proxyHost == nil {
+		local.Problem = "docker_mode"
+	}
+	out := []proxyCandidate{local}
+	if a.agents == nil {
+		return out
+	}
+	for _, n := range a.agents.Nodes.Nodes() {
+		st := a.agents.Hub.Status(n.ID)
+		c := proxyCandidate{ID: n.ID, Name: n.Name}
+		switch {
+		case !st.Online:
+			c.Problem = "offline"
+		case !st.Compatible:
+			c.Problem = "needs_update"
+		case !backend.AgentModeAllows(st.EffectiveMode, backend.AccessWrite):
+			c.Problem = "read_only"
+		case st.Hello == nil || !st.Hello.Proxy:
+			c.Problem = "not_allowed"
+		default:
+			c.Available = true
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func validProxyMachine(id string) bool {
+	return id == backend.ProxyLocal || backend.IsValidNodeID(id)
+}
+
+// handleProxy is the dashboard API. POST is the "set up proxy" of an administrator: it installs the
+// packages on both machines and loads the tunnel. Before that, nothing of the proxy exists.
+func (a *app) handleProxy(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	switch r.Method {
+	case http.MethodGet:
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"links":    a.proxies.View(ctx),
+			"machines": a.proxyCandidates(),
+		})
+
+	case http.MethodPost:
+		var req backend.ProxySetup
+		if !decodeJSON(w, r, &req, 64*1024) {
+			return
+		}
+		if !validProxyMachine(req.Proxy) || !validProxyMachine(req.Node) {
+			writeError(w, http.StatusBadRequest, "Invalid machine")
+			return
+		}
+		// Installing packages can take minutes.
+		backend.DisableWriteDeadline(w)
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+		link, err := a.proxies.Setup(ctx, req)
+		if err != nil {
+			var setupErr *backend.ProxySetupError
+			if errors.As(err, &setupErr) {
+				writeJSON(w, http.StatusConflict, map[string]interface{}{"error": err.Error(), "machine": setupErr.Machine, "checks": setupErr.Checks})
+				return
+			}
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.auth.LogAudit(admin.Username, a.clientIP(r), "PROXY_SETUP", fmt.Sprintf("Connected %s to proxy %s at %s", req.Node, req.Proxy, req.PublicHost), "")
+		writeJSON(w, http.StatusOK, map[string]interface{}{"link": link, "warnings": link.Warnings})
+
+	case http.MethodDelete:
+		node := r.URL.Query().Get("node")
+		if !validProxyMachine(node) {
+			writeError(w, http.StatusBadRequest, "Invalid machine")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		defer cancel()
+		if err := a.proxies.Remove(ctx, node); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.auth.LogAudit(admin.Username, a.clientIP(r), "PROXY_REMOVE", "Removed the proxy of "+node, "")
+		writeOK(w)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// PUT /api/admin/proxy/forwards changes the published ports of a machine.
+func (a *app) handleProxyForwards(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	var payload struct {
+		Node     string                 `json:"node"`
+		Forwards []backend.ProxyForward `json:"forwards"`
+	}
+	if !decodeJSON(w, r, &payload, 64*1024) {
+		return
+	}
+	if !validProxyMachine(payload.Node) {
+		writeError(w, http.StatusBadRequest, "Invalid machine")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	if err := a.proxies.SetForwards(ctx, payload.Node, payload.Forwards); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.LogAudit(admin.Username, a.clientIP(r), "PROXY_PORTS", fmt.Sprintf("Changed the proxy ports of %s: %d", payload.Node, len(payload.Forwards)), "")
+	writeOK(w)
+}
+
+// PUT /api/admin/proxy/egress chooses the users whose outgoing traffic leaves through the proxy.
+func (a *app) handleProxyEgress(w http.ResponseWriter, r *http.Request, admin backend.User, _ string) {
+	var payload struct {
+		Node  string   `json:"node"`
+		Users []string `json:"users"`
+	}
+	if !decodeJSON(w, r, &payload, 64*1024) {
+		return
+	}
+	if !validProxyMachine(payload.Node) {
+		writeError(w, http.StatusBadRequest, "Invalid machine")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	if err := a.proxies.SetEgress(ctx, payload.Node, payload.Users); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.LogAudit(admin.Username, a.clientIP(r), "PROXY_EGRESS", fmt.Sprintf("Outgoing traffic of %s through the proxy: %s", payload.Node, strings.Join(payload.Users, ", ")), "")
+	writeOK(w)
+}
+
+// agentProxyAllowed applies the rules of this node. Removing is always allowed.
+func (a *app) agentProxyAllowed(w http.ResponseWriter) bool {
+	p := a.policy()
+	switch {
+	case a.proxyHost == nil:
+		writeError(w, http.StatusConflict, "The proxy is not available in Docker mode yet")
+	case p.DenyProxy:
+		writeError(w, http.StatusForbidden, "The proxy is disabled on this node (agent proxy on)")
+	case !backend.AgentModeAllows(p.Mode, backend.AccessWrite):
+		writeError(w, http.StatusForbidden, "This node is read-only")
+	default:
+		return true
+	}
+	return false
+}
+
+// GET /agent/v1/proxy reports the state, PUT loads a plan from the dashboard.
+func (a *app) handleAgentProxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if a.proxyHost == nil {
+			writeJSON(w, http.StatusOK, backend.ProxyHostStatus{})
+			return
+		}
+		writeJSON(w, http.StatusOK, a.proxyHost.Status(r.Context()))
+		return
+	}
+	var plan backend.ProxyPlan
+	if !decodeJSON(w, r, &plan, 256*1024) {
+		return
+	}
+	if plan.Empty() {
+		if a.proxyHost != nil {
+			if err := a.proxyHost.Teardown(r.Context()); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		writeOK(w)
+		return
+	}
+	if !a.agentProxyAllowed(w) {
+		return
+	}
+	backend.DisableWriteDeadline(w)
+	if err := a.proxyHost.Apply(r.Context(), plan); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	fmt.Println("[PROXY] Plan loaded")
+	writeOK(w)
+}
+
+// POST /agent/v1/proxy/prepare installs the packages and answers with the public key and the checks.
+func (a *app) handleAgentProxyPrepare(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		AsProxy bool `json:"as_proxy"`
+	}
+	if !decodeJSON(w, r, &payload, 4*1024) || !a.agentProxyAllowed(w) {
+		return
+	}
+	backend.DisableWriteDeadline(w)
+	prepared, err := a.proxyHost.Prepare(r.Context(), payload.AsProxy)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, prepared)
+}
+
+// runProxyDown removes everything of the proxy from this machine; the uninstaller calls it. On a
+// machine that never used the proxy it does nothing.
+func runProxyDown(args []string) int {
+	fset := flag.NewFlagSet("proxy-down", flag.ContinueOnError)
+	configDir := fset.String("config-dir", "./config", "Directory of the configuration")
+	if err := fset.Parse(args); err != nil {
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	h := backend.NewProxyHost(*configDir)
+	h.SyncDisplayIP = backend.ProxyDownSyncDisplayIP(*configDir)
+	if err := h.Teardown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
+		return 1
+	}
+	return 0
 }

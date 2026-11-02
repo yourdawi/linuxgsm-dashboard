@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LinuxGSM Dashboard</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="alternate icon" href="favicon.ico" sizes="16x16">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -14,12 +16,8 @@
     <div id="login-container" class="login-wrapper">
         <div class="login-card">
             <div class="login-logo">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-                    <line x1="8" y1="21" x2="16" y2="21"></line>
-                    <line x1="12" y1="17" x2="12" y2="21"></line>
-                </svg>
-                <h2 data-i18n="login-title">LinuxGSM WebAdmin</h2>
+                <img src="logo-icon.svg" alt="" width="72" height="72">
+                <h2><span class="brand-word">Linux<em>GSM</em></span></h2>
                 <p data-i18n="login-subtitle">Melde dich an, um deine Gameserver zu verwalten.</p>
             </div>
             <form id="login-form">
@@ -59,12 +57,8 @@
                 </svg>
             </button>
             <div class="mobile-brand">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-                    <line x1="8" y1="21" x2="16" y2="21"></line>
-                    <line x1="12" y1="17" x2="12" y2="21"></line>
-                </svg>
-                <span>LGSM Admin</span>
+                <img src="logo-icon.svg" alt="" width="26" height="26">
+                <span class="brand-word">Linux<em>GSM</em></span>
             </div>
             <button id="btn-mobile-theme-toggle" class="btn-theme-toggle-mobile" title="Theme wechseln" data-i18n-title="theme-toggle">
                 <svg class="sun-icon-mobile" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="18.36" x2="5.64" y2="19.78"></line><line x1="18.36" y1="4.22" x2="19.78" y2="5.64"></line></svg>
@@ -78,12 +72,8 @@
         <!-- Sidebar Navigation -->
         <aside class="sidebar" id="app-sidebar">
             <div class="sidebar-brand">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-                    <line x1="8" y1="21" x2="16" y2="21"></line>
-                    <line x1="12" y1="17" x2="12" y2="21"></line>
-                </svg>
-                <span>LGSM Admin</span>
+                <img src="logo-icon.svg" alt="" width="30" height="30">
+                <span class="brand-word">Linux<em>GSM</em></span>
             </div>
             
             <nav class="sidebar-menu">
@@ -566,6 +556,12 @@
                     <button class="settings-subtab-btn" id="settings-tab-btn-nodes" data-subtab="nodes">
                         <span data-i18n="settings-subtab-nodes">Nodes</span>
                     </button>
+                    <button class="settings-subtab-btn" id="settings-tab-btn-proxy" data-subtab="proxy">
+                        <span data-i18n="settings-subtab-proxy">Proxy</span>
+                    </button>
+                    <button class="settings-subtab-btn" id="settings-tab-btn-about" data-subtab="about">
+                        <span data-i18n="settings-subtab-about">About</span>
+                    </button>
                 </div>
 
                 <!-- Shared Server Selection Bar (visible when on server, cron, or alerts tab) -->
@@ -885,6 +881,69 @@
                             <div id="firewall-message-text" class="text-muted" style="font-size:0.8rem; line-height:1.4; margin-bottom:0.75rem;"></div>
                             <div id="firewall-rules-box" class="hidden" style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); padding:0.75rem; border-radius:6px; font-family:var(--font-mono); font-size:0.8rem; max-height:120px; overflow-y:auto;"></div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Proxy: players connect through another machine (administrators only) -->
+                <div id="settings-subtab-panel-about" class="settings-subtab-panel hidden">
+                    <div class="settings-card glass-panel mb-4 about-card">
+                        <img src="logo-icon.svg" alt="" width="96" height="96">
+                        <div class="about-body">
+                            <h3 class="about-title"><span class="brand-word">Linux<em>GSM</em></span> Dashboard</h3>
+                            <p class="about-tagline" data-i18n="about-tagline">Your game servers, in one place.</p>
+                            <p class="about-version mono" id="about-version">-</p>
+                            <p data-i18n="about-text"></p>
+                            <div class="about-links">
+                                <a class="btn btn-primary" href="https://github.com/yourdawi/linuxgsm-dashboard" target="_blank" rel="noopener noreferrer" data-i18n="about-star">Star on GitHub</a>
+                                <a class="btn btn-secondary" href="https://github.com/yourdawi/linuxgsm-dashboard/issues" target="_blank" rel="noopener noreferrer" data-i18n="about-issues">Report a problem</a>
+                                <a class="btn btn-secondary" href="https://github.com/yourdawi/linuxgsm-dashboard/releases" target="_blank" rel="noopener noreferrer" data-i18n="about-releases">Releases</a>
+                                <a class="btn btn-secondary" href="https://github.com/yourdawi" target="_blank" rel="noopener noreferrer" data-i18n="about-author">More from Dawi</a>
+                            </div>
+                            <p class="about-credit" data-i18n="about-credit"></p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="settings-subtab-panel-proxy" class="settings-subtab-panel hidden">
+                    <div class="settings-card glass-panel mb-4">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                            <h3 style="margin:0;" data-i18n="proxy-list-title">Proxy</h3>
+                            <button type="button" class="btn btn-secondary btn-sm" id="proxy-refresh" data-i18n="nodes-refresh">Aktualisieren</button>
+                        </div>
+                        <p class="text-muted" style="font-size:0.85rem;" data-i18n="proxy-desc">Spieler verbinden sich mit der Adresse des Proxys, der Server braucht keinen offenen Port. Der Gameserver sieht trotzdem die echte IP der Spieler.</p>
+                        <div id="proxy-list" class="nodes-list mt-3"></div>
+                    </div>
+                    <div class="settings-card glass-panel mb-4">
+                        <h3 style="margin-top:0;" data-i18n="proxy-setup-title">Proxy einrichten</h3>
+                        <p class="text-muted" style="font-size:0.85rem;" data-i18n="proxy-setup-desc">Erst dieser Schritt ändert etwas: Auf beiden Maschinen werden wireguard-tools und nftables installiert, soweit sie fehlen, der Tunnel wird eingerichtet und die Firewall der Maschine dafür geöffnet. Beim Entfernen wird das zurückgenommen.</p>
+                        <form id="proxy-setup-form">
+                            <div class="form-group">
+                                <label for="proxy-setup-proxy" data-i18n="proxy-setup-proxy">Proxy (mit öffentlicher IP)</label>
+                                <select id="proxy-setup-proxy" class="form-control" required></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-setup-node" data-i18n="proxy-setup-node">Maschine mit den Gameservern</label>
+                                <select id="proxy-setup-node" class="form-control" required></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-setup-host" data-i18n="proxy-setup-host">Öffentliche Adresse des Proxys</label>
+                                <input type="text" id="proxy-setup-host" class="form-control" required autocomplete="off" spellcheck="false" placeholder="203.0.113.5">
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-setup-ports" data-i18n="proxy-setup-ports">Ports</label>
+                                <input type="text" id="proxy-setup-ports" class="form-control" required autocomplete="off" spellcheck="false" placeholder="27015/udp, 27015/tcp">
+                                <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;" data-i18n="proxy-setup-ports-hint">Vorgeschlagen aus den erkannten Gameservern. Der Node lehnt Ports ab, die zu keinem Gameserver gehören.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-setup-egress" data-i18n="proxy-setup-egress">Ausgehender Verkehr über den Proxy (Linux-Benutzer, optional)</label>
+                                <input type="text" id="proxy-setup-egress" class="form-control" autocomplete="off" spellcheck="false" placeholder="game">
+                                <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;" data-i18n="proxy-setup-egress-hint">Für Steam-Spiele empfohlen: Dann sieht Steam die Adresse des Proxys statt deines Anschlusses. Alles dieses Benutzers läuft dann über den Proxy, auch Updates mit vielen GB.</p>
+                                <p class="text-muted mt-2 mb-0" style="font-size:0.85rem;" id="proxy-setup-egress-found"></p>
+                            </div>
+                            <p class="text-muted" style="font-size:0.85rem;" data-i18n="proxy-setup-cloud">Hat dein Anbieter eine eigene Firewall (Cloud-Firewall, Security Group), öffne dort UDP 51820 und die Spielports. Das kann das Dashboard nicht von hier aus.</p>
+                            <div id="proxy-setup-message" class="info-message"></div>
+                            <button type="submit" class="btn btn-primary" id="proxy-setup-btn" data-i18n="proxy-setup-btn">Proxy einrichten</button>
+                        </form>
                     </div>
                 </div>
 

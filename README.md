@@ -1,3 +1,5 @@
+<img src="assets/logo-icon.svg" alt="" width="96">
+
 # LinuxGSM Web Dashboard
 
 A web interface for managing game servers that run under [LinuxGSM](https://linuxgsm.com/). The dashboard is a single Go binary with the web interface embedded. It runs either natively as a systemd service and controls the LinuxGSM scripts of each game server through the server's own Linux user, or as a Docker container that runs every game server in its own container of the official LinuxGSM images.
@@ -42,6 +44,7 @@ A web interface for managing game servers that run under [LinuxGSM](https://linu
 - [Host mode and Docker mode](#host-mode-and-docker-mode)
 - [Docker mode in detail](#docker-mode-in-detail)
 - [Multiple machines (nodes)](#multiple-machines-nodes)
+- [Game traffic proxy](#game-traffic-proxy)
 - [Configuration](#configuration)
 - [Game servers outside of /home](#game-servers-outside-of-home)
 - [Users and permissions](#users-and-permissions)
@@ -399,6 +402,28 @@ Caddy passes WebSockets without extra configuration. If the proxy uses a self-si
 - **Installing:** the game installer offers every connected read-write node as target ("Install on"); the form follows the node's runtime (Linux user or Docker container). Read-only nodes are not offered.
 - **FastDL** is chosen per server in its console view (administrators): served by *this dashboard* (default; for a server of a node the dashboard passes the downloads through the node's connection, so the node needs no public address), by *the node itself*, or *off*. For the node to serve it, install or update the agent with `--fastdl-port <port> --fastdl-url http://<public address>:<port>/fastdl/` (the installer keeps both for later updates; `--fastdl-port 0` turns it off); that port serves nothing but the FastDL files of servers set to *the node itself*. A node owner with an own web server for `public_html/fastdl` sets only `--fastdl-url`. The URL shown in the dashboard follows the choice.
 - **Host statistics** (CPU, RAM, free disk space) of every connected node are shown under Settings > Nodes.
+
+## Game traffic proxy
+
+Optional. Players connect to the address of another machine with a public IP, for example a rented VPS, and the machine with the game servers opens no port. The game server still sees the real IP of the players, so bans and logs keep working. Until you set one up, nothing of it is installed and no command runs for it.
+
+```
+Player ──► proxy with a public IP ──► WireGuard ──► machine with the game servers
+```
+
+Set it up under **Settings > Proxy**. Both machines have to be in this dashboard, as this dashboard's own machine or as a node with read-write access, and run in host mode. Choose the proxy, the machine with the game servers, the public address and the ports. The setup then installs `wireguard-tools` and `nftables` if they are missing, starts the tunnel and adds the tunnel to the machine's iptables rules, so that ufw and Docker do not block it. Removing the proxy takes all of this back, including the packages it installed.
+
+Things to know:
+
+- **Where the dashboard runs.** Both machines connect to the dashboard, so the machine with the public IP usually is the dashboard itself. A dashboard at home without a public address cannot use a rented proxy yet.
+- **On the server card.** A published server shows the address for players. Administrators can publish a server or take it off from there. Its `displayip` is set to the proxy, so that LinuxGSM's alerts and details show that address; a value you set yourself stays.
+- **Provider firewall.** The dashboard cannot open a firewall of your provider (cloud firewall, security group). Open UDP 51820 and the game ports there. firewalld also has to be opened by hand; the setup tells you how.
+- **"Tunnel connected" is about the tunnel.** It does not prove that players get through, because a provider firewall can still block the game ports. The port check of a published server asks the proxy's address: an answer proves the whole way, no answer can also be a limit of the test, because the machine asks itself. Test with a game client from outside.
+- **Steam and outgoing traffic.** By default only incoming traffic goes through the proxy, so Steam's server list shows the address of your own line, and players can still connect directly to the proxy address. Name the Linux users of your game servers under outgoing traffic and restart the servers, then Steam sees the proxy. Everything of these users then uses the proxy, including SteamCMD updates of many GB, and their IPv6 is blocked so that it cannot show your line. Addresses in private networks stay outside of the tunnel.
+- **Limits on the proxy.** New connections are limited per source towards the game ports and per node towards the internet. A node cannot reach the services of its proxy or the proxy's private networks through the tunnel.
+- **Encryption.** The tunnel is WireGuard with a preshared key that reaches both machines over the post-quantum protected node connection.
+- **Latency.** Players take the way through the proxy, so it should be close to both the players and the game server.
+- **Limits.** A node opens only ports of its own game servers, and the proxy refuses ports below 1024 and ports its services use. On a node, `lgsm-dashboard agent proxy off` forbids the feature.
 
 ## Configuration
 

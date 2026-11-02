@@ -36,6 +36,10 @@ type GameServerInstance struct {
 	Tag       string     `json:"tag,omitempty"`
 	QueryData QueryInfo  `json:"query_data"`
 	Disk      *DiskUsage `json:"disk,omitempty"`
+	// ProxyAddress is what players type in when this server is published through a proxy.
+	// ProxyAvailable means its machine has a proxy and this server is not published on it.
+	ProxyAddress   string `json:"proxy_address,omitempty"`
+	ProxyAvailable bool   `json:"proxy_available,omitempty"`
 	// Servers of another machine (multi-node): node ID and name, whether the node is offline (the
 	// entry is then the last known state) and the capabilities of that node's runtime.
 	Node         string        `json:"node,omitempty"`
@@ -113,6 +117,9 @@ type InstanceManager struct {
 	configDir string
 	rt        Runtime
 	static    bool // tests: disable discovery from /etc/passwd and the filesystem
+	// ProxyPortHost returns the proxy's address for a port published through a proxy. Set once at
+	// startup, nil without proxy support.
+	ProxyPortHost func(port int, protocol string) string
 
 	scanMu sync.Mutex // one discovery at a time; taken before mu, never while holding it
 
