@@ -1095,6 +1095,11 @@ do_uninstall() {
     PORT="$(installed_service_port)"
     PORT="${PORT:-${STATE_PORT:-8080}}"
 
+    # The game traffic proxy, if it was ever set up: tunnel, rules and its packages.
+    if [ -x "$BINARY" ]; then
+        "$BINARY" proxy-down --config-dir "$INSTALL_DIR/config" 2>/dev/null || true
+    fi
+
     # 1. Stop and remove the systemd services (dashboard or node agent)
     local is_agent="false"
     if [ -f "/etc/systemd/system/$AGENT_SERVICE_NAME.service" ] || [ "$STATE_ROLE" == "agent" ]; then

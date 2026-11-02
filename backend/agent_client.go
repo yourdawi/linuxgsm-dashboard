@@ -61,6 +61,8 @@ type AgentPolicy struct {
 	AllowFirewall   bool     `json:"allow_firewall"`
 	AllowSelfUpdate bool     `json:"allow_self_update"`
 	Servers         []string `json:"servers"`
+	// DenyProxy keeps this machine out of the game traffic proxy.
+	DenyProxy bool `json:"deny_proxy,omitempty"`
 }
 
 // LoadAgentConfig reads agent.json.

@@ -51,6 +51,8 @@ type AgentHello struct {
 	Servers         []string     `json:"servers"`
 	// FastDLURL is the base URL under which the node serves FastDL itself (empty: it does not).
 	FastDLURL string `json:"fastdl_url,omitempty"`
+	// Proxy tells that this machine can take part in the game traffic proxy.
+	Proxy bool `json:"proxy,omitempty"`
 }
 
 // AgentVersionsCompatible reports whether a controller and an agent can work together. The
