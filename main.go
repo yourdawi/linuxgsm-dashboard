@@ -3440,6 +3440,7 @@ func newProxyHost(configDir string, caps backend.Capabilities, instances *backen
 	h.NodePorts = instances.ProxyNodePorts
 	h.NodeUsers = instances.ProxyNodeUsers
 	h.SyncDisplayIP = instances.ProxySyncDisplayIP
+	instances.ProxyPortHost = h.PublishedHost
 	return h
 }
 

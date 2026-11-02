@@ -255,7 +255,9 @@ type PortProbe struct {
 	Protocol    string `json:"protocol"`
 	Open        bool   `json:"open"`
 	Description string `json:"description"`
-	Status      string `json:"status,omitempty"` // result of a port check, see the portStatus constants
+	// ViaProxy is the proxy's address when this port is published through a proxy.
+	ViaProxy string `json:"via_proxy,omitempty"`
+	Status   string `json:"status,omitempty"` // result of a port check, see the portStatus constants
 }
 
 // Results of a port check. It runs on the server itself, so it cannot prove that a port is
@@ -399,7 +401,15 @@ func (im *InstanceManager) CheckServerPorts(w http.ResponseWriter, r *http.Reque
 		go func(p *PortProbe) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			p.Status = probePort(portTestFor(*p, querytype, hasQueryPort), publicIP, localHosts, p.Port)
+			// A published port is reached at the proxy's address, not at the public IP of this
+			// machine. The answer takes the whole way through the proxy and the tunnel.
+			public := publicIP
+			if im.ProxyPortHost != nil {
+				if host := im.ProxyPortHost(p.Port, p.Protocol); host != "" {
+					public, p.ViaProxy = host, host
+				}
+			}
+			p.Status = probePort(portTestFor(*p, querytype, hasQueryPort), public, localHosts, p.Port)
 			p.Open = p.Status == portStatusOpen
 		}(&probes[i])
 	}

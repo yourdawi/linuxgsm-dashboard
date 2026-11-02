@@ -1,3 +1,5 @@
+<img src="assets/logo-icon.svg" alt="" width="96">
+
 # LinuxGSM Web Dashboard
 
 A web interface for managing game servers that run under [LinuxGSM](https://linuxgsm.com/). The dashboard is a single Go binary with the web interface embedded. It runs either natively as a systemd service and controls the LinuxGSM scripts of each game server through the server's own Linux user, or as a Docker container that runs every game server in its own container of the official LinuxGSM images.
@@ -416,7 +418,7 @@ Things to know:
 - **Where the dashboard runs.** Both machines connect to the dashboard, so the machine with the public IP usually is the dashboard itself. A dashboard at home without a public address cannot use a rented proxy yet.
 - **On the server card.** A published server shows the address for players. Administrators can publish a server or take it off from there. Its `displayip` is set to the proxy, so that LinuxGSM's alerts and details show that address; a value you set yourself stays.
 - **Provider firewall.** The dashboard cannot open a firewall of your provider (cloud firewall, security group). Open UDP 51820 and the game ports there. firewalld also has to be opened by hand; the setup tells you how.
-- **"Tunnel connected" is about the tunnel.** It does not prove that players get through, because a provider firewall can still block the game ports. Test with a game client from outside.
+- **"Tunnel connected" is about the tunnel.** It does not prove that players get through, because a provider firewall can still block the game ports. The port check of a published server asks the proxy's address: an answer proves the whole way, no answer can also be a limit of the test, because the machine asks itself. Test with a game client from outside.
 - **Steam and outgoing traffic.** By default only incoming traffic goes through the proxy, so Steam's server list shows the address of your own line, and players can still connect directly to the proxy address. Name the Linux users of your game servers under outgoing traffic and restart the servers, then Steam sees the proxy. Everything of these users then uses the proxy, including SteamCMD updates of many GB, and their IPv6 is blocked so that it cannot show your line. Addresses in private networks stay outside of the tunnel.
 - **Limits on the proxy.** New connections are limited per source towards the game ports and per node towards the internet. A node cannot reach the services of its proxy or the proxy's private networks through the tunnel.
 - **Encryption.** The tunnel is WireGuard with a preshared key that reaches both machines over the post-quantum protected node connection.

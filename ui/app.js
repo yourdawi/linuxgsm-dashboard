@@ -522,7 +522,7 @@ function initApp() {
     el.settingsToolsBtnCron.addEventListener('click', installCronjobs);
     
     // Settings sub-tab navigation
-    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes', 'proxy'];
+    const settingsSubtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes', 'proxy', 'about'];
     settingsSubtabs.forEach(tab => {
         const btn = document.getElementById(`settings-tab-btn-${tab}`);
         if (btn) {
@@ -1149,10 +1149,9 @@ function initTwoFactorSettings() {
     });
 
     document.getElementById('twofa-btn-copy').addEventListener('click', async () => {
-        try {
-            await navigator.clipboard.writeText(twoFactorCodes.join('\n'));
+        if (await copyText(twoFactorCodes.join('\n'))) {
             twoFactorMessage(t('twofa-copied'), 'text-success');
-        } catch (e) {
+        } else {
             twoFactorMessage(t('twofa-copy-failed'), 'text-danger');
         }
     });
@@ -1383,7 +1382,7 @@ async function loadFastDLInfo(server) {
         : `<span class="text-muted" style="font-size: 0.8rem;">${t('fastdl-mode-' + (info.mode || 'dashboard'))}</span>`;
     const urlPart = url
         ? `<span style="font-size: 0.8rem; color: var(--text-secondary);"><strong>FastDL URL:</strong> <code class="font-mono" style="color: var(--primary);">${escapeHtml(url)}</code></span>
-           <button class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText(${jsArg(url)}); alert(t('fastdl-copied'));">${t('nodes-copy')}</button>`
+           <button class="btn btn-secondary btn-xs" onclick="copyText(${jsArg(url)}).then(ok => ok ? alert(t('fastdl-copied')) : prompt(t('nodes-copy'), ${jsArg(url)}));">${t('nodes-copy')}</button>`
         : `<span class="text-muted" style="font-size: 0.8rem;">${escapeHtml(note)}</span>`;
     box.innerHTML = `<span style="font-size: 0.8rem; color: var(--text-secondary);">${t('fastdl-mode-label')}:</span> ${select} ${urlPart}`;
 }
@@ -2509,6 +2508,7 @@ async function loadSettingsInfo() {
         if (versionVal && versionVal.nextElementSibling) {
             versionVal.nextElementSibling.textContent = data.version;
         }
+        document.getElementById('about-version').textContent = data.version;
 
         renderSettingsMode();
         el.settingsMode.className = 'info-value highlight text-success';
@@ -2691,6 +2691,7 @@ function allowedSettingsSubtabs() {
         security: isAdmin && capable('firewall'),
         nodes: isAdmin,
         proxy: isAdmin,
+        about: true,
     };
 }
 
@@ -2716,7 +2717,7 @@ function applySettingsPermissions() {
 function switchSettingsSubtab(subtabName) {
     if (!allowedSettingsSubtabs()[subtabName]) subtabName = 'general';
     state.settingsSubtab = subtabName;
-    const subtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes', 'proxy'];
+    const subtabs = ['general', 'server', 'cron', 'alerts', 'security', 'nodes', 'proxy', 'about'];
     subtabs.forEach(tab => {
         const btn = document.getElementById(`settings-tab-btn-${tab}`);
         const panel = document.getElementById(`settings-subtab-panel-${tab}`);
@@ -2760,14 +2761,40 @@ function initProxyPanel() {
     document.getElementById('proxy-setup-proxy').addEventListener('change', suggestProxyHost);
 }
 
+// copyText copies to the clipboard and reports whether that worked. The clipboard API needs HTTPS,
+// and most dashboards run over plain HTTP.
+async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (e) {
+            // Denied by the browser: the older way below can still work.
+        }
+    }
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try {
+        copied = document.execCommand('copy');
+    } catch (e) {
+        copied = false;
+    }
+    area.remove();
+    return copied;
+}
+
 async function copyProxyAddress(button) {
     const address = button.textContent;
-    try {
-        await navigator.clipboard.writeText(address);
+    if (await copyText(address)) {
         button.textContent = t('nodes-copied');
         setTimeout(() => { button.textContent = address; }, 1500);
-    } catch (e) {
-        // Clipboard access needs HTTPS.
+    } else {
         prompt(t('card-proxy-copy'), address);
     }
 }
@@ -3146,13 +3173,12 @@ function initNodesPanel() {
     const copy = (btnId, codeId) => {
         document.getElementById(btnId).addEventListener('click', async () => {
             const text = document.getElementById(codeId).textContent;
-            try {
-                await navigator.clipboard.writeText(text);
+            if (await copyText(text)) {
                 const btn = document.getElementById(btnId);
                 btn.textContent = t('nodes-copied');
                 setTimeout(() => { btn.textContent = t('nodes-copy'); }, 1500);
-            } catch (e) {
-                // Clipboard access needs HTTPS; the command is selectable as fallback.
+            } else {
+                // The command stays selectable.
                 window.getSelection().selectAllChildren(document.getElementById(codeId));
             }
         });
@@ -4401,6 +4427,12 @@ const i18n = {
         "template-cron-update": "Automatic update check (every 30 minutes, restarts on update)",
         "modal-portcheck-scanning": "Testing the ports from this server...",
         "portcheck-ip-unknown": "unknown",
+        "portcheck-via": "via proxy {host}",
+        "portcheck-proxy-status-open": "Reachable through the proxy",
+        "portcheck-proxy-status-local": "Server answers, proxy not confirmed",
+        "portcheck-proxy-status-closed": "No answer",
+        "portcheck-proxy-status-untestable": "Not testable",
+        "portcheck-proxy-hint": "This machine asks the proxy's address itself. \"Not confirmed\" does not have to be a fault: some networks do not let a machine reach itself this way. Test with a game client from outside.",
         "portcheck-status-open": "Open",
         "portcheck-status-local": "Local only",
         "portcheck-status-closed": "Closed",
@@ -4664,6 +4696,14 @@ const i18n = {
         "nodes-repair": "Pair again",
         "nodes-repair-confirm": "Create a new pairing command for \"{name}\"? Once it is used, the current installation of the node can no longer connect. Assignments and tags are kept.",
         "settings-subtab-proxy": "Proxy",
+        "settings-subtab-about": "About",
+        "about-tagline": "Your game servers, in one place.",
+        "about-text": "Made by Dawi as an open source project and free to use under the MIT License. If the dashboard is useful to you, a star on GitHub helps other people find it.",
+        "about-star": "Star on GitHub",
+        "about-issues": "Report a problem",
+        "about-releases": "Releases",
+        "about-author": "More from Dawi",
+        "about-credit": "Game servers are run by LinuxGSM. This dashboard is an independent project.",
         "proxy-list-title": "Proxy",
         "proxy-desc": "Players connect to the address of the proxy and the server needs no open port. The game server still sees the players' real IP.",
         "proxy-empty": "No proxy is set up. Nothing of it is installed on any machine.",
@@ -4683,7 +4723,7 @@ const i18n = {
         "proxy-problem-offline": "offline",
         "proxy-problem-needs_update": "needs an update",
         "proxy-problem-read_only": "read-only",
-        "proxy-problem-not_allowed": "disabled on this node",
+        "proxy-problem-not_allowed": "not available on this node",
         "proxy-problem-docker_mode": "not in Docker mode yet",
         "proxy-problem-uses-proxy": "already uses a proxy",
         "proxy-problem-is-proxy": "is a proxy",
@@ -5136,6 +5176,12 @@ const i18n = {
         "template-cron-update": "Automatische Updateprüfung (alle 30 Minuten, startet bei Update neu)",
         "modal-portcheck-scanning": "Prüfe die Ports von diesem Server aus...",
         "portcheck-ip-unknown": "unbekannt",
+        "portcheck-via": "über Proxy {host}",
+        "portcheck-proxy-status-open": "Über den Proxy erreichbar",
+        "portcheck-proxy-status-local": "Server antwortet, Proxy nicht bestätigt",
+        "portcheck-proxy-status-closed": "Keine Antwort",
+        "portcheck-proxy-status-untestable": "Nicht prüfbar",
+        "portcheck-proxy-hint": "Diese Maschine fragt selbst die Adresse des Proxys ab. „Nicht bestätigt“ muss kein Fehler sein: Manche Netze lassen eine Maschine sich so nicht selbst erreichen. Teste es mit einem Spielclient von außen.",
         "portcheck-status-open": "Offen",
         "portcheck-status-local": "Nur lokal",
         "portcheck-status-closed": "Geschlossen",
@@ -5399,6 +5445,14 @@ const i18n = {
         "nodes-repair": "Neu koppeln",
         "nodes-repair-confirm": "Neuen Pairing-Befehl für \"{name}\" erstellen? Sobald er benutzt wird, kann sich die bisherige Installation des Nodes nicht mehr verbinden. Zuweisungen und Tags bleiben erhalten.",
         "settings-subtab-proxy": "Proxy",
+        "settings-subtab-about": "Über",
+        "about-tagline": "Deine Gameserver an einem Ort.",
+        "about-text": "Von Dawi als Open-Source-Projekt entwickelt und unter der MIT-Lizenz frei nutzbar. Wenn dir das Dashboard hilft, freue ich mich über einen Stern auf GitHub. So finden es auch andere.",
+        "about-star": "Stern auf GitHub geben",
+        "about-issues": "Problem melden",
+        "about-releases": "Versionen",
+        "about-author": "Mehr von Dawi",
+        "about-credit": "Die Gameserver laufen mit LinuxGSM. Dieses Dashboard ist ein unabhängiges Projekt.",
         "proxy-list-title": "Proxy",
         "proxy-desc": "Spieler verbinden sich mit der Adresse des Proxys, der Server braucht keinen offenen Port. Der Gameserver sieht trotzdem die echte IP der Spieler.",
         "proxy-empty": "Es ist kein Proxy eingerichtet. Auf keiner Maschine ist etwas davon installiert.",
@@ -5418,7 +5472,7 @@ const i18n = {
         "proxy-problem-offline": "offline",
         "proxy-problem-needs_update": "braucht ein Update",
         "proxy-problem-read_only": "nur lesen",
-        "proxy-problem-not_allowed": "auf diesem Node deaktiviert",
+        "proxy-problem-not_allowed": "auf diesem Node nicht verfügbar",
         "proxy-problem-docker_mode": "im Docker-Modus noch nicht möglich",
         "proxy-problem-uses-proxy": "nutzt schon einen Proxy",
         "proxy-problem-is-proxy": "ist ein Proxy",
@@ -5752,11 +5806,12 @@ async function checkServerPorts(serverId) {
             // A node on an older 2.0.x reports only "open".
             const status = badges[probe.status] ? probe.status : (probe.open ? 'open' : 'closed');
             const badgeClass = `badge ${badges[status]}`;
-            const statusText = t(`portcheck-status-${status}`);
+            const statusText = t(`portcheck-${probe.via_proxy ? 'proxy-' : ''}status-${status}`);
+            const via = probe.via_proxy ? ` · ${t('portcheck-via').replace('{host}', probe.via_proxy)}` : '';
 
             row.innerHTML = `
                 <td style="padding: 0.75rem 0.5rem; text-align: left; font-family: monospace; font-size: 0.85rem;">
-                    ${Number(probe.port) || 0} <span style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;">${escapeHtml(probe.description)}</span>
+                    ${Number(probe.port) || 0} <span style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;">${escapeHtml(probe.description + via)}</span>
                 </td>
                 <td style="padding: 0.75rem 0.5rem; text-align: left; font-size: 0.8rem;">
                     ${escapeHtml(probe.protocol)}
@@ -5767,6 +5822,11 @@ async function checkServerPorts(serverId) {
             `;
             el.portcheckTableBody.appendChild(row);
         });
+        if ((data.probes || []).some(probe => probe.via_proxy)) {
+            const row = document.createElement('tr');
+            row.innerHTML = `<td colspan="3" style="padding: 0.75rem 0.5rem; text-align: left; font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(t('portcheck-proxy-hint'))}</td>`;
+            el.portcheckTableBody.appendChild(row);
+        }
 
         el.portcheckLoading.classList.add('hidden');
         el.portcheckResults.classList.remove('hidden');

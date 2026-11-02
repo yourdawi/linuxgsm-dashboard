@@ -150,6 +150,24 @@ func (h *ProxyHost) HasPlan() bool {
 	return err == nil
 }
 
+// PublishedHost returns the proxy's address when this machine publishes the port through a proxy.
+func (h *ProxyHost) PublishedHost(port int, protocol string) string {
+	plan, err := h.loadPlan()
+	if err != nil || plan.Node == nil {
+		return ""
+	}
+	for _, f := range plan.Node.Forwards {
+		if f.Port == port && strings.EqualFold(f.Protocol, protocol) {
+			host, _, err := net.SplitHostPort(plan.Node.Endpoint)
+			if err != nil {
+				return ""
+			}
+			return host
+		}
+	}
+	return ""
+}
+
 func (h *ProxyHost) loadPlan() (ProxyPlan, error) {
 	var plan ProxyPlan
 	data, err := os.ReadFile(h.path(proxyPlanFile))

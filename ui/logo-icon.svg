@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title">
+<title id="title">LinuxGSM Dashboard</title>
+<rect x="8" y="8" width="304" height="304" rx="42" fill="#121417" stroke="#2b3036" stroke-width="4"/>
+<g transform="translate(31 38) scale(.82)">
+<g stroke-linejoin="round" stroke-linecap="round">
+  <path d="M72 42 L160 12 L248 42 L248 92 L160 122 L72 92 Z" fill="#20262d"/>
+  <path d="M72 42 L160 12 L160 72 L72 102 Z" fill="#2b333c"/>
+  <path d="M160 12 L248 42 L248 102 L160 72 Z" fill="#171c22"/>
+  <path d="M72 104 L160 74 L248 104 L248 154 L160 184 L72 154 Z" fill="#20262d"/>
+  <path d="M72 104 L160 74 L160 134 L72 164 Z" fill="#2b333c"/>
+  <path d="M160 74 L248 104 L248 164 L160 134 Z" fill="#171c22"/>
+  <path d="M72 166 L160 136 L248 166 L248 216 L160 246 L72 216 Z" fill="#20262d"/>
+  <path d="M72 166 L160 136 L160 196 L72 226 Z" fill="#2b333c"/>
+  <path d="M160 136 L248 166 L248 226 L160 196 Z" fill="#171c22"/>
+  <g fill="#a7adb5">
+    <rect x="91" y="61" width="43" height="11" rx="5" transform="rotate(-18 91 61)"/>
+    <rect x="91" y="123" width="43" height="11" rx="5" transform="rotate(-18 91 123)"/>
+    <rect x="91" y="185" width="43" height="11" rx="5" transform="rotate(-18 91 185)"/>
+  </g>
+  <g fill="#3fa7a0">
+    <circle cx="215" cy="53" r="7"/><circle cx="215" cy="115" r="7"/><circle cx="215" cy="177" r="7"/>
+  </g>
+  <path d="M42 192 C4 155 39 102 100 76 C156 51 222 26 273 42 C311 54 300 92 271 119"
+        fill="none" stroke="#3fa7a0" stroke-width="9"/>
+  <path d="M114 190 Q121 174 143 174 H188 Q210 174 218 190 L234 224 Q240 242 224 249 Q215 253 204 245 L184 229 H145 L126 245 Q114 253 103 247 Q89 239 97 222 Z"
+        fill="#11161c" stroke="#e4e6e9" stroke-width="6"/>
+  <path d="M126 204 V226 M115 215 H137" stroke="#e4e6e9" stroke-width="7"/>
+  <g fill="#3fa7a0">
+    <circle cx="197" cy="205" r="5.5"/><circle cx="210" cy="216" r="5.5"/>
+    <circle cx="184" cy="216" r="5.5"/><circle cx="197" cy="228" r="5.5"/>
+  </g>
+</g>
+</g>
+</svg>

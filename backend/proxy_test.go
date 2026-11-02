@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -271,6 +272,24 @@ func TestProxyAddressesDoNotWaitForASetup(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("blocked by a running setup")
+	}
+}
+
+func TestProxyPublishedHost(t *testing.T) {
+	h := NewProxyHost(t.TempDir())
+	if host := h.PublishedHost(27015, "UDP"); host != "" {
+		t.Errorf("without a plan: %q", host)
+	}
+	data, err := json.Marshal(testNodePlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, h.path(proxyPlanFile), string(data))
+	if host := h.PublishedHost(27015, "UDP"); host != "203.0.113.5" {
+		t.Errorf("published port: %q", host)
+	}
+	if host := h.PublishedHost(27016, "UDP"); host != "" {
+		t.Errorf("other port: %q", host)
 	}
 }
 

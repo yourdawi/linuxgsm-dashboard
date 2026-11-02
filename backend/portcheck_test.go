@@ -90,6 +90,59 @@ func TestPortsFromConfigInventNothing(t *testing.T) {
 	}
 }
 
+// A published port is asked at the proxy's address, the others stay at the public IP.
+func TestCheckServerPortsThroughTheProxy(t *testing.T) {
+	publicIPCache.Lock()
+	publicIPCache.ip, publicIPCache.fetched = "127.0.0.2", time.Now()
+	publicIPCache.Unlock()
+	t.Cleanup(func() {
+		publicIPCache.Lock()
+		publicIPCache.ip = ""
+		publicIPCache.Unlock()
+	})
+	listen := func() int {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { l.Close() })
+		return l.Addr().(*net.TCPAddr).Port
+	}
+	published, other := listen(), listen()
+	srv := GameServerInstance{ID: "ql", Script: "qlserver", Dir: t.TempDir(), ParsedPorts: []PortProbe{
+		{Port: published, Protocol: "TCP", Description: "Game"},
+		{Port: other, Protocol: "TCP", Description: "RCON"},
+	}}
+	im := NewStaticInstanceManager(t.TempDir(), srv)
+	im.ProxyPortHost = func(port int, protocol string) string {
+		if port == published && protocol == "TCP" {
+			return "127.0.0.1"
+		}
+		return ""
+	}
+
+	rec := httptest.NewRecorder()
+	im.CheckServerPorts(rec, httptest.NewRequest("GET", "/", nil), "ql")
+	var out struct {
+		Probes []PortProbe `json:"probes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err, rec.Body.String())
+	}
+	for _, p := range out.Probes {
+		switch p.Port {
+		case published:
+			if p.Status != portStatusOpen || p.ViaProxy != "127.0.0.1" {
+				t.Errorf("published port: %+v", p)
+			}
+		case other:
+			if p.Status != portStatusLocal || p.ViaProxy != "" {
+				t.Errorf("other port: %+v", p)
+			}
+		}
+	}
+}
+
 func TestCheckServerPortsReport(t *testing.T) {
 	publicIPCache.Lock()
 	publicIPCache.ip, publicIPCache.fetched = "127.0.0.2", time.Now()

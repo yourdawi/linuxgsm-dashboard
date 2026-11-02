@@ -180,6 +180,18 @@ func routeRequest(key string) (method, path string) {
 	return parts[1], "/api/servers/srv1/" + parts[0]
 }
 
+// Without a host runtime the proxy is offered with a reason and refused, not half set up.
+func TestProxyInDockerMode(t *testing.T) {
+	a := &app{}
+	machines := a.proxyCandidates()
+	if len(machines) != 1 || machines[0].Available || machines[0].Problem != "docker_mode" {
+		t.Errorf("machines = %+v", machines)
+	}
+	if _, err := a.proxyEndpoint(backend.ProxyLocal); err == nil {
+		t.Error("endpoint without a host runtime")
+	}
+}
+
 func TestRBACMatrixAllServerRoutes(t *testing.T) {
 	e := newTestEnv(t)
 	viewer := e.login("viewer")

@@ -117,6 +117,9 @@ type InstanceManager struct {
 	configDir string
 	rt        Runtime
 	static    bool // tests: disable discovery from /etc/passwd and the filesystem
+	// ProxyPortHost returns the proxy's address for a port published through a proxy. Set once at
+	// startup, nil without proxy support.
+	ProxyPortHost func(port int, protocol string) string
 
 	scanMu sync.Mutex // one discovery at a time; taken before mu, never while holding it
 
